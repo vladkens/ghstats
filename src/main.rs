@@ -1,25 +1,50 @@
 use axum::{routing::get, Router};
 use maud::{html, Markup};
+use utils::WithError;
 
-pub type WithError<T> = Result<T, Box<dyn std::error::Error + Sync + Send>>;
-
-mod collect;
+mod db_client;
+mod gh_client;
+mod utils;
 
 async fn index() -> Markup {
   html! {
-      h1 { "Hello, World!" }
+    h1 { "Hello, World!" }
   }
 }
 
-#[tokio::main]
-async fn main() -> WithError<()> {
-  dotenv::dotenv().ok();
-  let client = collect::ApiClient::new().unwrap();
+async fn update_metrics() -> WithError {
+  let gh = gh_client::GhClient::new().unwrap();
+  let db = db_client::DbClient::new("test.db").await?;
 
-  let items = client.get_repos("users/vladkens").await?;
-  for item in items {
-    println!("{:?}", item);
+  let repos = gh.get_repos("users/vladkens").await?;
+  for repo in repos {
+    if repo.fork || repo.archived {
+      continue;
+    }
+
+    let id = db.insert_repo(&repo).await?;
+
+    let rs = gh.traffic_clones(&repo.full_name).await?;
+    db.insert_traffic_clones(id, &rs).await?;
+
+    let rs = gh.traffic_views(&repo.full_name).await?;
+    db.insert_traffic_views(id, &rs).await?;
+
+    let rs = gh.traffic_paths(&repo.full_name).await?;
+    db.insert_traffic_paths(id, &rs).await?;
+
+    let rs = gh.traffic_refs(&repo.full_name).await?;
+    db.insert_traffic_refs(id, &rs).await?;
   }
+
+  Ok(())
+}
+
+#[tokio::main]
+async fn main() -> WithError {
+  dotenv::dotenv().ok();
+
+  //   update_metrics().await?;
 
   let app = Router::new() //
     .route("/", get(index));

@@ -1,40 +1,44 @@
 use reqwest::header::{HeaderMap, HeaderValue};
+use serde::{Deserialize, Serialize};
 
 use crate::utils::WithError;
 
 // MARK: Types
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct Repo {
+  pub id: u64,
   pub full_name: String,
   pub stargazers_count: u32,
   pub forks_count: u32,
   pub watchers_count: u32,
   pub open_issues_count: u32,
+  pub fork: bool,
+  pub archived: bool,
 }
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TrafficDaily {
   pub timestamp: String,
   pub uniques: u32,
   pub count: u32,
 }
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TrafficClones {
   pub uniques: u32,
   pub count: u32,
   pub clones: Vec<TrafficDaily>,
 }
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TrafficViews {
   pub uniques: u32,
   pub count: u32,
   pub views: Vec<TrafficDaily>,
 }
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TrafficPath {
   pub path: String,
   pub title: String,
@@ -42,7 +46,7 @@ pub struct TrafficPath {
   pub uniques: u32,
 }
 
-#[derive(Debug, serde::Deserialize, serde::Serialize)]
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TrafficRefferer {
   pub referrer: String,
   pub count: u32,
@@ -93,14 +97,14 @@ impl GhClient {
     Ok(dat)
   }
 
-  pub async fn traffic_popular_paths(&self, repo: &str) -> WithError<Vec<TrafficPath>> {
+  pub async fn traffic_paths(&self, repo: &str) -> WithError<Vec<TrafficPath>> {
     let url = format!("{}/repos/{}/traffic/popular/paths", self.base_url, repo);
     let rep = self.client.get(url).send().await?.error_for_status()?;
     let dat = rep.json::<Vec<TrafficPath>>().await?;
     Ok(dat)
   }
 
-  pub async fn traffic_referrers(&self, repo: &str) -> WithError<Vec<TrafficRefferer>> {
+  pub async fn traffic_refs(&self, repo: &str) -> WithError<Vec<TrafficRefferer>> {
     let url = format!("{}/repos/{}/traffic/popular/referrers", self.base_url, repo);
     let rep = self.client.get(url).send().await?.error_for_status()?;
     let dat = rep.json::<Vec<TrafficRefferer>>().await?;

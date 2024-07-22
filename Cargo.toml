@@ -3,6 +3,9 @@ name = "ghstats"
 version = "0.1.0"
 edition = "2021"
 
+[lints.rust]
+dead_code = "allow"
+
 [dependencies]
 axum = "0.7.5"
 maud = { version = "0.26.0", features = ["axum"] }
@@ -11,3 +14,5 @@ serde_json = "1.0.120"
 serde = { version = "1.0.204", features = ["serde_derive"] }
 tokio = { version = "1.38.1", features = ["full"] }
 dotenv = "0.15.0"
+sqlx = { version = "0.7.4", features = ["runtime-tokio", "sqlite"] }
+chrono = { version = "0.4.38", features = ["serde"] }
