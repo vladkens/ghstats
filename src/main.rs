@@ -1,18 +1,18 @@
 use axum::{routing::get, Router};
-use maud::{html, Markup};
-use utils::WithError;
+use maud::html;
+use utils::{HtmlRes, Res};
 
 mod db_client;
 mod gh_client;
 mod utils;
 
-async fn index() -> Markup {
-  html! {
+async fn index() -> HtmlRes {
+  Ok(html! {
     h1 { "Hello, World!" }
-  }
+  })
 }
 
-async fn update_metrics() -> WithError {
+async fn update_metrics() -> Res {
   let gh = gh_client::GhClient::new().unwrap();
   let db = db_client::DbClient::new("test.db").await?;
 
@@ -41,7 +41,7 @@ async fn update_metrics() -> WithError {
 }
 
 #[tokio::main]
-async fn main() -> WithError {
+async fn main() -> Res {
   dotenv::dotenv().ok();
 
   //   update_metrics().await?;

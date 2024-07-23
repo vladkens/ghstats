@@ -1,12 +1,11 @@
-use crate::{
-  gh_client::{Repo, TrafficClones, TrafficPath, TrafficRefferer, TrafficViews},
-  utils::{self, WithError},
-};
 use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
+
+use crate::gh_client::{Repo, TrafficClones, TrafficPath, TrafficRefferer, TrafficViews};
+use crate::utils::{get_utc_hours, Res};
 
 // MARK: Migrations
 
-async fn migration_1(db: &SqlitePool) -> WithError {
+async fn migration_1(db: &SqlitePool) -> Res {
   let mut queries = vec![];
 
   let qs = "CREATE TABLE IF NOT EXISTS repos (
@@ -65,7 +64,7 @@ async fn migration_1(db: &SqlitePool) -> WithError {
   Ok(())
 }
 
-pub async fn get_db(db_path: &str) -> WithError<SqlitePool> {
+pub async fn get_db(db_path: &str) -> Res<SqlitePool> {
   let opts = SqliteConnectOptions::new().filename(db_path).create_if_missing(true);
   let pool = SqlitePool::connect_with(opts).await?;
   migration_1(&pool).await?;
@@ -79,12 +78,12 @@ pub struct DbClient {
 }
 
 impl DbClient {
-  pub async fn new(db_path: &str) -> WithError<Self> {
+  pub async fn new(db_path: &str) -> Res<Self> {
     let pool = get_db(db_path).await?;
     Ok(Self { pool })
   }
 
-  pub async fn insert_repo(&self, repo: &Repo) -> WithError<u64> {
+  pub async fn insert_repo(&self, repo: &Repo) -> Res<u64> {
     let qs = "
     INSERT INTO repos (repo_id, full_name) VALUES ($1, $2) ON CONFLICT DO NOTHING;
     ";
@@ -98,7 +97,7 @@ impl DbClient {
     Ok(repo.id)
   }
 
-  pub async fn insert_traffic_clones(&self, rid: u64, data: &TrafficClones) -> WithError {
+  pub async fn insert_traffic_clones(&self, rid: u64, data: &TrafficClones) -> Res {
     let qs = "
     INSERT INTO gh_traffic_clones (repo_id, count, uniques, date)
     VALUES ($1, $2, $3, $4)
@@ -118,7 +117,7 @@ impl DbClient {
     Ok(())
   }
 
-  pub async fn insert_traffic_views(&self, rid: u64, data: &TrafficViews) -> WithError {
+  pub async fn insert_traffic_views(&self, rid: u64, data: &TrafficViews) -> Res {
     let qs = "
     INSERT INTO gh_traffic_views (repo_id, count, uniques, date)
     VALUES ($1, $2, $3, $4)
@@ -138,14 +137,14 @@ impl DbClient {
     Ok(())
   }
 
-  pub async fn insert_traffic_paths(&self, rid: u64, items: &Vec<TrafficPath>) -> WithError {
+  pub async fn insert_traffic_paths(&self, rid: u64, items: &Vec<TrafficPath>) -> Res {
     let qs = "
     INSERT INTO gh_traffic_paths (repo_id, path, title, count, uniques, date)
     VALUES ($1, $2, $3, $4, $5, $6)
     ON CONFLICT(repo_id, path, date) DO UPDATE SET (title, count, uniques) = (excluded.title, excluded.count, excluded.uniques);
     ";
 
-    let date = utils::get_utc_hours().to_rfc3339();
+    let date = get_utc_hours().to_rfc3339();
     for item in items {
       let _ = sqlx::query(qs) //
         .bind(rid as i64)
@@ -161,14 +160,14 @@ impl DbClient {
     Ok(())
   }
 
-  pub async fn insert_traffic_refs(&self, rid: u64, items: &Vec<TrafficRefferer>) -> WithError {
+  pub async fn insert_traffic_refs(&self, rid: u64, items: &Vec<TrafficRefferer>) -> Res {
     let qs = "
     INSERT INTO gh_traffic_referrers (repo_id, referrer, count, uniques, date)
     VALUES ($1, $2, $3, $4, $5)
     ON CONFLICT(repo_id, referrer, date) DO UPDATE SET (count, uniques) = (excluded.count, excluded.uniques);
     ";
 
-    let date = utils::get_utc_hours().to_rfc3339();
+    let date = get_utc_hours().to_rfc3339();
     for item in items {
       let _ = sqlx::query(qs) //
         .bind(rid as i64)

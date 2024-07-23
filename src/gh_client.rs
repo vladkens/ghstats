@@ -1,7 +1,7 @@
 use reqwest::header::{HeaderMap, HeaderValue};
 use serde::{Deserialize, Serialize};
 
-use crate::utils::WithError;
+use crate::utils::Res;
 
 // MARK: Types
 
@@ -61,7 +61,7 @@ pub struct GhClient {
 }
 
 impl GhClient {
-  pub fn new() -> WithError<GhClient> {
+  pub fn new() -> Res<GhClient> {
     let token = std::env::var("GITHUB_TOKEN")?;
 
     let mut headers = HeaderMap::new();
@@ -76,35 +76,35 @@ impl GhClient {
     Ok(GhClient { client, base_url })
   }
 
-  pub async fn get_repos(&self, org: &str) -> WithError<Vec<Repo>> {
+  pub async fn get_repos(&self, org: &str) -> Res<Vec<Repo>> {
     let url = format!("{}/{}/repos?type=public,private&per_page=100", self.base_url, org);
     let rep = self.client.get(url).send().await?.error_for_status()?;
     let dat = rep.json::<Vec<Repo>>().await?;
     Ok(dat)
   }
 
-  pub async fn traffic_clones(&self, repo: &str) -> WithError<TrafficClones> {
+  pub async fn traffic_clones(&self, repo: &str) -> Res<TrafficClones> {
     let url = format!("{}/repos/{}/traffic/clones", self.base_url, repo);
     let rep = self.client.get(url).send().await?.error_for_status()?;
     let dat = rep.json::<TrafficClones>().await?;
     Ok(dat)
   }
 
-  pub async fn traffic_views(&self, repo: &str) -> WithError<TrafficViews> {
+  pub async fn traffic_views(&self, repo: &str) -> Res<TrafficViews> {
     let url = format!("{}/repos/{}/traffic/views", self.base_url, repo);
     let rep = self.client.get(url).send().await?.error_for_status()?;
     let dat = rep.json::<TrafficViews>().await?;
     Ok(dat)
   }
 
-  pub async fn traffic_paths(&self, repo: &str) -> WithError<Vec<TrafficPath>> {
+  pub async fn traffic_paths(&self, repo: &str) -> Res<Vec<TrafficPath>> {
     let url = format!("{}/repos/{}/traffic/popular/paths", self.base_url, repo);
     let rep = self.client.get(url).send().await?.error_for_status()?;
     let dat = rep.json::<Vec<TrafficPath>>().await?;
     Ok(dat)
   }
 
-  pub async fn traffic_refs(&self, repo: &str) -> WithError<Vec<TrafficRefferer>> {
+  pub async fn traffic_refs(&self, repo: &str) -> Res<Vec<TrafficRefferer>> {
     let url = format!("{}/repos/{}/traffic/popular/referrers", self.base_url, repo);
     let rep = self.client.get(url).send().await?.error_for_status()?;
     let dat = rep.json::<Vec<TrafficRefferer>>().await?;
