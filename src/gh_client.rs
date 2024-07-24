@@ -9,6 +9,7 @@ use crate::utils::Res;
 pub struct Repo {
   pub id: u64,
   pub full_name: String,
+  pub description: Option<String>,
   pub stargazers_count: u32,
   pub forks_count: u32,
   pub watchers_count: u32,

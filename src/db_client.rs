@@ -10,7 +10,9 @@ async fn migrate(db: &SqlitePool) -> Res {
 
   let qs = "CREATE TABLE IF NOT EXISTS repos (
     id INTEGER PRIMARY KEY,
-    name TEXT NOT NULL
+    name TEXT NOT NULL,
+    description TEXT DEFAULT NULL,
+    archived BOOLEAN DEFAULT FALSE
   );";
   queries.push(qs);
 
@@ -50,6 +52,7 @@ pub async fn get_db(db_path: &str) -> Res<SqlitePool> {
 pub struct RepoMetrics {
   pub id: i64,
   pub name: String,
+  pub description: Option<String>,
   pub date: String,
   pub stars: i32,
   pub forks: i32,
@@ -61,16 +64,37 @@ pub struct RepoMetrics {
   pub views_uniques: i32,
 }
 
+#[derive(Clone, FromRow, Debug, Serialize, Deserialize)]
+pub struct RepoStars {
+  pub date: String,
+  pub stars: i32,
+}
+
 // MARK: Inserters
 
-pub async fn insert_stats(db: &SqlitePool, repo: &Repo) -> Res {
+pub async fn insert_repo(db: &SqlitePool, repo: &Repo) -> Res {
   let qs = "
-  INSERT INTO repos (id, name)
-  VALUES ($1, $2)
-  ON CONFLICT(id) DO NOTHING;
+  INSERT INTO repos (id, name, description, archived)
+  VALUES ($1, $2, $3, $4)
+  ON CONFLICT(id) DO UPDATE SET
+    name = excluded.name,
+    description = excluded.description,
+    archived = excluded.archived;
   ";
 
-  let _ = sqlx::query(qs).bind(repo.id as i64).bind(&repo.full_name).execute(db).await?;
+  let _ = sqlx::query(qs)
+    .bind(repo.id as i64)
+    .bind(&repo.full_name)
+    .bind(&repo.description)
+    .bind(repo.archived)
+    .execute(db)
+    .await?;
+
+  Ok(())
+}
+
+pub async fn insert_stats(db: &SqlitePool, repo: &Repo) -> Res {
+  insert_repo(db, repo).await?;
 
   let date = chrono::Utc::now().to_utc().to_rfc3339();
   let date = date.split("T").next().unwrap().to_owned() + "T00:00:00Z";
@@ -142,41 +166,6 @@ pub async fn insert_views(db: &SqlitePool, repo: &Repo, views: &RepoViews) -> Re
   Ok(())
 }
 
-// MARK: Getters
-
-pub async fn get_repos(db: &SqlitePool) -> Res<Vec<RepoMetrics>> {
-  let qs = "
-  SELECT
-    rs.id, r.name, COUNT(*) AS records,
-    SUM(clones_count) AS clones_count, SUM(clones_uniques) AS clones_uniques,
-    SUM(views_count) AS views_count, SUM(views_uniques) AS views_uniques,
-    latest.stars, latest.forks, latest.watchers, latest.issues, latest.latest_date AS date
-  FROM repo_stats rs
-  INNER JOIN (
-    SELECT rs.id, latest_date, stars, forks, watchers, issues FROM repo_stats rs
-    INNER JOIN (SELECT id, MAX(date) AS latest_date FROM repo_stats GROUP BY id) latest
-    ON rs.id = latest.id AND rs.date = latest.latest_date
-  ) latest ON latest.id = rs.id
-  INNER JOIN repos r ON r.id = rs.id
-  GROUP BY rs.id
-  ";
-
-  let items = sqlx::query_as(qs).fetch_all(db).await?;
-  Ok(items)
-}
-
-pub async fn get_metrics(db: &SqlitePool, name: &str) -> Res<Vec<RepoMetrics>> {
-  let qs = "
-  SELECT * FROM repo_stats rs
-  INNER JOIN repos r ON r.id = rs.id
-  WHERE r.name = $1
-  ORDER BY rs.date ASC;
-  ";
-
-  let items = sqlx::query_as(qs).bind(name).fetch_all(db).await?;
-  Ok(items)
-}
-
 // MARK: Updater
 
 pub async fn update_metrics(db: &SqlitePool) -> Res {
@@ -197,4 +186,74 @@ pub async fn update_metrics(db: &SqlitePool) -> Res {
   }
 
   Ok(())
+}
+
+// MARK: Getters
+
+const TOTAL_QUERY: &'static str = "
+SELECT * FROM repos r
+INNER JOIN (
+	SELECT
+		rs.id,
+		SUM(clones_count) AS clones_count, SUM(clones_uniques) AS clones_uniques,
+	    SUM(views_count) AS views_count, SUM(views_uniques) AS views_uniques,
+	    latest.*
+	FROM repo_stats rs
+	INNER JOIN (
+		SELECT id, MAX(date) AS date, stars, forks, watchers, issues
+		FROM repo_stats GROUP BY id
+	) latest ON latest.id = rs.id
+	GROUP BY rs.id
+) rs ON rs.id = r.id
+";
+
+pub async fn get_repo_totals(db: &SqlitePool, repo: &str) -> Res<RepoMetrics> {
+  let qs = format!("{} WHERE r.name = $1;", TOTAL_QUERY);
+
+  let item = sqlx::query_as(qs.as_str()).bind(repo).fetch_one(db).await?;
+  Ok(item)
+}
+
+pub async fn get_repos(db: &SqlitePool) -> Res<Vec<RepoMetrics>> {
+  let items = sqlx::query_as(TOTAL_QUERY).fetch_all(db).await?;
+  Ok(items)
+}
+
+pub async fn get_metrics(db: &SqlitePool, name: &str) -> Res<Vec<RepoMetrics>> {
+  let qs = "
+  SELECT * FROM repo_stats rs
+  INNER JOIN repos r ON r.id = rs.id
+  WHERE r.name = $1
+  ORDER BY rs.date ASC;
+  ";
+
+  let items = sqlx::query_as(qs).bind(name).fetch_all(db).await?;
+  Ok(items)
+}
+
+pub async fn get_stars(db: &SqlitePool, name: &str) -> Res<Vec<RepoStars>> {
+  let qs = "
+  SELECT date, stars FROM repo_stats rs
+  INNER JOIN repos r ON r.id = rs.id
+  WHERE r.name = $1
+  ORDER BY rs.date ASC;
+  ";
+
+  let mut items: Vec<RepoStars> = sqlx::query_as(qs).bind(name).fetch_all(db).await?;
+
+  // restore gaps in data
+  let mut prev_stars = 0;
+  for (idx, item) in items.iter_mut().enumerate() {
+    if idx == 0 {
+      continue;
+    }
+
+    if item.stars == 0 {
+      item.stars = prev_stars;
+    }
+
+    prev_stars = item.stars;
+  }
+
+  Ok(items)
 }

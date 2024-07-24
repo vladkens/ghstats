@@ -5,18 +5,42 @@ const renderMetrics = (canvasId, metrics, uniqueCol, countCol) => {
     options: {
       responsive: true,
       scales: {
-        x: { stacked: true }
-      }
+        x: { stacked: true },
+        y: { beginAtZero: true },
+      },
+      plugins: {
+        legend: { display: false },
+        // title: { display: true, text: uniqueCol.split('_')[0].toUpperCase() }
+      },
     },
     data: {
       labels: metrics.map(x => x.date.split('T')[0]),
       datasets: [
-        { label: 'Unique', data: metrics.map(x => x[uniqueCol]) },
-        { label: 'Count', data: metrics.map(x => x[countCol]) },
-      ]
+        { label: 'Unique', data: metrics.map(x => x[uniqueCol]), borderWidth: 0, borderRadius: 4 },
+        { label: 'Count', data: metrics.map(x => x[countCol]), borderWidth: 0, borderRadius: 4 },
+      ],
     },
   });
-}
+};
 
-renderMetrics('chart_clones', metrics, 'clones_uniques', 'clones_count');
-renderMetrics('chart_views', metrics, 'views_uniques', 'views_count');
+const renderStars = (canvasId, stars) => {
+  const ctx = document.getElementById(canvasId);
+  new Chart(ctx, {
+    type: 'line',
+    options: {
+      responsive: true,
+      scales: {
+        x: { stacked: true },
+        y: { beginAtZero: true },
+      },
+      plugins: {
+        legend: { display: false },
+        // title: { display: false, text: 'Stars' },
+      },
+    },
+    data: {
+      labels: stars.map(x => x.date.split('T')[0]),
+      datasets: [{ label: '', data: stars.map(x => x.stars) }],
+    },
+  });
+};

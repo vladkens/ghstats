@@ -5,7 +5,7 @@ use axum::{
   routing::get,
   Router,
 };
-use db_client::{get_db, get_metrics, RepoMetrics};
+use db_client::{get_db, get_metrics, get_repo_totals, get_stars, RepoMetrics};
 use maud::{html, Markup, PreEscaped};
 use sqlx::SqlitePool;
 use thousands::Separable;
@@ -22,7 +22,7 @@ struct AppState {
 fn icon_link(name: &str, url: &str) -> Markup {
   // https://simpleicons.org/?q=github
   html!(
-    a href=(url) class="secondary" style="text-decoration: none" target="_blank" {
+    a href=(url) class="secondary no-underline" target="_blank" {
       i class=(format!("si si-{}", name)) {}
     }
   )
@@ -38,7 +38,7 @@ fn base(navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
         style { (PreEscaped(include_str!("app.css"))) }
       }
       body {
-        main class="container" {
+        main class="container pt-0" {
           div class="header" {
             nav aria-label="breadcrumb" {
               ul {
@@ -74,19 +74,57 @@ async fn repo_page(
   let db = &state.db;
   let repo = format!("{}/{}", user, name);
   let metrics = get_metrics(db, &repo).await?;
+  let stars = get_stars(db, &repo).await?;
+  let totals = get_repo_totals(db, &repo).await?;
 
   let html = html!(
+    div class="flex gap-4 max-h-96" {
+      div class="flex flex-col w-1/3 gap-4" {
+        article class="h-2/3 m-0" {
+          hgroup class="flex flex-col gap-2" {
+            h3 {
+              a href=(format!("https://github.com/{}", repo)) class="contrast no-underline" { (totals.name) }
+            }
+            p { (totals.description.unwrap_or("".to_string())) }
+          }
+        }
+
+        div class="flex h-1/3 gap-4 m-0" {
+          article class="w-1/2" {
+            h6 { "Clones" }
+            p { (totals.clones_count.separate_with_commas()) }
+          }
+
+          article class="w-1/2" {
+            h6 { "Views" }
+            p { (totals.views_count.separate_with_commas()) }
+          }
+        }
+      }
+
+      article class="w-2/3" {
+        // h6 { "Stars" }
+        canvas id="chart_stars" {}
+      }
+    }
+
     div class="grid" {
       @for (title, canvas_id) in vec![("Clones", "chart_clones"), ("Views", "chart_views")] {
         article {
-          h5 { (title) }
+          h6 { (title) }
           canvas id=(canvas_id) {}
         }
       }
     }
 
-    script { "const metrics = "(PreEscaped(serde_json::to_string(&metrics)?)); }
     script { (PreEscaped(include_str!("app.js"))) }
+    script {
+      "const Metrics = "(PreEscaped(serde_json::to_string(&metrics)?))";"
+      "const Stars = "(PreEscaped(serde_json::to_string(&stars)?))";"
+      "renderMetrics('chart_clones', Metrics, 'clones_uniques', 'clones_count');"
+      "renderMetrics('chart_views', Metrics, 'views_uniques', 'views_count');"
+      "renderStars('chart_stars', Stars);"
+    }
   );
 
   Ok(base(vec![(repo, None)], html))
