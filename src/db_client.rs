@@ -1,6 +1,6 @@
 use anyhow::Ok;
 use serde::{Deserialize, Serialize};
-use sqlx::{sqlite::SqliteConnectOptions, FromRow, Row, SqlitePool};
+use sqlx::{sqlite::SqliteConnectOptions, FromRow, SqlitePool};
 
 use crate::gh_client::{Repo, RepoClones, RepoViews};
 use crate::utils::Res;
@@ -46,14 +46,10 @@ pub async fn get_db(db_path: &str) -> Res<SqlitePool> {
 
 // MARK: DTOs
 
-#[derive(Clone, FromRow, Debug)]
-pub struct RepoDto {
-  pub id: i64,
-  pub name: String,
-}
-
 #[derive(Clone, FromRow, Debug, Serialize, Deserialize)]
 pub struct RepoMetrics {
+  pub id: i64,
+  pub name: String,
   pub date: String,
   pub stars: i32,
   pub forks: i32,
@@ -148,8 +144,23 @@ pub async fn insert_views(db: &SqlitePool, repo: &Repo, views: &RepoViews) -> Re
 
 // MARK: Getters
 
-pub async fn get_repos(db: &SqlitePool) -> Res<Vec<RepoDto>> {
-  let qs = "SELECT id, name FROM repos;";
+pub async fn get_repos(db: &SqlitePool) -> Res<Vec<RepoMetrics>> {
+  let qs = "
+  SELECT
+    rs.id, r.name, COUNT(*) AS records,
+    SUM(clones_count) AS clones_count, SUM(clones_uniques) AS clones_uniques,
+    SUM(views_count) AS views_count, SUM(views_uniques) AS views_uniques,
+    latest.stars, latest.forks, latest.watchers, latest.issues, latest.latest_date AS date
+  FROM repo_stats rs
+  INNER JOIN (
+    SELECT rs.id, latest_date, stars, forks, watchers, issues FROM repo_stats rs
+    INNER JOIN (SELECT id, MAX(date) AS latest_date FROM repo_stats GROUP BY id) latest
+    ON rs.id = latest.id AND rs.date = latest.latest_date
+  ) latest ON latest.id = rs.id
+  INNER JOIN repos r ON r.id = rs.id
+  GROUP BY rs.id
+  ";
+
   let items = sqlx::query_as(qs).fetch_all(db).await?;
   Ok(items)
 }
