@@ -25,14 +25,14 @@ pub struct TrafficDaily {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct TrafficClones {
+pub struct RepoClones {
   pub uniques: u32,
   pub count: u32,
   pub clones: Vec<TrafficDaily>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct TrafficViews {
+pub struct RepoViews {
   pub uniques: u32,
   pub count: u32,
   pub views: Vec<TrafficDaily>,
@@ -83,17 +83,17 @@ impl GhClient {
     Ok(dat)
   }
 
-  pub async fn traffic_clones(&self, repo: &str) -> Res<TrafficClones> {
+  pub async fn traffic_clones(&self, repo: &str) -> Res<RepoClones> {
     let url = format!("{}/repos/{}/traffic/clones", self.base_url, repo);
     let rep = self.client.get(url).send().await?.error_for_status()?;
-    let dat = rep.json::<TrafficClones>().await?;
+    let dat = rep.json::<RepoClones>().await?;
     Ok(dat)
   }
 
-  pub async fn traffic_views(&self, repo: &str) -> Res<TrafficViews> {
+  pub async fn traffic_views(&self, repo: &str) -> Res<RepoViews> {
     let url = format!("{}/repos/{}/traffic/views", self.base_url, repo);
     let rep = self.client.get(url).send().await?.error_for_status()?;
-    let dat = rep.json::<TrafficViews>().await?;
+    let dat = rep.json::<RepoViews>().await?;
     Ok(dat)
   }
 

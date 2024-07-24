@@ -1,58 +1,31 @@
-use sqlx::sqlite::{SqliteConnectOptions, SqlitePool};
+use anyhow::Ok;
+use serde::{Deserialize, Serialize};
+use sqlx::{sqlite::SqliteConnectOptions, FromRow, Row, SqlitePool};
 
-use crate::gh_client::{Repo, TrafficClones, TrafficPath, TrafficRefferer, TrafficViews};
-use crate::utils::{get_utc_hours, Res};
+use crate::gh_client::{Repo, RepoClones, RepoViews};
+use crate::utils::Res;
 
-// MARK: Migrations
-
-async fn migration_1(db: &SqlitePool) -> Res {
+async fn migrate(db: &SqlitePool) -> Res {
   let mut queries = vec![];
 
   let qs = "CREATE TABLE IF NOT EXISTS repos (
-    repo_id INTEGER PRIMARY KEY,
-    full_name TEXT NOT NULL
+    id INTEGER PRIMARY KEY,
+    name TEXT NOT NULL
   );";
   queries.push(qs);
 
-  let qs = "CREATE TABLE IF NOT EXISTS gh_traffic_views (
-    repo_id INTEGER NOT NULL,
-    count INTEGER NOT NULL,
-    uniques INTEGER NOT NULL,
+  let qs = "CREATE TABLE IF NOT EXISTS repo_stats (
+    id INTEGER NOT NULL,
     date TEXT NOT NULL,
-    PRIMARY KEY (repo_id, date)
-    -- FOREIGN KEY (repo_id) REFERENCES repos(id)
-  );";
-  queries.push(qs);
-
-  let qs = "CREATE TABLE IF NOT EXISTS gh_traffic_clones (
-    repo_id INTEGER NOT NULL,
-    count INTEGER NOT NULL,
-    uniques INTEGER NOT NULL,
-    date TEXT NOT NULL,
-    PRIMARY KEY (repo_id, date)
-    -- FOREIGN KEY (repo_id) REFERENCES repos(id)
-  );";
-  queries.push(qs);
-
-  let qs = "CREATE TABLE IF NOT EXISTS gh_traffic_paths (
-    repo_id INTEGER NOT NULL,
-    path TEXT NOT NULL,
-    title TEXT NOT NULL,
-    count INTEGER NOT NULL,
-    uniques INTEGER NOT NULL,
-    date TEXT NOT NULL,
-    PRIMARY KEY (repo_id, path, date)
-    -- FOREIGN KEY (repo_id) REFERENCES repos(id)
-  );";
-  queries.push(qs);
-
-  let qs = "CREATE TABLE IF NOT EXISTS gh_traffic_referrers (
-    repo_id INTEGER NOT NULL,
-    referrer TEXT NOT NULL,
-    count INTEGER NOT NULL,
-    uniques INTEGER NOT NULL,
-    date TEXT NOT NULL,
-    PRIMARY KEY (repo_id, referrer, date)
+    stars INTEGER NOT NULL DEFAULT 0,
+    forks INTEGER NOT NULL DEFAULT 0,
+    watchers INTEGER NOT NULL DEFAULT 0,
+    issues INTEGER NOT NULL DEFAULT 0,
+    clones_count INTEGER NOT NULL DEFAULT 0,
+    clones_uniques INTEGER NOT NULL DEFAULT 0,
+    views_count INTEGER NOT NULL DEFAULT 0,
+    views_uniques INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (id, date)
     -- FOREIGN KEY (repo_id) REFERENCES repos(id)
   );";
   queries.push(qs);
@@ -67,118 +40,150 @@ async fn migration_1(db: &SqlitePool) -> Res {
 pub async fn get_db(db_path: &str) -> Res<SqlitePool> {
   let opts = SqliteConnectOptions::new().filename(db_path).create_if_missing(true);
   let pool = SqlitePool::connect_with(opts).await?;
-  migration_1(&pool).await?;
+  migrate(&pool).await?;
   Ok(pool)
 }
 
-// MARK: DbClient
+// MARK: DTOs
 
-pub struct DbClient {
-  pool: SqlitePool,
+#[derive(Clone, FromRow, Debug)]
+pub struct RepoDto {
+  pub id: i64,
+  pub name: String,
 }
 
-impl DbClient {
-  pub async fn new(db_path: &str) -> Res<Self> {
-    let pool = get_db(db_path).await?;
-    Ok(Self { pool })
-  }
+#[derive(Clone, FromRow, Debug, Serialize, Deserialize)]
+pub struct RepoMetrics {
+  pub date: String,
+  pub stars: i32,
+  pub forks: i32,
+  pub watchers: i32,
+  pub issues: i32,
+  pub clones_count: i32,
+  pub clones_uniques: i32,
+  pub views_count: i32,
+  pub views_uniques: i32,
+}
 
-  pub async fn insert_repo(&self, repo: &Repo) -> Res<u64> {
-    let qs = "
-    INSERT INTO repos (repo_id, full_name) VALUES ($1, $2) ON CONFLICT DO NOTHING;
-    ";
+// MARK: Inserters
 
-    let _ = sqlx::query(qs) //
+pub async fn insert_stats(db: &SqlitePool, repo: &Repo) -> Res {
+  let qs = "
+  INSERT INTO repos (id, name)
+  VALUES ($1, $2)
+  ON CONFLICT(id) DO NOTHING;
+  ";
+
+  let _ = sqlx::query(qs).bind(repo.id as i64).bind(&repo.full_name).execute(db).await?;
+
+  let date = chrono::Utc::now().to_utc().to_rfc3339();
+  let date = date.split("T").next().unwrap().to_owned() + "T00:00:00Z";
+
+  let qs = "
+  INSERT INTO repo_stats AS t (id, date, stars, forks, watchers, issues)
+  VALUES ($1, $2, $3, $4, $5, $6)
+  ON CONFLICT(id, date) DO UPDATE SET
+    stars = MAX(t.stars, excluded.stars),
+    forks = MAX(t.forks, excluded.forks),
+    watchers = MAX(t.watchers, excluded.watchers),
+    issues = MAX(t.issues, excluded.issues);
+  ";
+
+  let _ = sqlx::query(qs)
+    .bind(repo.id as i64)
+    .bind(&date)
+    .bind(repo.stargazers_count as i32)
+    .bind(repo.forks_count as i32)
+    .bind(repo.watchers_count as i32)
+    .bind(repo.open_issues_count as i32)
+    .execute(db)
+    .await?;
+
+  Ok(())
+}
+
+pub async fn insert_clones(db: &SqlitePool, repo: &Repo, clones: &RepoClones) -> Res {
+  let qs = "
+  INSERT INTO repo_stats AS t (id, date, clones_count, clones_uniques)
+  VALUES ($1, $2, $3, $4)
+  ON CONFLICT(id, date) DO UPDATE SET
+    clones_count = MAX(t.clones_count, excluded.clones_count),
+    clones_uniques = MAX(t.clones_uniques, excluded.clones_uniques);
+  ";
+
+  for doc in &clones.clones {
+    let _ = sqlx::query(qs)
       .bind(repo.id as i64)
-      .bind(&repo.full_name)
-      .execute(&self.pool)
+      .bind(&doc.timestamp)
+      .bind(doc.count as i32)
+      .bind(doc.uniques as i32)
+      .execute(db)
       .await?;
-
-    Ok(repo.id)
   }
 
-  pub async fn insert_traffic_clones(&self, rid: u64, data: &TrafficClones) -> Res {
-    let qs = "
-    INSERT INTO gh_traffic_clones (repo_id, count, uniques, date)
-    VALUES ($1, $2, $3, $4)
-    ON CONFLICT(repo_id, date) DO UPDATE SET (count, uniques) = (excluded.count, excluded.uniques);
-    ";
+  Ok(())
+}
 
-    for clone in &data.clones {
-      let _ = sqlx::query(qs) //
-        .bind(rid as i64)
-        .bind(clone.count as i32)
-        .bind(clone.uniques as i32)
-        .bind(&clone.timestamp)
-        .execute(&self.pool)
-        .await?;
+pub async fn insert_views(db: &SqlitePool, repo: &Repo, views: &RepoViews) -> Res {
+  let qs = "
+  INSERT INTO repo_stats AS t (id, date, views_count, views_uniques)
+  VALUES ($1, $2, $3, $4)
+  ON CONFLICT(id, date) DO UPDATE SET
+    views_count = MAX(t.views_count, excluded.views_count),
+    views_uniques = MAX(t.views_uniques, excluded.views_uniques);
+  ";
+
+  for doc in &views.views {
+    let _ = sqlx::query(qs)
+      .bind(repo.id as i64)
+      .bind(&doc.timestamp)
+      .bind(doc.count as i32)
+      .bind(doc.uniques as i32)
+      .execute(db)
+      .await?;
+  }
+
+  Ok(())
+}
+
+// MARK: Getters
+
+pub async fn get_repos(db: &SqlitePool) -> Res<Vec<RepoDto>> {
+  let qs = "SELECT id, name FROM repos;";
+  let items = sqlx::query_as(qs).fetch_all(db).await?;
+  Ok(items)
+}
+
+pub async fn get_metrics(db: &SqlitePool, name: &str) -> Res<Vec<RepoMetrics>> {
+  let qs = "
+  SELECT * FROM repo_stats rs
+  INNER JOIN repos r ON r.id = rs.id
+  WHERE r.name = $1
+  ORDER BY rs.date ASC;
+  ";
+
+  let items = sqlx::query_as(qs).bind(name).fetch_all(db).await?;
+  Ok(items)
+}
+
+// MARK: Updater
+
+pub async fn update_metrics(db: &SqlitePool) -> Res {
+  let gh = crate::gh_client::GhClient::new().unwrap();
+
+  let repos = gh.get_repos("users/vladkens").await?;
+  for repo in repos {
+    if repo.fork || repo.archived {
+      continue;
     }
 
-    Ok(())
+    let views = gh.traffic_views(&repo.full_name).await?;
+    let clones = gh.traffic_clones(&repo.full_name).await?;
+
+    insert_stats(db, &repo).await?;
+    insert_views(db, &repo, &views).await?;
+    insert_clones(db, &repo, &clones).await?;
   }
 
-  pub async fn insert_traffic_views(&self, rid: u64, data: &TrafficViews) -> Res {
-    let qs = "
-    INSERT INTO gh_traffic_views (repo_id, count, uniques, date)
-    VALUES ($1, $2, $3, $4)
-    ON CONFLICT(repo_id, date) DO UPDATE SET (count, uniques) = (excluded.count, excluded.uniques);
-    ";
-
-    for view in &data.views {
-      let _ = sqlx::query(qs) //
-        .bind(rid as i64)
-        .bind(view.count as i32)
-        .bind(view.uniques as i32)
-        .bind(&view.timestamp)
-        .execute(&self.pool)
-        .await?;
-    }
-
-    Ok(())
-  }
-
-  pub async fn insert_traffic_paths(&self, rid: u64, items: &Vec<TrafficPath>) -> Res {
-    let qs = "
-    INSERT INTO gh_traffic_paths (repo_id, path, title, count, uniques, date)
-    VALUES ($1, $2, $3, $4, $5, $6)
-    ON CONFLICT(repo_id, path, date) DO UPDATE SET (title, count, uniques) = (excluded.title, excluded.count, excluded.uniques);
-    ";
-
-    let date = get_utc_hours().to_rfc3339();
-    for item in items {
-      let _ = sqlx::query(qs) //
-        .bind(rid as i64)
-        .bind(&item.path)
-        .bind(&item.title)
-        .bind(item.count as i32)
-        .bind(item.uniques as i32)
-        .bind(&date)
-        .execute(&self.pool)
-        .await?;
-    }
-
-    Ok(())
-  }
-
-  pub async fn insert_traffic_refs(&self, rid: u64, items: &Vec<TrafficRefferer>) -> Res {
-    let qs = "
-    INSERT INTO gh_traffic_referrers (repo_id, referrer, count, uniques, date)
-    VALUES ($1, $2, $3, $4, $5)
-    ON CONFLICT(repo_id, referrer, date) DO UPDATE SET (count, uniques) = (excluded.count, excluded.uniques);
-    ";
-
-    let date = get_utc_hours().to_rfc3339();
-    for item in items {
-      let _ = sqlx::query(qs) //
-        .bind(rid as i64)
-        .bind(&item.referrer)
-        .bind(item.count as i32)
-        .bind(item.uniques as i32)
-        .bind(&date)
-        .execute(&self.pool)
-        .await?;
-    }
-
-    Ok(())
-  }
+  Ok(())
 }

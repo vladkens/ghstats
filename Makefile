@@ -1,2 +1,2 @@
 dev:
-	cargo watch -x 'run -r'
+	cargo watch -x 'run'
