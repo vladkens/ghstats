@@ -35,7 +35,7 @@ const renderStars = (canvasId, stars) => {
       },
       plugins: {
         legend: { display: false },
-        // title: { display: false, text: 'Stars' },
+        title: { display: true, text: 'Stars', font: { size: 20 }, align: 'start' },
       },
     },
     data: {

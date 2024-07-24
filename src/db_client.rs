@@ -209,13 +209,13 @@ INNER JOIN (
 
 pub async fn get_repo_totals(db: &SqlitePool, repo: &str) -> Res<RepoMetrics> {
   let qs = format!("{} WHERE r.name = $1;", TOTAL_QUERY);
-
   let item = sqlx::query_as(qs.as_str()).bind(repo).fetch_one(db).await?;
   Ok(item)
 }
 
 pub async fn get_repos(db: &SqlitePool) -> Res<Vec<RepoMetrics>> {
-  let items = sqlx::query_as(TOTAL_QUERY).fetch_all(db).await?;
+  let qs = format!("{} ORDER BY stars DESC", TOTAL_QUERY);
+  let items = sqlx::query_as(qs.as_str()).fetch_all(db).await?;
   Ok(items)
 }
 
@@ -255,5 +255,8 @@ pub async fn get_stars(db: &SqlitePool, name: &str) -> Res<Vec<RepoStars>> {
     prev_stars = item.stars;
   }
 
+  // in case when data start to be collected for exist repo with some stats
+  // view and clone stats can be collected without stars, so remove them
+  let items = items.into_iter().filter(|x| x.stars > 0).collect();
   Ok(items)
 }

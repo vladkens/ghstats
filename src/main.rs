@@ -133,8 +133,7 @@ async fn repo_page(
 async fn index(State(state): State<Arc<AppState>>) -> HtmlRes {
   let db = &state.db;
 
-  let mut repos = db_client::get_repos(db).await?;
-  repos.sort_by(|a, b| b.stars.cmp(&a.stars));
+  let repos = db_client::get_repos(db).await?;
 
   let cols: Vec<(&str, Box<dyn Fn(&RepoMetrics) -> Markup>)> = vec![
     ("Name", Box::new(|x| html!(a href=(format!("/{}", x.name)) { (x.name) }))),
