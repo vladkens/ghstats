@@ -29,13 +29,14 @@ const renderStars = (canvasId, stars) => {
     type: 'line',
     options: {
       responsive: true,
+      maintainAspectRatio: false,
       scales: {
         x: { stacked: true },
         y: { beginAtZero: true },
       },
       plugins: {
         legend: { display: false },
-        title: { display: true, text: 'Stars', font: { size: 20 }, align: 'start' },
+        title: { display: false, text: 'Stars', font: { size: 20 }, align: 'start' },
       },
     },
     data: {

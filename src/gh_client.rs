@@ -40,7 +40,7 @@ pub struct RepoViews {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct TrafficPath {
+pub struct RepoPopularPath {
   pub path: String,
   pub title: String,
   pub count: u32,
@@ -48,7 +48,7 @@ pub struct TrafficPath {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
-pub struct TrafficRefferer {
+pub struct RepoReferrer {
   pub referrer: String,
   pub count: u32,
   pub uniques: u32,
@@ -75,13 +75,15 @@ impl GhClient {
     Ok(GhClient { client, base_url })
   }
 
-  pub async fn get_repos(&self, org: &str) -> Res<Vec<Repo>> {
-    let url = format!("{}/{}/repos?type=public,private&per_page=100", self.base_url, org);
+  // https://docs.github.com/en/rest/repos/repos?apiVersion=2022-11-28#list-repositories-for-the-authenticated-user
+  pub async fn get_repos(&self) -> Res<Vec<Repo>> {
+    let url = format!("{}/user/repos?type=owner&per_page=100", self.base_url);
     let rep = self.client.get(url).send().await?.error_for_status()?;
     let dat = rep.json::<Vec<Repo>>().await?;
     Ok(dat)
   }
 
+  // https://docs.github.com/en/rest/metrics/traffic?apiVersion=2022-11-28
   pub async fn traffic_clones(&self, repo: &str) -> Res<RepoClones> {
     let url = format!("{}/repos/{}/traffic/clones", self.base_url, repo);
     let rep = self.client.get(url).send().await?.error_for_status()?;
@@ -96,17 +98,17 @@ impl GhClient {
     Ok(dat)
   }
 
-  pub async fn traffic_paths(&self, repo: &str) -> Res<Vec<TrafficPath>> {
+  pub async fn traffic_paths(&self, repo: &str) -> Res<Vec<RepoPopularPath>> {
     let url = format!("{}/repos/{}/traffic/popular/paths", self.base_url, repo);
     let rep = self.client.get(url).send().await?.error_for_status()?;
-    let dat = rep.json::<Vec<TrafficPath>>().await?;
+    let dat = rep.json::<Vec<RepoPopularPath>>().await?;
     Ok(dat)
   }
 
-  pub async fn traffic_refs(&self, repo: &str) -> Res<Vec<TrafficRefferer>> {
+  pub async fn traffic_refs(&self, repo: &str) -> Res<Vec<RepoReferrer>> {
     let url = format!("{}/repos/{}/traffic/popular/referrers", self.base_url, repo);
     let rep = self.client.get(url).send().await?.error_for_status()?;
-    let dat = rep.json::<Vec<TrafficRefferer>>().await?;
+    let dat = rep.json::<Vec<RepoReferrer>>().await?;
     Ok(dat)
   }
 }

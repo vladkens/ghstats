@@ -7,7 +7,10 @@ use maud::{html, Markup, PreEscaped};
 use sqlx::SqlitePool;
 use thousands::Separable;
 
-use db_client::{get_db, get_metrics, get_repo_totals, get_stars, update_metrics, RepoMetrics};
+use db_client::{
+  get_db, get_metrics, get_popular_items, get_repo_totals, get_repos, get_stars, update_deltas,
+  update_metrics, RepoMetrics,
+};
 use gh_client::GhClient;
 use utils::{HtmlRes, Res};
 
@@ -60,7 +63,7 @@ fn base(navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
                   li {
                     @if let Some(url) = url {
                       a href=(url) { (name) }
-                    } else {
+                    } @else {
                       (name)
                     }
                   }
@@ -80,6 +83,45 @@ fn base(navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
   )
 }
 
+#[derive(Debug)]
+struct TablePopularItem {
+  item: (String, Option<String>), // title, url
+  uniques: i64,
+  count: i64,
+}
+
+fn popular_table(items: &Vec<TablePopularItem>, name: &str) -> Markup {
+  html!(
+    article class="p-0 mb-0 table-popular" {
+      table class="mb-0" {
+        thead {
+          tr {
+            th scope="col" class="" { (name) }
+            th scope="col" class="text-right" { "Count" }
+            th scope="col" class="text-right" { "Uniques" }
+          }
+        }
+
+        tbody {
+          @for item in items {
+            tr {
+              td class="" {
+                @if let Some(url) = &item.item.1 {
+                  a href=(url) { (item.item.0) }
+                } @else {
+                  (item.item.0)
+                }
+              }
+              td class="text-right" { (item.count.separate_with_commas()) }
+              td class="text-right" { (item.uniques.separate_with_commas()) }
+            }
+          }
+        }
+      }
+    }
+  )
+}
+
 async fn repo_page(
   State(state): State<Arc<AppState>>,
   Path((user, name)): Path<(String, String)>,
@@ -90,10 +132,34 @@ async fn repo_page(
   let stars = get_stars(db, &repo).await?;
   let totals = get_repo_totals(db, &repo).await?;
 
+  let repo_popular_refs = get_popular_items(db, "repo_referrers", &repo).await?;
+  let repo_popular_refs: Vec<TablePopularItem> = repo_popular_refs
+    .into_iter()
+    .map(|x| TablePopularItem { item: (x.name, None), uniques: x.uniques, count: x.count })
+    .collect();
+
+  let repo_popular_path = get_popular_items(db, "repo_popular_paths", &repo).await?;
+  let repo_popular_path: Vec<TablePopularItem> = repo_popular_path
+    .into_iter()
+    .map(|x| {
+      let prefix = format!("/{}", repo);
+      let mut name = x.name.replace(&prefix, "");
+      if name.is_empty() {
+        name = "/".to_string();
+      }
+
+      TablePopularItem {
+        item: (name, Some(format!("https://github.com{}", x.name))),
+        uniques: x.uniques,
+        count: x.count,
+      }
+    })
+    .collect();
+
   let html = html!(
-    div class="flex gap-4 max-h-96" {
-      div class="flex flex-col w-1/3 gap-4" {
-        article class="h-2/3 m-0" {
+    div class="grid" style="grid-template-columns: 1fr 2fr;" {
+      div class="grid" style="grid-template-rows: 2fr 1fr; grid-template-columns: 1fr;" {
+        article class="mb-0" {
           hgroup class="flex flex-col gap-2" {
             h3 {
               a href=(format!("https://github.com/{}", repo)) class="contrast no-underline" { (totals.name) }
@@ -102,22 +168,29 @@ async fn repo_page(
           }
         }
 
-        div class="flex h-1/3 gap-4 m-0" {
-          article class="w-1/2" {
-            h6 { "Clones" }
-            p { (totals.clones_count.separate_with_commas()) }
+        div class="grid" {
+          article class="flex-col" {
+            h6 class="mb-0" { "Total Clones" }
+            h4 class="mb-0 grow flex items-center" {
+              (totals.clones_uniques.separate_with_commas())
+              " / "
+              (totals.clones_count.separate_with_commas())
+            }
           }
-
-          article class="w-1/2" {
-            h6 { "Views" }
-            p { (totals.views_count.separate_with_commas()) }
+          article class="flex-col" {
+            h6 class="mb-0" { "Total Views" }
+            h4 class="mb-0 grow flex items-center" {
+              (totals.views_uniques.separate_with_commas())
+              " / "
+              (totals.views_count.separate_with_commas())
+            }
           }
         }
       }
 
-      article class="w-2/3" {
-        // h6 { "Stars" }
-        canvas id="chart_stars" {}
+      article class="flex-col" {
+        h6 { "Stars" }
+        div class="grow" { canvas id="chart_stars" {} }
       }
     }
 
@@ -137,6 +210,11 @@ async fn repo_page(
       "renderMetrics('chart_clones', Metrics, 'clones_uniques', 'clones_count');"
       "renderMetrics('chart_views', Metrics, 'views_uniques', 'views_count');"
       "renderStars('chart_stars', Stars);"
+    }
+
+    div class="grid" {
+      (popular_table(&repo_popular_refs, "Referring sites"))
+      (popular_table(&repo_popular_path, "Popular content"))
     }
   );
 
@@ -187,6 +265,17 @@ async fn health() -> impl IntoResponse {
 async fn start_cron(state: Arc<AppState>) -> Res {
   use tokio_cron_scheduler::{Job, JobScheduler};
 
+  update_deltas(&state.db).await?;
+
+  // if new db, update metrics immediately
+  let repos = get_repos(&state.db).await?;
+  if repos.len() == 0 {
+    match update_metrics(&state.db, &state.gh).await {
+      Err(e) => tracing::error!("error updating metrics: {:?}", e),
+      Ok(_) => {}
+    }
+  }
+
   // https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api?apiVersion=2022-11-28
   // >> All of these requests count towards your personal rate limit of 5,000 requests per hour.
 
@@ -198,8 +287,8 @@ async fn start_cron(state: Arc<AppState>) -> Res {
     let state = state.clone();
     Box::pin(async move {
       match update_metrics(&state.db, &state.gh).await {
-        Ok(_) => tracing::info!("metrics updated"),
         Err(e) => tracing::error!("error updating metrics: {:?}", e),
+        Ok(_) => {}
       }
     })
   })?;
