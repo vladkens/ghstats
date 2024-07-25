@@ -1,0 +1,27 @@
+name: build
+
+on:
+  push:
+    branches: 'main'
+
+jobs:
+  build:
+    permissions:
+      contents: read
+      packages: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+
+      - name: build & push
+        env:
+          USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          echo ${GHCR_TOKEN} | docker login ghcr.io -u ${USERNAME} --password-stdin
+          docker buildx build --push \
+            --cache-from=type=gha --cache-to=type=gha,mode=max \
+            --platform linux/amd64 \
+            -t ghcr.io/${USERNAME}/ghstats:main .
