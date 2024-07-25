@@ -187,6 +187,9 @@ async fn health() -> impl IntoResponse {
 async fn start_cron(state: Arc<AppState>) -> Res {
   use tokio_cron_scheduler::{Job, JobScheduler};
 
+  // https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api?apiVersion=2022-11-28
+  // >> All of these requests count towards your personal rate limit of 5,000 requests per hour.
+
   // https://docs.github.com/en/repositories/viewing-activity-and-data-for-your-repository/viewing-traffic-to-a-repository
   // >> Full clones and visitor information update hourly, while referring sites and popular content sections update daily.
 
