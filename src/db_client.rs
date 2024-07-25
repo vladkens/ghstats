@@ -2,7 +2,7 @@ use anyhow::Ok;
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteConnectOptions, FromRow, SqlitePool};
 
-use crate::gh_client::{Repo, RepoClones, RepoViews};
+use crate::gh_client::{GhClient, Repo, RepoClones, RepoViews};
 use crate::utils::Res;
 
 async fn migrate(db: &SqlitePool) -> Res {
@@ -93,11 +93,8 @@ pub async fn insert_repo(db: &SqlitePool, repo: &Repo) -> Res {
   Ok(())
 }
 
-pub async fn insert_stats(db: &SqlitePool, repo: &Repo) -> Res {
+pub async fn insert_stats(db: &SqlitePool, repo: &Repo, date: &str) -> Res {
   insert_repo(db, repo).await?;
-
-  let date = chrono::Utc::now().to_utc().to_rfc3339();
-  let date = date.split("T").next().unwrap().to_owned() + "T00:00:00Z";
 
   let qs = "
   INSERT INTO repo_stats AS t (id, date, stars, forks, watchers, issues)
@@ -168,8 +165,9 @@ pub async fn insert_views(db: &SqlitePool, repo: &Repo, views: &RepoViews) -> Re
 
 // MARK: Updater
 
-pub async fn update_metrics(db: &SqlitePool) -> Res {
-  let gh = crate::gh_client::GhClient::new().unwrap();
+pub async fn update_metrics(db: &SqlitePool, gh: &GhClient) -> Res {
+  let date = chrono::Utc::now().to_utc().to_rfc3339();
+  let date = date.split("T").next().unwrap().to_owned() + "T00:00:00Z";
 
   let repos = gh.get_repos("users/vladkens").await?;
   for repo in repos {
@@ -180,7 +178,7 @@ pub async fn update_metrics(db: &SqlitePool) -> Res {
     let views = gh.traffic_views(&repo.full_name).await?;
     let clones = gh.traffic_clones(&repo.full_name).await?;
 
-    insert_stats(db, &repo).await?;
+    insert_stats(db, &repo, &date).await?;
     insert_views(db, &repo, &views).await?;
     insert_clones(db, &repo, &clones).await?;
   }

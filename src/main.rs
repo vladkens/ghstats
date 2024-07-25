@@ -1,14 +1,14 @@
 use std::sync::Arc;
 
-use axum::{
-  extract::{Path, State},
-  routing::get,
-  Router,
-};
-use db_client::{get_db, get_metrics, get_repo_totals, get_stars, RepoMetrics};
+use axum::extract::{Path, State};
+use axum::routing::get;
+use axum::{http::StatusCode, response::IntoResponse, Router};
 use maud::{html, Markup, PreEscaped};
 use sqlx::SqlitePool;
 use thousands::Separable;
+
+use db_client::{get_db, get_metrics, get_repo_totals, get_stars, update_metrics, RepoMetrics};
+use gh_client::GhClient;
 use utils::{HtmlRes, Res};
 
 mod db_client;
@@ -17,6 +17,19 @@ mod utils;
 
 struct AppState {
   db: SqlitePool,
+  gh: GhClient,
+}
+
+impl AppState {
+  async fn new() -> Res<Self> {
+    let gh_token = std::env::var("GITHUB_TOKEN")?;
+    let db_path = std::env::var("DB_PATH").unwrap_or("ghstats.db".to_string());
+
+    let db = get_db(&db_path).await?;
+    let gh = GhClient::new(gh_token)?;
+
+    Ok(Self { db, gh })
+  }
 }
 
 fn icon_link(name: &str, url: &str) -> Markup {
@@ -166,21 +179,62 @@ async fn index(State(state): State<Arc<AppState>>) -> HtmlRes {
   Ok(base(vec![], html))
 }
 
+async fn health() -> impl IntoResponse {
+  let msg = serde_json::json!({ "status": "ok" });
+  (StatusCode::OK, axum::response::Json(msg))
+}
+
+async fn start_cron(state: Arc<AppState>) -> Res {
+  use tokio_cron_scheduler::{Job, JobScheduler};
+
+  // https://docs.github.com/en/repositories/viewing-activity-and-data-for-your-repository/viewing-traffic-to-a-repository
+  // >> Full clones and visitor information update hourly, while referring sites and popular content sections update daily.
+
+  // last minute of every hour
+  let job = Job::new_async("0 59 * * * *", move |_, _| {
+    let state = state.clone();
+    Box::pin(async move {
+      match update_metrics(&state.db, &state.gh).await {
+        Ok(_) => tracing::info!("metrics updated"),
+        Err(e) => tracing::error!("error updating metrics: {:?}", e),
+      }
+    })
+  })?;
+
+  let runner = JobScheduler::new().await?;
+  runner.start().await?;
+  runner.add(job).await?;
+
+  Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Res {
+  use tower_http::trace::{self, TraceLayer};
+  use tracing::Level;
+
   dotenv::dotenv().ok();
+  tracing_subscriber::fmt().with_target(false).compact().init();
 
-  let db = get_db("demo.db").await?;
-  // db_client::update_metrics(&db).await?;
+  let router = Router::new()
+    .route("/health", get(health))
+    .route("/", get(index))
+    .route("/:user/:name", get(repo_page));
 
-  let state = Arc::new(AppState { db });
-  let app =
-    Router::new().route("/", get(index)).route("/:user/:name", get(repo_page)).with_state(state);
+  let router = router.layer(
+    TraceLayer::new_for_http()
+      .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
+      .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
+  );
 
-  let address = "127.0.0.1:8080";
-  let listener = tokio::net::TcpListener::bind(address).await.unwrap();
-  println!("Listening on http://{}", address);
-  axum::serve(listener, app.into_make_service()).await.unwrap();
+  let state = Arc::new(AppState::new().await?);
+  let service = router.with_state(state.clone()).into_make_service();
+  start_cron(state.clone()).await?;
+
+  let addr = "127.0.0.1:8080";
+  let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+  tracing::info!("listening on {}", addr);
+  axum::serve(listener, service).await.unwrap();
 
   Ok(())
 }

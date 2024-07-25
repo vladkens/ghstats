@@ -62,9 +62,7 @@ pub struct GhClient {
 }
 
 impl GhClient {
-  pub fn new() -> Res<GhClient> {
-    let token = std::env::var("GITHUB_TOKEN")?;
-
+  pub fn new(token: String) -> Res<GhClient> {
     let mut headers = HeaderMap::new();
     headers.insert("Accept", HeaderValue::from_static("application/vnd.github+json"));
     headers.insert("X-GitHub-Api-Version", HeaderValue::from_static("2022-11-28"));
