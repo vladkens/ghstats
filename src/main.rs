@@ -20,7 +20,8 @@ struct AppState {
 impl AppState {
   async fn new() -> Res<Self> {
     let gh_token = std::env::var("GITHUB_TOKEN")?;
-    let db_path = std::env::var("DB_PATH").unwrap_or("ghstats.db".to_string());
+    let db_path = std::env::var("DB_PATH").unwrap_or("./data/ghstats.db".to_string());
+    tracing::info!("db_path: {}", db_path);
 
     let db = DbClient::new(&db_path).await?;
     let gh = GhClient::new(gh_token)?;
@@ -61,6 +62,8 @@ async fn update_metrics(db: &DbClient, gh: &GhClient) -> Res {
 
 async fn start_cron(state: Arc<AppState>) -> Res {
   use tokio_cron_scheduler::{Job, JobScheduler};
+
+  state.db.update_deltas().await?;
 
   // if new db, update metrics immediately
   let repos = state.db.get_repos().await?;
@@ -119,7 +122,7 @@ async fn main() -> Res {
   let service = router.with_state(state.clone()).into_make_service();
   start_cron(state.clone()).await?;
 
-  let addr = "127.0.0.1:8080";
+  let addr = "0.0.0.0:8080";
   let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
   tracing::info!("listening on {}", addr);
   axum::serve(listener, service).await.unwrap();

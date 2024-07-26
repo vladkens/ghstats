@@ -6,10 +6,10 @@ on:
 
 jobs:
   build:
+    runs-on: ubuntu-latest
     permissions:
       contents: read
       packages: write
-    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-qemu-action@v3
@@ -23,6 +23,7 @@ jobs:
         run: |
           echo ${GHCR_TOKEN} | docker login ghcr.io -u ${USERNAME} --password-stdin
           docker buildx build --push \
+            --cache-from=type=gha --cache-to=type=gha,mode=max \
             --platform linux/amd64 \
             -t ghcr.io/${USERNAME}/ghstats:main .
 
@@ -35,5 +36,6 @@ jobs:
           ref="$(echo ${{ github.ref}} | cut -d'/' -f3)"
           echo ${GHCR_TOKEN} | docker login ghcr.io -u ${USERNAME} --password-stdin
           docker buildx build --push \
+            --cache-from=type=gha --cache-to=type=gha,mode=max \
             --platform linux/amd64 \
             -t ghcr.io/${USERNAME}/ghstats:${ref} -t ghcr.io/${USERNAME}/ghstats:latest .
