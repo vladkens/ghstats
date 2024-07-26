@@ -2,8 +2,10 @@ use anyhow::Ok;
 use serde::{Deserialize, Serialize};
 use sqlx::{sqlite::SqliteConnectOptions, FromRow, SqlitePool};
 
-use crate::gh_client::{GhClient, Repo, RepoClones, RepoPopularPath, RepoReferrer, RepoViews};
+use crate::gh_client::{Repo, RepoClones, RepoPopularPath, RepoReferrer, RepoViews};
 use crate::utils::Res;
+
+// MARK: Migrations
 
 async fn migrate(db: &SqlitePool) -> Res {
   let mut queries = vec![];
@@ -103,213 +105,7 @@ pub struct RepoPopularItem {
   pub uniques: i64,
 }
 
-// MARK: Inserters
-
-pub async fn insert_repo(db: &SqlitePool, repo: &Repo) -> Res {
-  let qs = "
-  INSERT INTO repos (id, name, description, archived)
-  VALUES ($1, $2, $3, $4)
-  ON CONFLICT(id) DO UPDATE SET
-    name = excluded.name,
-    description = excluded.description,
-    archived = excluded.archived;
-  ";
-
-  let _ = sqlx::query(qs)
-    .bind(repo.id as i64)
-    .bind(&repo.full_name)
-    .bind(&repo.description)
-    .bind(repo.archived)
-    .execute(db)
-    .await?;
-
-  Ok(())
-}
-
-pub async fn insert_stats(db: &SqlitePool, repo: &Repo, date: &str) -> Res {
-  insert_repo(db, repo).await?;
-
-  let qs = "
-  INSERT INTO repo_stats AS t (repo_id, date, stars, forks, watchers, issues)
-  VALUES ($1, $2, $3, $4, $5, $6)
-  ON CONFLICT(repo_id, date) DO UPDATE SET
-    stars = MAX(t.stars, excluded.stars),
-    forks = MAX(t.forks, excluded.forks),
-    watchers = MAX(t.watchers, excluded.watchers),
-    issues = MAX(t.issues, excluded.issues);
-  ";
-
-  let _ = sqlx::query(qs)
-    .bind(repo.id as i64)
-    .bind(&date)
-    .bind(repo.stargazers_count as i32)
-    .bind(repo.forks_count as i32)
-    .bind(repo.watchers_count as i32)
-    .bind(repo.open_issues_count as i32)
-    .execute(db)
-    .await?;
-
-  Ok(())
-}
-
-pub async fn insert_clones(db: &SqlitePool, repo: &Repo, clones: &RepoClones) -> Res {
-  let qs = "
-  INSERT INTO repo_stats AS t (repo_id, date, clones_count, clones_uniques)
-  VALUES ($1, $2, $3, $4)
-  ON CONFLICT(repo_id, date) DO UPDATE SET
-    clones_count = MAX(t.clones_count, excluded.clones_count),
-    clones_uniques = MAX(t.clones_uniques, excluded.clones_uniques);
-  ";
-
-  for doc in &clones.clones {
-    let _ = sqlx::query(qs)
-      .bind(repo.id as i64)
-      .bind(&doc.timestamp)
-      .bind(doc.count as i32)
-      .bind(doc.uniques as i32)
-      .execute(db)
-      .await?;
-  }
-
-  Ok(())
-}
-
-pub async fn insert_views(db: &SqlitePool, repo: &Repo, views: &RepoViews) -> Res {
-  let qs = "
-  INSERT INTO repo_stats AS t (repo_id, date, views_count, views_uniques)
-  VALUES ($1, $2, $3, $4)
-  ON CONFLICT(repo_id, date) DO UPDATE SET
-    views_count = MAX(t.views_count, excluded.views_count),
-    views_uniques = MAX(t.views_uniques, excluded.views_uniques);
-  ";
-
-  for doc in &views.views {
-    let _ = sqlx::query(qs)
-      .bind(repo.id as i64)
-      .bind(&doc.timestamp)
-      .bind(doc.count as i32)
-      .bind(doc.uniques as i32)
-      .execute(db)
-      .await?;
-  }
-
-  Ok(())
-}
-
-pub async fn insert_referrers(
-  db: &SqlitePool,
-  repo: &Repo,
-  date: &str,
-  records: &Vec<RepoReferrer>,
-) -> Res {
-  let qs = "
-  INSERT INTO repo_referrers AS t (repo_id, date, referrer, count, uniques)
-  VALUES ($1, $2, $3, $4, $5)
-  ON CONFLICT(repo_id, date, referrer) DO UPDATE SET
-    count = MAX(t.count, excluded.count),
-    uniques = MAX(t.uniques, excluded.uniques);
-  ";
-
-  for rec in records {
-    let _ = sqlx::query(qs)
-      .bind(repo.id as i64)
-      .bind(&date)
-      .bind(&rec.referrer)
-      .bind(rec.count as i32)
-      .bind(rec.uniques as i32)
-      .execute(db)
-      .await?;
-  }
-
-  Ok(())
-}
-
-pub async fn insert_popular_paths(
-  db: &SqlitePool,
-  repo: &Repo,
-  date: &str,
-  records: &Vec<RepoPopularPath>,
-) -> Res {
-  let qs = "
-  INSERT INTO repo_popular_paths AS t (repo_id, date, path, title, count, uniques)
-  VALUES ($1, $2, $3, $4, $5, $6)
-  ON CONFLICT(repo_id, date, path) DO UPDATE SET
-    count = MAX(t.count, excluded.count),
-    uniques = MAX(t.uniques, excluded.uniques);
-  ";
-
-  for rec in records {
-    let _ = sqlx::query(qs)
-      .bind(repo.id as i64)
-      .bind(&date)
-      .bind(&rec.path)
-      .bind(&rec.title)
-      .bind(rec.count as i32)
-      .bind(rec.uniques as i32)
-      .execute(db)
-      .await?;
-  }
-
-  Ok(())
-}
-
-// MARK: Updater
-
-pub async fn update_deltas(db: &SqlitePool) -> Res {
-  let stime = std::time::Instant::now();
-  let items = [("repo_referrers", "referrer"), ("repo_popular_paths", "path")];
-
-  for (table, col) in items {
-    #[rustfmt::skip]
-    let qs = format!("
-    WITH cte AS (
-    SELECT
-      rr.repo_id, rr.date, rr.{col}, rr.uniques, rr.count,
-      LAG(rr.uniques) OVER (PARTITION BY rr.repo_id, rr.{col} ORDER BY rr.date) AS prev_uniques,
-      LAG(rr.count) OVER (PARTITION BY rr.repo_id, rr.{col} ORDER BY rr.date) AS prev_count
-    FROM {table} rr
-    )
-    UPDATE {table} AS rr	SET
-      uniques_delta = MAX(0, cte.uniques - COALESCE(cte.prev_uniques, 0)),
-      count_delta = MAX(0, cte.count - COALESCE(cte.prev_count, 0))
-    FROM cte
-    WHERE rr.repo_id = cte.repo_id AND rr.date = cte.date AND rr.{col} = cte.{col};
-    ");
-
-    let _ = sqlx::query(qs.as_str()).execute(db).await?;
-  }
-
-  tracing::info!("update_deltas took {:?}", stime.elapsed());
-  Ok(())
-}
-
-pub async fn update_metrics(db: &SqlitePool, gh: &GhClient) -> Res {
-  let stime = std::time::Instant::now();
-
-  let date = chrono::Utc::now().to_utc().to_rfc3339();
-  let date = date.split("T").next().unwrap().to_owned() + "T00:00:00Z";
-
-  let repos = gh.get_repos().await?;
-  for repo in repos {
-    let views = gh.traffic_views(&repo.full_name).await?;
-    let clones = gh.traffic_clones(&repo.full_name).await?;
-    let referrers = gh.traffic_refs(&repo.full_name).await?;
-    let popular_paths = gh.traffic_paths(&repo.full_name).await?;
-
-    insert_stats(db, &repo, &date).await?;
-    insert_views(db, &repo, &views).await?;
-    insert_clones(db, &repo, &clones).await?;
-    insert_referrers(db, &repo, &date, &referrers).await?;
-    insert_popular_paths(db, &repo, &date, &popular_paths).await?;
-  }
-
-  tracing::info!("update_metrics took {:?}", stime.elapsed());
-  update_deltas(&db).await?;
-
-  Ok(())
-}
-
-// MARK: Getters
+// MARK: DbClient
 
 const TOTAL_QUERY: &'static str = "
 SELECT * FROM repos r
@@ -328,78 +124,257 @@ INNER JOIN (
 ) rs ON rs.repo_id = r.id
 ";
 
-pub async fn get_repo_totals(db: &SqlitePool, repo: &str) -> Res<RepoMetrics> {
-  let qs = format!("{} WHERE r.name = $1;", TOTAL_QUERY);
-  let item = sqlx::query_as(qs.as_str()).bind(repo).fetch_one(db).await?;
-  Ok(item)
+pub struct DbClient {
+  db: SqlitePool,
 }
 
-pub async fn get_repos(db: &SqlitePool) -> Res<Vec<RepoMetrics>> {
-  let qs = format!("{} ORDER BY views_count DESC", TOTAL_QUERY);
-  let items = sqlx::query_as(qs.as_str()).fetch_all(db).await?;
-  Ok(items)
-}
-
-pub async fn get_metrics(db: &SqlitePool, name: &str) -> Res<Vec<RepoMetrics>> {
-  let qs = "
-  SELECT * FROM repo_stats rs
-  INNER JOIN repos r ON r.id = rs.repo_id
-  WHERE r.name = $1
-  ORDER BY rs.date ASC;
-  ";
-
-  let items = sqlx::query_as(qs).bind(name).fetch_all(db).await?;
-  Ok(items)
-}
-
-pub async fn get_stars(db: &SqlitePool, name: &str) -> Res<Vec<RepoStars>> {
-  let qs = "
-  SELECT date, stars FROM repo_stats rs
-  INNER JOIN repos r ON r.id = rs.repo_id
-  WHERE r.name = $1
-  ORDER BY rs.date ASC;
-  ";
-
-  let mut items: Vec<RepoStars> = sqlx::query_as(qs).bind(name).fetch_all(db).await?;
-
-  // restore gaps in data
-  let mut prev_stars = 0;
-  for (idx, item) in items.iter_mut().enumerate() {
-    if idx == 0 {
-      continue;
-    }
-
-    if item.stars == 0 {
-      item.stars = prev_stars;
-    }
-
-    prev_stars = item.stars;
+impl DbClient {
+  pub async fn new(db_path: &str) -> Res<Self> {
+    let db = get_db(db_path).await?;
+    Ok(Self { db })
   }
 
-  // in case when data start to be collected for exist repo with some stats
-  // view and clone stats can be collected without stars, so remove them
-  let items = items.into_iter().filter(|x| x.stars > 0).collect();
-  Ok(items)
-}
+  // MARK: Getters
 
-pub async fn get_popular_items(
-  db: &SqlitePool,
-  table: &str,
-  repo: &str,
-) -> Res<Vec<RepoPopularItem>> {
-  let items = [("repo_referrers", "referrer"), ("repo_popular_paths", "path")];
-  let (table, col) = items.iter().find(|x| x.0 == table).unwrap();
+  pub async fn get_repo_totals(&self, repo: &str) -> Res<RepoMetrics> {
+    let qs = format!("{} WHERE r.name = $1;", TOTAL_QUERY);
+    let item = sqlx::query_as(qs.as_str()).bind(repo).fetch_one(&self.db).await?;
+    Ok(item)
+  }
 
-  #[rustfmt::skip]
-  let qs = format!("
-  SELECT {col} as name, SUM(count_delta) AS count, SUM(uniques_delta) AS uniques
-  FROM {table} rr
-  INNER JOIN repos r ON r.id = rr.repo_id
-  WHERE r.name = $1
-  GROUP BY rr.{col}
-  ORDER BY rr.uniques DESC;
-  ");
+  pub async fn get_metrics(&self, name: &str) -> Res<Vec<RepoMetrics>> {
+    let qs = "
+    SELECT * FROM repo_stats rs
+    INNER JOIN repos r ON r.id = rs.repo_id
+    WHERE r.name = $1
+    ORDER BY rs.date ASC;
+    ";
 
-  let items = sqlx::query_as(&qs).bind(repo).fetch_all(db).await?;
-  Ok(items)
+    let items = sqlx::query_as(qs).bind(name).fetch_all(&self.db).await?;
+    Ok(items)
+  }
+
+  pub async fn get_repos(&self) -> Res<Vec<RepoMetrics>> {
+    let qs = format!("{} ORDER BY views_count DESC", TOTAL_QUERY);
+    let items = sqlx::query_as(qs.as_str()).fetch_all(&self.db).await?;
+    Ok(items)
+  }
+
+  pub async fn get_stars(&self, repo: &str) -> Res<Vec<RepoStars>> {
+    let qs = "
+    SELECT date, stars FROM repo_stats rs
+    INNER JOIN repos r ON r.id = rs.repo_id
+    WHERE r.name = $1
+    ORDER BY rs.date ASC;
+    ";
+
+    let mut items: Vec<RepoStars> = sqlx::query_as(qs).bind(repo).fetch_all(&self.db).await?;
+
+    // restore gaps in data
+    let mut prev_stars = 0;
+    for (idx, item) in items.iter_mut().enumerate() {
+      if idx == 0 {
+        continue;
+      }
+
+      if item.stars == 0 {
+        item.stars = prev_stars;
+      }
+
+      prev_stars = item.stars;
+    }
+
+    // in case when data start to be collected for exist repo with some stats
+    // view and clone stats can be collected without stars, so remove them
+    let items = items.into_iter().filter(|x| x.stars > 0).collect();
+    Ok(items)
+  }
+
+  pub async fn get_popular_items(&self, table: &str, repo: &str) -> Res<Vec<RepoPopularItem>> {
+    let items = [("repo_referrers", "referrer"), ("repo_popular_paths", "path")];
+    let (table, col) = items.iter().find(|x| x.0 == table).unwrap();
+
+    #[rustfmt::skip]
+    let qs = format!("
+    SELECT {col} as name, SUM(count_delta) AS count, SUM(uniques_delta) AS uniques
+    FROM {table} rr
+    INNER JOIN repos r ON r.id = rr.repo_id
+    WHERE r.name = $1
+    GROUP BY rr.{col}
+    ORDER BY rr.uniques DESC;
+    ");
+
+    let items = sqlx::query_as(&qs).bind(repo).fetch_all(&self.db).await?;
+    Ok(items)
+  }
+
+  // MARK: Inserters
+
+  pub async fn insert_repo(&self, repo: &Repo) -> Res {
+    let qs = "
+    INSERT INTO repos (id, name, description, archived)
+    VALUES ($1, $2, $3, $4)
+    ON CONFLICT(id) DO UPDATE SET
+      name = excluded.name,
+      description = excluded.description,
+      archived = excluded.archived;
+    ";
+
+    let _ = sqlx::query(qs)
+      .bind(repo.id as i64)
+      .bind(&repo.full_name)
+      .bind(&repo.description)
+      .bind(repo.archived)
+      .execute(&self.db)
+      .await?;
+
+    Ok(())
+  }
+
+  pub async fn insert_stats(&self, repo: &Repo, date: &str) -> Res {
+    self.insert_repo(repo).await?;
+
+    let qs = "
+    INSERT INTO repo_stats AS t (repo_id, date, stars, forks, watchers, issues)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    ON CONFLICT(repo_id, date) DO UPDATE SET
+      stars = MAX(t.stars, excluded.stars),
+      forks = MAX(t.forks, excluded.forks),
+      watchers = MAX(t.watchers, excluded.watchers),
+      issues = MAX(t.issues, excluded.issues);
+    ";
+
+    let _ = sqlx::query(qs)
+      .bind(repo.id as i64)
+      .bind(&date)
+      .bind(repo.stargazers_count as i32)
+      .bind(repo.forks_count as i32)
+      .bind(repo.watchers_count as i32)
+      .bind(repo.open_issues_count as i32)
+      .execute(&self.db)
+      .await?;
+
+    Ok(())
+  }
+
+  pub async fn insert_clones(&self, repo: &Repo, clones: &RepoClones) -> Res {
+    let qs = "
+    INSERT INTO repo_stats AS t (repo_id, date, clones_count, clones_uniques)
+    VALUES ($1, $2, $3, $4)
+    ON CONFLICT(repo_id, date) DO UPDATE SET
+      clones_count = MAX(t.clones_count, excluded.clones_count),
+      clones_uniques = MAX(t.clones_uniques, excluded.clones_uniques);
+    ";
+
+    for doc in &clones.clones {
+      let _ = sqlx::query(qs)
+        .bind(repo.id as i64)
+        .bind(&doc.timestamp)
+        .bind(doc.count as i32)
+        .bind(doc.uniques as i32)
+        .execute(&self.db)
+        .await?;
+    }
+
+    Ok(())
+  }
+
+  pub async fn insert_views(&self, repo: &Repo, views: &RepoViews) -> Res {
+    let qs = "
+    INSERT INTO repo_stats AS t (repo_id, date, views_count, views_uniques)
+    VALUES ($1, $2, $3, $4)
+    ON CONFLICT(repo_id, date) DO UPDATE SET
+      views_count = MAX(t.views_count, excluded.views_count),
+      views_uniques = MAX(t.views_uniques, excluded.views_uniques);
+    ";
+
+    for doc in &views.views {
+      let _ = sqlx::query(qs)
+        .bind(repo.id as i64)
+        .bind(&doc.timestamp)
+        .bind(doc.count as i32)
+        .bind(doc.uniques as i32)
+        .execute(&self.db)
+        .await?;
+    }
+
+    Ok(())
+  }
+
+  pub async fn insert_referrers(&self, repo: &Repo, date: &str, docs: &Vec<RepoReferrer>) -> Res {
+    let qs = "
+    INSERT INTO repo_referrers AS t (repo_id, date, referrer, count, uniques)
+    VALUES ($1, $2, $3, $4, $5)
+    ON CONFLICT(repo_id, date, referrer) DO UPDATE SET
+      count = MAX(t.count, excluded.count),
+      uniques = MAX(t.uniques, excluded.uniques);
+    ";
+
+    for rec in docs {
+      let _ = sqlx::query(qs)
+        .bind(repo.id as i64)
+        .bind(&date)
+        .bind(&rec.referrer)
+        .bind(rec.count as i32)
+        .bind(rec.uniques as i32)
+        .execute(&self.db)
+        .await?;
+    }
+
+    Ok(())
+  }
+
+  pub async fn insert_paths(&self, repo: &Repo, date: &str, docs: &Vec<RepoPopularPath>) -> Res {
+    let qs = "
+    INSERT INTO repo_popular_paths AS t (repo_id, date, path, title, count, uniques)
+    VALUES ($1, $2, $3, $4, $5, $6)
+    ON CONFLICT(repo_id, date, path) DO UPDATE SET
+      count = MAX(t.count, excluded.count),
+      uniques = MAX(t.uniques, excluded.uniques);
+    ";
+
+    for rec in docs {
+      let _ = sqlx::query(qs)
+        .bind(repo.id as i64)
+        .bind(&date)
+        .bind(&rec.path)
+        .bind(&rec.title)
+        .bind(rec.count as i32)
+        .bind(rec.uniques as i32)
+        .execute(&self.db)
+        .await?;
+    }
+
+    Ok(())
+  }
+
+  // MARK: Updater
+
+  pub async fn update_deltas(&self) -> Res {
+    let stime = std::time::Instant::now();
+    let items = [("repo_referrers", "referrer"), ("repo_popular_paths", "path")];
+
+    for (table, col) in items {
+      #[rustfmt::skip]
+      let qs = format!("
+      WITH cte AS (
+      SELECT
+        rr.repo_id, rr.date, rr.{col}, rr.uniques, rr.count,
+        LAG(rr.uniques) OVER (PARTITION BY rr.repo_id, rr.{col} ORDER BY rr.date) AS prev_uniques,
+        LAG(rr.count) OVER (PARTITION BY rr.repo_id, rr.{col} ORDER BY rr.date) AS prev_count
+      FROM {table} rr
+      )
+      UPDATE {table} AS rr	SET
+        uniques_delta = MAX(0, cte.uniques - COALESCE(cte.prev_uniques, 0)),
+        count_delta = MAX(0, cte.count - COALESCE(cte.prev_count, 0))
+      FROM cte
+      WHERE rr.repo_id = cte.repo_id AND rr.date = cte.date AND rr.{col} = cte.{col};
+      ");
+
+      let _ = sqlx::query(qs.as_str()).execute(&self.db).await?;
+    }
+
+    tracing::info!("update_deltas took {:?}", stime.elapsed());
+    Ok(())
+  }
 }

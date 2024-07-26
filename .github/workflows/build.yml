@@ -15,13 +15,25 @@ jobs:
       - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
 
-      - name: build & push
+      - name: build & push (main)
+        if: ${{ github.ref == 'refs/heads/main' }}
         env:
           USERNAME: ${{ github.actor }}
           GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           echo ${GHCR_TOKEN} | docker login ghcr.io -u ${USERNAME} --password-stdin
           docker buildx build --push \
-            --cache-from=type=gha --cache-to=type=gha,mode=max \
             --platform linux/amd64 \
             -t ghcr.io/${USERNAME}/ghstats:main .
+
+      - name: build & push (tag)
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        env:
+          USERNAME: ${{ github.actor }}
+          GHCR_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          ref="$(echo ${{ github.ref}} | cut -d'/' -f3)"
+          echo ${GHCR_TOKEN} | docker login ghcr.io -u ${USERNAME} --password-stdin
+          docker buildx build --push \
+            --platform linux/amd64 \
+            -t ghcr.io/${USERNAME}/ghstats:${ref} -t ghcr.io/${USERNAME}/ghstats:latest .

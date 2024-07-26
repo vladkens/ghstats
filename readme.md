@@ -1,6 +1,15 @@
 # ghstats
 
-`ghstats` is open-source & self-hosted dashboard for tracking GitHub repos traffic history longer than 14 days.
+[<img src="https://badgen.net/github/release/vladkens/ghstats" alt="version" />](https://github.com/vladkens/ghstats/releases)
+[<img src="https://badgen.net/github/license/vladkens/ghstats" alt="license" />](https://github.com/vladkens/ghstats/blob/main/LICENSE)
+[<img src="https://badgen.net/static/-/buy%20me%20a%20coffee/ff813f?icon=buymeacoffee&label" alt="donate" />](https://buymeacoffee.com/vladkens)
+
+<div align="center">
+  Self-hosted dashboard for tracking GitHub repos traffic history longer than 14 days.
+  <br />
+  <br />
+  <img src=".github/ghstats.png" alt="ghstats preview" />
+</div>
 
 ### Usage
 
