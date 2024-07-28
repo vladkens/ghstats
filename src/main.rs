@@ -19,7 +19,14 @@ struct AppState {
 
 impl AppState {
   async fn new() -> Res<Self> {
-    let gh_token = std::env::var("GITHUB_TOKEN")?;
+    let gh_token = match std::env::var("GITHUB_TOKEN") {
+      Ok(token) => token,
+      Err(err) => {
+        tracing::error!("missing GITHUB_TOKEN: {:?}", err);
+        std::process::exit(1);
+      }
+    };
+
     let db_path = std::env::var("DB_PATH").unwrap_or("./data/ghstats.db".to_string());
     tracing::info!("db_path: {}", db_path);
 
@@ -104,7 +111,7 @@ async fn main() -> Res {
   use tower_http::trace::{self, TraceLayer};
   use tracing::Level;
 
-  dotenv::dotenv().ok();
+  dotenvy::dotenv().ok();
   tracing_subscriber::fmt().with_target(false).compact().init();
 
   let router = Router::new()
