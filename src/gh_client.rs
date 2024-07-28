@@ -63,11 +63,16 @@ pub struct GhClient {
 
 impl GhClient {
   pub fn new(token: String) -> Res<GhClient> {
+    let user_agent = format!("{}/{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+
+    let mut auth_header = HeaderValue::from_str(&format!("Bearer {}", token))?;
+    auth_header.set_sensitive(true);
+
     let mut headers = HeaderMap::new();
     headers.insert("Accept", HeaderValue::from_static("application/vnd.github+json"));
     headers.insert("X-GitHub-Api-Version", HeaderValue::from_static("2022-11-28"));
-    headers.insert("Authorization", HeaderValue::from_str(format!("Bearer {}", token).as_str())?);
-    headers.insert("User-Agent", "reqwest".parse()?);
+    headers.insert("Authorization", auth_header);
+    headers.insert("User-Agent", HeaderValue::from_str(&user_agent)?);
 
     let client = reqwest::Client::builder().default_headers(headers).build()?;
     let base_url = "https://api.github.com".to_string();
@@ -77,10 +82,28 @@ impl GhClient {
 
   // https://docs.github.com/en/rest/repos/repos?apiVersion=2022-11-28#list-repositories-for-the-authenticated-user
   pub async fn get_repos(&self) -> Res<Vec<Repo>> {
-    let url = format!("{}/user/repos?type=owner&per_page=100", self.base_url);
-    let rep = self.client.get(url).send().await?.error_for_status()?;
-    let dat = rep.json::<Vec<Repo>>().await?;
-    Ok(dat)
+    let mut items: Vec<Repo> = vec![];
+    let mut page = 1;
+
+    loop {
+      let url = format!("{}/user/repos?type=owner&per_page=100&page={}", self.base_url, page);
+      let rep = self.client.get(url).send().await?.error_for_status()?;
+
+      let link = match rep.headers().get("link") {
+        Some(l) => l.to_str().unwrap().to_string(),
+        None => "".to_string(),
+      };
+
+      let dat = rep.json::<Vec<Repo>>().await?;
+      items.extend(dat);
+
+      match link.contains(r#"rel="next""#) {
+        true => page += 1,
+        false => break,
+      }
+    }
+
+    Ok(items)
   }
 
   // https://docs.github.com/en/rest/metrics/traffic?apiVersion=2022-11-28
