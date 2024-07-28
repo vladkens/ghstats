@@ -23,6 +23,7 @@ jobs:
           echo ${GHCR_TOKEN} | docker login ghcr.io -u ${USERNAME} --password-stdin
           docker buildx build --push \
             --cache-from=type=gha --cache-to=type=gha,mode=max \
+            --cache-from=ghcr.io/${USERNAME}/ghstats:main \
             --platform linux/amd64,linux/arm64 \
             -t ghcr.io/${USERNAME}/ghstats:main .
 
@@ -36,6 +37,7 @@ jobs:
           echo ${GHCR_TOKEN} | docker login ghcr.io -u ${USERNAME} --password-stdin
           docker buildx build --push \
             --cache-from=type=gha --cache-to=type=gha,mode=max \
+            --cache-from=ghcr.io/${USERNAME}/ghstats:main \
             --platform linux/amd64,linux/arm64 \
             -t ghcr.io/${USERNAME}/ghstats:${ref} -t ghcr.io/${USERNAME}/ghstats:latest .
 
