@@ -97,13 +97,18 @@ fn popular_table(items: &Vec<TablePopularItem>, name: &str) -> Markup {
 
 pub async fn repo_page(
   State(state): State<Arc<AppState>>,
-  Path((user, name)): Path<(String, String)>,
+  Path((owner, repo)): Path<(String, String)>,
 ) -> HtmlRes {
   let db = &state.db;
-  let repo = format!("{}/{}", user, name);
+  let repo = format!("{}/{}", owner, repo);
+
+  let totals = match db.get_repo_totals(&repo).await? {
+    Some(x) => x,
+    None => return Ok(base(vec![], html!(h1 { "Repo not found" }))),
+  };
+
   let metrics = db.get_metrics(&repo).await?;
   let stars = db.get_stars(&repo).await?;
-  let totals = db.get_repo_totals(&repo).await?;
 
   let repo_popular_refs = db.get_popular_items("repo_referrers", &repo).await?;
   let repo_popular_refs: Vec<TablePopularItem> = repo_popular_refs

@@ -117,7 +117,7 @@ async fn main() -> Res {
   let router = Router::new()
     .route("/health", get(health))
     .route("/", get(pages::index))
-    .route("/:user/:name", get(pages::repo_page));
+    .route("/:owner/:repo", get(pages::repo_page));
 
   let router = router.layer(
     TraceLayer::new_for_http()

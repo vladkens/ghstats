@@ -136,9 +136,9 @@ impl DbClient {
 
   // MARK: Getters
 
-  pub async fn get_repo_totals(&self, repo: &str) -> Res<RepoMetrics> {
+  pub async fn get_repo_totals(&self, repo: &str) -> Res<Option<RepoMetrics>> {
     let qs = format!("{} WHERE r.name = $1;", TOTAL_QUERY);
-    let item = sqlx::query_as(qs.as_str()).bind(repo).fetch_one(&self.db).await?;
+    let item = sqlx::query_as(qs.as_str()).bind(repo).fetch_optional(&self.db).await?;
     Ok(item)
   }
 
