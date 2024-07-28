@@ -2,13 +2,12 @@ name: build
 
 on:
   push:
-    branches: 'main'
 
 jobs:
   build:
     runs-on: ubuntu-latest
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@v4
@@ -24,7 +23,7 @@ jobs:
           echo ${GHCR_TOKEN} | docker login ghcr.io -u ${USERNAME} --password-stdin
           docker buildx build --push \
             --cache-from=type=gha --cache-to=type=gha,mode=max \
-            --platform linux/amd64 \
+            --platform linux/amd64,linux/arm64 \
             -t ghcr.io/${USERNAME}/ghstats:main .
 
       - name: build & push (tag)
@@ -37,5 +36,11 @@ jobs:
           echo ${GHCR_TOKEN} | docker login ghcr.io -u ${USERNAME} --password-stdin
           docker buildx build --push \
             --cache-from=type=gha --cache-to=type=gha,mode=max \
-            --platform linux/amd64 \
+            --platform linux/amd64,linux/arm64 \
             -t ghcr.io/${USERNAME}/ghstats:${ref} -t ghcr.io/${USERNAME}/ghstats:latest .
+
+      - name: Create Github Release
+        if: ${{ startsWith(github.ref, 'refs/tags/') }}
+        uses: softprops/action-gh-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

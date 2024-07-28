@@ -15,7 +15,7 @@
 
 - Collect & store traffic metrics for all your repos
 - List of repos and informative dashboard for each
-- No React / Next / Postres etc, just single and small Docker image (20MB) & SQLite
+- No React / Next / Postgres etc, just single and small Docker image (20MB) & SQLite
 
 ### 🚀 Usage
 
