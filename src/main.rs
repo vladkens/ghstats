@@ -129,8 +129,11 @@ async fn main() -> Res {
   let service = router.with_state(state.clone()).into_make_service();
   start_cron(state.clone()).await?;
 
-  let addr = "0.0.0.0:8080";
-  let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+  let host = std::env::var("HOST").unwrap_or("127.0.0.1".to_string());
+  let port = std::env::var("PORT").unwrap_or("8080".to_string());
+  let addr = format!("{}:{}", host, port);
+
+  let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
   tracing::info!("listening on {}", addr);
   axum::serve(listener, service).await.unwrap();
 

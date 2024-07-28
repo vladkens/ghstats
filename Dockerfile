@@ -13,5 +13,7 @@ LABEL org.opencontainers.image.source https://github.com/vladkens/ghstats
 COPY --from=builder /app/target/release/ghstats /app/ghstats
 
 WORKDIR /app
+ENV HOST=0.0.0.0
+ENV PORT=8080
 EXPOSE 8080
 CMD ["/app/ghstats"]
