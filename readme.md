@@ -11,13 +11,13 @@
   <img src="https://github.com/vladkens/ghstats/blob/assets/preview.png?raw=true" alt="ghstats preview" />
 </div>
 
-### 🌟 Features
+## 🌟 Features
 
 - Collect & store traffic metrics for all your repos
 - List of repos and informative dashboard for each
 - No React / Next / Postgres etc, just single and small Docker image (20MB) & SQLite
 
-### 🚀 Usage
+## 🚀 Usage
 
 ```sh
 docker run -d --env-file .env -p 8080:8080 -v ./data:/app/data --name ghstats ghcr.io/vladkens/ghstats:latest
@@ -40,7 +40,7 @@ services:
       - ./data:/app/data
 ```
 
-#### Github token generation
+### Github token generation
 
 `ghstats` need Github Token to collect traffic data from API. Token can be obtained with following steps:
 
@@ -50,6 +50,10 @@ services:
 4. Click genereate token & copy it
 5. Save token to `.env` file with name `GITHUB_TOKEN=???`
 
-### 🤝 Contributing
+## 🤝 Contributing
 
 All contributions are welcome! Feel free to open an issue or submit a pull request.
+
+## 🔍 See also
+
+- [repohistory](https://github.com/repohistory/repohistory) – NodeJS application as a service.
