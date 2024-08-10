@@ -245,19 +245,29 @@ impl DbClient {
     Ok(items)
   }
 
-  pub async fn get_popular_items(&self, table: &str, repo: &str) -> Res<Vec<RepoPopularItem>> {
+  pub async fn get_popular_items(
+    &self,
+    table: &str,
+    repo: &str,
+    granularity: i32,
+  ) -> Res<Vec<RepoPopularItem>> {
     let items = [("repo_referrers", "referrer"), ("repo_popular_paths", "path")];
     let (table, col) = items.iter().find(|x| x.0 == table).unwrap();
+
+    let time_where = match granularity {
+      x if x > 0 => format!("date >= date('now', '-{} day')", x),
+      _ => "1=1".to_string(),
+    };
 
     #[rustfmt::skip]
     let qs = format!("
     SELECT {col} as name, SUM(count_delta) AS count, SUM(uniques_delta) AS uniques
     FROM {table} rr
     INNER JOIN repos r ON r.id = rr.repo_id
-    WHERE r.name = $1
+    WHERE r.name = $1 AND {}
     GROUP BY rr.{col}
     ORDER BY rr.uniques DESC;
-    ");
+    ", time_where);
 
     let items = sqlx::query_as(&qs).bind(repo).fetch_all(&self.db).await?;
     Ok(items)
