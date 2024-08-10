@@ -41,8 +41,12 @@
 .mr-0 { margin-right: 0; }
 .mb-0 { margin-bottom: 0; }
 .ml-0 { margin-left: 0; }
+.ml-1 { margin-left: 0.25rem; }
+.ml-0\.5 { margin-left: 0.125rem; }
 .no-underline { text-decoration: none; }
 .text-center { text-align: center; }
 .text-left { text-align: left; }
 .text-right { text-align: right; }
 .font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+.cursor-pointer { cursor: pointer; }
+.select-none { user-select: none; }

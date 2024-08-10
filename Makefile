@@ -1,5 +1,5 @@
 dev:
-	cargo watch -x 'run'
+	cargo watch -q -w 'src' -x 'run'
 
 docker-build:
 	docker build -t ghstats .

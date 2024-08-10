@@ -1,5 +1,6 @@
 use anyhow::Ok;
 use serde::{Deserialize, Serialize};
+use serde_variant::to_variant_name;
 use sqlx::{sqlite::SqliteConnectOptions, FromRow, SqlitePool};
 
 use crate::gh_client::{Repo, RepoClones, RepoPopularPath, RepoReferrer, RepoViews};
@@ -105,6 +106,60 @@ pub struct RepoPopularItem {
   pub uniques: i64,
 }
 
+// MARK: Filters
+
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum Direction {
+  Asc,
+  Desc,
+}
+
+impl Default for Direction {
+  fn default() -> Self {
+    Direction::Desc
+  }
+}
+
+impl std::fmt::Display for Direction {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}", to_variant_name(self).unwrap())
+  }
+}
+
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum RepoSort {
+  Name,
+  Stars,
+  Forks,
+  Watchers,
+  Issues,
+  #[serde(rename = "clones_count")]
+  Clones,
+  #[serde(rename = "views_count")]
+  Views,
+}
+
+impl Default for RepoSort {
+  fn default() -> Self {
+    RepoSort::Views
+  }
+}
+
+impl std::fmt::Display for RepoSort {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}", to_variant_name(self).unwrap())
+  }
+}
+
+#[derive(Debug, Deserialize, Serialize, Default)]
+#[serde(default)]
+pub struct RepoFilter {
+  pub sort: RepoSort,
+  pub direction: Direction,
+}
+
 // MARK: DbClient
 
 const TOTAL_QUERY: &'static str = "
@@ -154,8 +209,8 @@ impl DbClient {
     Ok(items)
   }
 
-  pub async fn get_repos(&self) -> Res<Vec<RepoMetrics>> {
-    let qs = format!("{} ORDER BY views_count DESC", TOTAL_QUERY);
+  pub async fn get_repos(&self, filter: &RepoFilter) -> Res<Vec<RepoMetrics>> {
+    let qs = format!("{} ORDER BY {} {}", TOTAL_QUERY, filter.sort, filter.direction);
     let items = sqlx::query_as(qs.as_str()).fetch_all(&self.db).await?;
     Ok(items)
   }

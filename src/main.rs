@@ -8,7 +8,7 @@ mod gh_client;
 mod pages;
 mod utils;
 
-use db_client::DbClient;
+use db_client::{DbClient, RepoFilter};
 use gh_client::GhClient;
 use utils::Res;
 
@@ -73,7 +73,7 @@ async fn start_cron(state: Arc<AppState>) -> Res {
   state.db.update_deltas().await?;
 
   // if new db, update metrics immediately
-  let repos = state.db.get_repos().await?;
+  let repos = state.db.get_repos(&RepoFilter::default()).await?;
   if repos.len() == 0 {
     match update_metrics(&state.db, &state.gh).await {
       Err(e) => tracing::error!("error updating metrics: {:?}", e),
@@ -112,7 +112,11 @@ async fn main() -> Res {
   use tracing::Level;
 
   dotenvy::dotenv().ok();
-  tracing_subscriber::fmt().with_target(false).compact().init();
+  tracing_subscriber::fmt() //
+    .with_target(false)
+    // .compact()
+    // .with_max_level(Level::TRACE)
+    .init();
 
   let router = Router::new()
     .route("/health", get(health))

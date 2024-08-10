@@ -1,10 +1,10 @@
 use std::sync::Arc;
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, Request, State};
 use maud::{html, Markup, PreEscaped};
 use thousands::Separable;
 
-use crate::db_client::RepoMetrics;
+use crate::db_client::{Direction, RepoFilter, RepoMetrics, RepoSort};
 use crate::utils::HtmlRes;
 use crate::AppState;
 
@@ -13,6 +13,15 @@ struct TablePopularItem {
   item: (String, Option<String>), // title, url
   uniques: i64,
   count: i64,
+}
+
+fn maybe_url(item: &(String, Option<String>)) -> Markup {
+  let (name, url) = item;
+
+  match url {
+    Some(url) => html!(a href=(url) { (name) }),
+    None => html!(span { (name) }),
+  }
 }
 
 fn base(navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
@@ -24,6 +33,7 @@ fn base(navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
         link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2.0.6/css/pico.min.css" {}
         link rel="stylesheet" href="https://unpkg.com/simple-icons-font@v13/font/simple-icons.min.css" {}
         script src="https://unpkg.com/chart.js@4.4.3/dist/chart.umd.js" {}
+        script src="https://unpkg.com/htmx.org@2.0.1" {}
         style { (PreEscaped(include_str!("app.css"))) }
       }
       body {
@@ -32,14 +42,8 @@ fn base(navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
             nav aria-label="breadcrumb" {
               ul {
                 li { a href="/" { "Repos" } }
-                @for (name, url) in navs {
-                  li {
-                    @if let Some(url) = url {
-                      a href=(url) { (name) }
-                    } @else {
-                      (name)
-                    }
-                  }
+                @for item in navs {
+                  li { (maybe_url(&item)) }
                 }
               }
             }
@@ -78,13 +82,7 @@ fn popular_table(items: &Vec<TablePopularItem>, name: &str) -> Markup {
         tbody {
           @for item in items {
             tr {
-              td class="" {
-                @if let Some(url) = &item.item.1 {
-                  a href=(url) { (item.item.0) }
-                } @else {
-                  (item.item.0)
-                }
-              }
+              td class="" { (maybe_url(&item.item)) }
               td class="text-right" { (item.count.separate_with_commas()) }
               td class="text-right" { (item.uniques.separate_with_commas()) }
             }
@@ -199,37 +197,77 @@ pub async fn repo_page(
   Ok(base(vec![(repo, None)], html))
 }
 
-pub async fn index(State(state): State<Arc<AppState>>) -> HtmlRes {
-  let db = &state.db;
-  let repos = db.get_repos().await?;
+// https://docs.rs/axum/latest/axum/extract/index.html#common-extractors
+pub async fn index(State(state): State<Arc<AppState>>, req: Request) -> HtmlRes {
+  let hx_req = match req.headers().get("hx-request") {
+    Some(x) => x.to_str().unwrap_or_default() == "true",
+    None => false,
+  };
 
-  let cols: Vec<(&str, Box<dyn Fn(&RepoMetrics) -> Markup>)> = vec![
-    ("Name", Box::new(|x| html!(a href=(format!("/{}", x.name)) { (x.name) }))),
-    ("Issues", Box::new(|x| html!((x.issues.separate_with_commas())))),
-    ("Forks", Box::new(|x| html!((x.forks.separate_with_commas())))),
-    ("Stars", Box::new(|x| html!((x.stars.separate_with_commas())))),
-    ("Clones", Box::new(|x| html!((x.clones_count.separate_with_commas())))),
-    ("Views", Box::new(|x| html!((x.views_count.separate_with_commas())))),
+  let hx_target = match req.headers().get("hx-target") {
+    Some(x) => x.to_str().unwrap_or_default(),
+    None => "",
+  };
+
+  // let qs: Query<HashMap<String, String>> = Query::try_from_uri(req.uri())?;
+  let qs: Query<RepoFilter> = Query::try_from_uri(req.uri())?;
+
+  let db = &state.db;
+  let repos = db.get_repos(&qs).await?;
+
+  let cols: Vec<(&str, Box<dyn Fn(&RepoMetrics) -> Markup>, RepoSort)> = vec![
+    ("Name", Box::new(|x| html!(a href=(format!("/{}", x.name)) { (x.name) })), RepoSort::Name),
+    ("Issues", Box::new(|x| html!((x.issues.separate_with_commas()))), RepoSort::Issues),
+    ("Forks", Box::new(|x| html!((x.forks.separate_with_commas()))), RepoSort::Forks),
+    ("Stars", Box::new(|x| html!((x.stars.separate_with_commas()))), RepoSort::Stars),
+    ("Clones", Box::new(|x| html!((x.clones_count.separate_with_commas()))), RepoSort::Clones),
+    ("Views", Box::new(|x| html!((x.views_count.separate_with_commas()))), RepoSort::Views),
   ];
 
-  let html = html!(table {
-    thead {
-      tr {
-        @for col in &cols {
-          th scope="col" { (col.0) }
+  fn filter_url(qs: &RepoFilter, col: &RepoSort) -> String {
+    let dir = match qs.sort == *col && qs.direction == Direction::Asc {
+      true => "desc",
+      false => "asc",
+    };
+
+    format!("/?sort={}&direction={}", col, dir)
+  }
+
+  let html = html!(
+      table id="repos_table" {
+        thead {
+          tr {
+            @for col in &cols {
+              th scope="col" class="cursor-pointer select-none"
+                hx-trigger="click"
+                hx-get=(filter_url(&qs, &col.2))
+                hx-target="#repos_table"
+                {
+                  (col.0)
+                  @if col.2 == qs.sort {
+                    span class="ml-0.5" {
+                      @if qs.direction == Direction::Asc { "↑" } @else { "↓" }
+                    }
+                  }
+                }
+            }
+          }
         }
-      }
-    }
-    tbody {
-      @for repo in &repos {
-        tr {
-          @for col in &cols {
-            td { ((col.1)(&repo)) }
+        tbody {
+          @for repo in &repos {
+            tr {
+              @for col in &cols {
+                td { ((col.1)(&repo)) }
+              }
+            }
           }
         }
       }
-    }
-  });
+  );
+
+  if hx_req && hx_target == "repos_table" {
+    return Ok(html);
+  }
 
   Ok(base(vec![], html))
 }
