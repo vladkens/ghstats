@@ -295,8 +295,8 @@ pub async fn index(State(state): State<Arc<AppState>>, req: Request) -> HtmlRes 
     ("Name", Box::new(|x| html!(a href=(format!("/{}", x.name)) { (x.name) })), RepoSort::Name),
     ("Issues", Box::new(|x| html!((x.issues.separate_with_commas()))), RepoSort::Issues),
     ("Forks", Box::new(|x| html!((x.forks.separate_with_commas()))), RepoSort::Forks),
-    ("Stars", Box::new(|x| html!((x.stars.separate_with_commas()))), RepoSort::Stars),
     ("Clones", Box::new(|x| html!((x.clones_count.separate_with_commas()))), RepoSort::Clones),
+    ("Stars", Box::new(|x| html!((x.stars.separate_with_commas()))), RepoSort::Stars),
     ("Views", Box::new(|x| html!((x.views_count.separate_with_commas()))), RepoSort::Views),
   ];
 
