@@ -135,4 +135,13 @@ impl GhClient {
     let dat = rep.json::<Vec<RepoReferrer>>().await?;
     Ok(dat)
   }
+
+  pub async fn get_latest_release_ver(&self, repo: &str) -> Res<String> {
+    let url = format!("{}/repos/{}/releases/latest", self.base_url, repo);
+    let rep = self.client.get(url).send().await?.error_for_status()?;
+    let dat = rep.json::<serde_json::Value>().await?;
+    let ver = dat["tag_name"].as_str().unwrap().to_string();
+    let ver = ver.trim_start_matches("v").to_string();
+    Ok(ver)
+  }
 }

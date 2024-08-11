@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use axum::routing::get;
 use axum::{http::StatusCode, response::IntoResponse, Router};
@@ -15,24 +15,25 @@ use utils::Res;
 struct AppState {
   db: DbClient,
   gh: GhClient,
+  last_release: Mutex<String>,
 }
 
 impl AppState {
   async fn new() -> Res<Self> {
-    let gh_token = match std::env::var("GITHUB_TOKEN") {
-      Ok(token) => token,
-      Err(err) => {
-        tracing::error!("missing GITHUB_TOKEN: {:?}", err);
-        std::process::exit(1);
-      }
-    };
+    let gh_token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
+    if gh_token.is_empty() {
+      tracing::error!("missing GITHUB_TOKEN");
+      std::process::exit(1);
+    }
 
     let db_path = std::env::var("DB_PATH").unwrap_or("./data/ghstats.db".to_string());
     tracing::info!("db_path: {}", db_path);
 
     let db = DbClient::new(&db_path).await?;
     let gh = GhClient::new(gh_token)?;
-    Ok(Self { db, gh })
+
+    let last_release = Mutex::new(env!("CARGO_PKG_VERSION").to_string());
+    Ok(Self { db, gh, last_release })
   }
 }
 
@@ -63,10 +64,10 @@ async fn update_metrics(db: &DbClient, gh: &GhClient) -> Res {
   let date = date.split("T").next().unwrap().to_owned() + "T00:00:00Z";
 
   let repos = gh.get_repos().await?;
-  for repo in repos {
+  for repo in &repos {
     match update_repo_metrics(db, gh, &repo, &date).await {
       Err(e) => {
-        tracing::warn!("error updating metrics for {}: {:?}", repo.full_name, e);
+        tracing::warn!("failed to update metrics for {}: {:?}", repo.full_name, e);
         continue;
       }
       // Ok(_) => tracing::info!("updated metrics for {}", repo.full_name),
@@ -74,8 +75,19 @@ async fn update_metrics(db: &DbClient, gh: &GhClient) -> Res {
     }
   }
 
-  tracing::info!("update_metrics took {:?}", stime.elapsed());
+  tracing::info!("update_metrics took {:?} for {} repos", stime.elapsed(), repos.len());
   db.update_deltas().await?;
+
+  Ok(())
+}
+
+async fn check_new_release(state: Arc<AppState>) -> Res {
+  let tag = state.gh.get_latest_release_ver("vladkens/ghstats").await?;
+  let mut last_tag = state.last_release.lock().unwrap();
+  if *last_tag != tag {
+    tracing::info!("new release available: {} -> {}", *last_tag, tag);
+    *last_tag = tag.clone();
+  }
 
   Ok(())
 }
@@ -83,15 +95,16 @@ async fn update_metrics(db: &DbClient, gh: &GhClient) -> Res {
 async fn start_cron(state: Arc<AppState>) -> Res {
   use tokio_cron_scheduler::{Job, JobScheduler};
 
-  state.db.update_deltas().await?;
-
   // if new db, update metrics immediately
   let repos = state.db.get_repos(&RepoFilter::default()).await?;
   if repos.len() == 0 {
+    tracing::info!("no repos found, load initial metrics");
     match update_metrics(&state.db, &state.gh).await {
-      Err(e) => tracing::error!("error updating metrics: {:?}", e),
+      Err(e) => tracing::error!("failed to update metrics: {:?}", e),
       Ok(_) => {}
     }
+  } else {
+    state.db.update_deltas().await?;
   }
 
   // https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api?apiVersion=2022-11-28
@@ -104,8 +117,10 @@ async fn start_cron(state: Arc<AppState>) -> Res {
   let job = Job::new_async("0 59 * * * *", move |_, _| {
     let state = state.clone();
     Box::pin(async move {
+      let _ = check_new_release(state.clone()).await;
+
       match update_metrics(&state.db, &state.gh).await {
-        Err(e) => tracing::error!("error updating metrics: {:?}", e),
+        Err(e) => tracing::error!("failed to update metrics: {:?}", e),
         Ok(_) => {}
       }
     })
@@ -127,9 +142,12 @@ async fn main() -> Res {
   dotenvy::dotenv().ok();
   tracing_subscriber::fmt() //
     .with_target(false)
-    // .compact()
+    .compact()
     // .with_max_level(Level::TRACE)
     .init();
+
+  let brand = format!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+  tracing::info!("{}", brand);
 
   let router = Router::new()
     .route("/health", get(health))

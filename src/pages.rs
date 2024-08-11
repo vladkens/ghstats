@@ -33,8 +33,11 @@ fn maybe_url(item: &(String, Option<String>)) -> Markup {
   }
 }
 
-fn base(navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
+fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
   let brand = format!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+
+  let last_release = state.last_release.lock().unwrap().clone();
+  let is_new_release = last_release != env!("CARGO_PKG_VERSION");
 
   html!(
     html {
@@ -58,6 +61,12 @@ fn base(navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
             }
 
             div class="flex items-center gap-2" {
+              @if is_new_release {
+                a href=(format!("https://github.com/vladkens/ghstats/releases/tag/v{last_release}"))
+                  target="_blank" class="no-underline"
+                  data-tooltip="New release available!" data-placement="bottom" { "🚨" }
+              }
+
               a href="https://github.com/vladkens/ghstats"
                 class="secondary flex items-center gap-2 no-underline font-mono"
                 style="font-size: 18px;"
@@ -209,7 +218,7 @@ pub async fn repo_page(
 
   let totals = match db.get_repo_totals(&repo).await? {
     Some(x) => x,
-    None => return Ok(base(vec![], html!(h1 { "Repo not found" }))),
+    None => return Ok(base(&state, vec![], html!(h1 { "Repo not found" }))),
   };
 
   let metrics = db.get_metrics(&repo).await?;
@@ -280,7 +289,7 @@ pub async fn repo_page(
     (repo_popular_tables(db, &repo, &qs).await?)
   );
 
-  Ok(base(vec![(repo, None)], html))
+  Ok(base(&state, vec![(repo, None)], html))
 }
 
 // https://docs.rs/axum/latest/axum/extract/index.html#common-extractors
@@ -347,5 +356,5 @@ pub async fn index(State(state): State<Arc<AppState>>, req: Request) -> HtmlRes 
     _ => {}
   }
 
-  Ok(base(vec![], html))
+  Ok(base(&state, vec![], html))
 }

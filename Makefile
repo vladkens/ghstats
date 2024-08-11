@@ -1,5 +1,5 @@
 dev:
-	cargo watch -q -w 'src' -x 'run'
+	cargo watch -q -x 'run'
 
 docker-build:
 	docker build -t ghstats .
@@ -8,3 +8,6 @@ docker-build:
 docker-run:
 	docker rm --force ghstats || true
 	docker run -d -p 8080:8080 -v ./data:/app/data --env-file .env --name ghstats ghstats
+
+docker-log:
+	docker logs ghstats --follow
