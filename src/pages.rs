@@ -43,7 +43,6 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
     html {
       head {
         link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2.0.6/css/pico.min.css" {}
-        link rel="stylesheet" href="https://unpkg.com/simple-icons-font@v13/font/simple-icons.min.css" {}
         script src="https://unpkg.com/chart.js@4.4.3/dist/chart.umd.js" {}
         script src="https://unpkg.com/htmx.org@2.0.1" {}
         style { (PreEscaped(include_str!("app.css"))) }
@@ -73,7 +72,6 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
                 target="_blank"
               {
                 (brand)
-                i class="si si-github" style="font-size: 22px;" {}
               }
             }
           }
