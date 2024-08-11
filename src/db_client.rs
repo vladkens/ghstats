@@ -108,6 +108,11 @@ pub struct RepoPopularItem {
 
 // MARK: Filters
 
+pub enum PopularKind {
+  Refs,
+  Path,
+}
+
 #[derive(Debug, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
@@ -153,11 +158,39 @@ impl std::fmt::Display for RepoSort {
   }
 }
 
+#[derive(Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum PopularSort {
+  Name,
+  Count,
+  Uniques,
+}
+
+impl Default for PopularSort {
+  fn default() -> Self {
+    PopularSort::Uniques
+  }
+}
+
+impl std::fmt::Display for PopularSort {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}", to_variant_name(self).unwrap())
+  }
+}
+
 #[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct RepoFilter {
   pub sort: RepoSort,
   pub direction: Direction,
+}
+
+#[derive(Debug, Deserialize, Serialize, Default)]
+#[serde(default)]
+pub struct PopularFilter {
+  pub sort: PopularSort,
+  pub direction: Direction,
+  pub period: i32,
 }
 
 // MARK: DbClient
@@ -247,27 +280,31 @@ impl DbClient {
 
   pub async fn get_popular_items(
     &self,
-    table: &str,
     repo: &str,
-    granularity: i32,
+    kind: &PopularKind,
+    filter: &PopularFilter,
   ) -> Res<Vec<RepoPopularItem>> {
-    let items = [("repo_referrers", "referrer"), ("repo_popular_paths", "path")];
-    let (table, col) = items.iter().find(|x| x.0 == table).unwrap();
+    let (table, col) = match kind {
+      PopularKind::Refs => ("repo_referrers", "referrer"),
+      PopularKind::Path => ("repo_popular_paths", "path"),
+    };
 
-    let time_where = match granularity {
+    let time_where = match filter.period {
       x if x > 0 => format!("date >= date('now', '-{} day')", x),
       _ => "1=1".to_string(),
     };
+
+    let order_by = format!("{} {}", filter.sort, filter.direction);
 
     #[rustfmt::skip]
     let qs = format!("
     SELECT {col} as name, SUM(count_delta) AS count, SUM(uniques_delta) AS uniques
     FROM {table} rr
     INNER JOIN repos r ON r.id = rr.repo_id
-    WHERE r.name = $1 AND {}
+    WHERE r.name = $1 AND {time_where}
     GROUP BY rr.{col}
-    ORDER BY rr.uniques DESC;
-    ", time_where);
+    ORDER BY {order_by};
+    ");
 
     let items = sqlx::query_as(&qs).bind(repo).fetch_all(&self.db).await?;
     Ok(items)

@@ -1,11 +1,12 @@
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, Request, State};
 use maud::{html, Markup, PreEscaped};
 use thousands::Separable;
 
-use crate::db_client::{DbClient, Direction, RepoFilter, RepoMetrics, RepoSort};
+use crate::db_client::{
+  DbClient, Direction, PopularFilter, PopularKind, PopularSort, RepoFilter, RepoMetrics, RepoSort,
+};
 use crate::utils::HtmlRes;
 use crate::AppState;
 
@@ -75,69 +76,102 @@ fn base(navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
   )
 }
 
-fn popular_table(items: &Vec<TablePopularItem>, name: &str, html_id: &str) -> Markup {
-  html!(
+async fn popular_table(
+  db: &DbClient,
+  repo: &str,
+  kind: &PopularKind,
+  qs: &PopularFilter,
+) -> HtmlRes {
+  let items = db.get_popular_items(repo, kind, qs).await?;
+  let items: Vec<TablePopularItem> = match kind {
+    PopularKind::Refs => items
+      .into_iter()
+      .map(|x| TablePopularItem { item: (x.name, None), uniques: x.uniques, count: x.count })
+      .collect(),
+    PopularKind::Path => items
+      .into_iter()
+      .map(|x| {
+        let prefix = format!("/{}", repo);
+        let mut name = x.name.replace(&prefix, "");
+        if name.is_empty() {
+          name = "/".to_string();
+        }
+
+        let item = (name, Some(format!("https://github.com{}", x.name)));
+        TablePopularItem { item, uniques: x.uniques, count: x.count }
+      })
+      .collect(),
+  };
+
+  let name = match kind {
+    PopularKind::Refs => "Referring sites",
+    PopularKind::Path => "Popular paths",
+  };
+
+  let html_id = match kind {
+    PopularKind::Refs => "refs_table",
+    PopularKind::Path => "path_table",
+  };
+
+  let cols: Vec<(&str, Box<dyn Fn(&TablePopularItem) -> Markup>, PopularSort)> = vec![
+    (name, Box::new(|x| maybe_url(&x.item)), PopularSort::Name),
+    ("Views", Box::new(|x| html!((x.count.separate_with_commas()))), PopularSort::Count),
+    ("Unique", Box::new(|x| html!((x.uniques.separate_with_commas()))), PopularSort::Uniques),
+  ];
+
+  fn filter_url(repo: &str, qs: &PopularFilter, col: &PopularSort) -> String {
+    let dir = match qs.sort == *col && qs.direction == Direction::Desc {
+      true => "asc",
+      false => "desc",
+    };
+
+    format!("/{}?sort={}&direction={}", repo, col, dir)
+  }
+
+  let html = html!(
     article id=(html_id) class="p-0 mb-0 table-popular" {
       table class="mb-0" {
         thead {
           tr {
-            th scope="col" class="" { (name) }
-            th scope="col" class="text-right" { "Count" }
-            th scope="col" class="text-right" { "Uniques" }
+            @for (idx, col) in cols.iter().enumerate() {
+              th scope="col" .cursor-pointer .select-none .text-right[idx > 0]
+                hx-trigger="click"
+                hx-get=(filter_url(repo, qs, &col.2))
+                hx-target=(format!("#{}", html_id))
+                hx-swap="outerHTML"
+              {
+                (col.0)
+                @if col.2 == qs.sort {
+                  span class="ml-0.5" {
+                    @if qs.direction == Direction::Asc { "↑" } @else { "↓" }
+                  }
+                }
+              }
+            }
           }
         }
 
         tbody {
           @for item in items {
             tr {
-              td class="" { (maybe_url(&item.item)) }
-              td class="text-right" { (item.count.separate_with_commas()) }
-              td class="text-right" { (item.uniques.separate_with_commas()) }
+              @for (idx, col) in cols.iter().enumerate() {
+                td .text-right[idx > 0] { ((col.1)(&item)) }
+              }
             }
           }
         }
       }
     }
-  )
+  );
+
+  Ok(html)
 }
 
-async fn repo_refs_table(db: &DbClient, repo: &str, granularity: i32) -> HtmlRes {
-  let repo_popular_refs = db.get_popular_items("repo_referrers", &repo, granularity).await?;
-  let repo_popular_refs: Vec<TablePopularItem> = repo_popular_refs
-    .into_iter()
-    .map(|x| TablePopularItem { item: (x.name, None), uniques: x.uniques, count: x.count })
-    .collect();
-
-  Ok(popular_table(&repo_popular_refs, "Referring sites", "refs_table"))
-}
-
-async fn repo_path_table(db: &DbClient, repo: &str, granularity: i32) -> HtmlRes {
-  let repo_popular_path = db.get_popular_items("repo_popular_paths", &repo, granularity).await?;
-  let repo_popular_path: Vec<TablePopularItem> = repo_popular_path
-    .into_iter()
-    .map(|x| {
-      let prefix = format!("/{}", repo);
-      let mut name = x.name.replace(&prefix, "");
-      if name.is_empty() {
-        name = "/".to_string();
-      }
-
-      TablePopularItem {
-        item: (name, Some(format!("https://github.com{}", x.name))),
-        uniques: x.uniques,
-        count: x.count,
-      }
-    })
-    .collect();
-
-  Ok(popular_table(&repo_popular_path, "Popular paths", "path_table"))
-}
-
-async fn repo_popular_tables(db: &DbClient, repo: &str, granularity: i32) -> HtmlRes {
+async fn repo_popular_tables(db: &DbClient, repo: &str, filter: &PopularFilter) -> HtmlRes {
   let html = html!(
     div id="popular_tables" class="grid" {
-      (repo_refs_table(&db, &repo, granularity).await?)
-      (repo_path_table(&db, &repo, granularity).await?)
+      (popular_table(db, repo, &PopularKind::Refs, filter).await?)
+      (popular_table(db, repo, &PopularKind::Path, filter).await?)
     }
   );
 
@@ -150,10 +184,10 @@ pub async fn repo_page(
   req: Request,
 ) -> HtmlRes {
   let repo = format!("{}/{}", owner, repo);
-  let qs: Query<HashMap<String, String>> = Query::try_from_uri(req.uri())?;
+  let qs: Query<PopularFilter> = Query::try_from_uri(req.uri())?;
   let db = &state.db;
 
-  let granularities = vec![
+  let periods = vec![
     (7, "Last 7 days"),
     (14, "Last 14 days"),
     (30, "Last 30 days"),
@@ -161,16 +195,15 @@ pub async fn repo_page(
     (-1, "All time"),
   ];
 
-  let granularity = qs.get("granularity").unwrap_or(&"7".to_string()).parse::<i32>().unwrap();
-  let granularity = match granularities.iter().all(|x| x.0 != granularity) {
+  let period = match periods.iter().all(|x| x.0 != qs.period) {
     true => 7,
-    false => granularity,
+    false => qs.period,
   };
 
   match get_hx_target(&req) {
-    Some("refs_table") => return Ok(repo_refs_table(&db, &repo, granularity).await?),
-    Some("path_table") => return Ok(repo_path_table(&db, &repo, granularity).await?),
-    Some("popular_tables") => return Ok(repo_popular_tables(&db, &repo, granularity).await?),
+    Some("refs_table") => return Ok(popular_table(db, &repo, &PopularKind::Refs, &qs).await?),
+    Some("path_table") => return Ok(popular_table(db, &repo, &PopularKind::Path, &qs).await?),
+    Some("popular_tables") => return Ok(repo_popular_tables(&db, &repo, &qs).await?),
     _ => {}
   }
 
@@ -238,13 +271,13 @@ pub async fn repo_page(
       "renderStars('chart_stars', Stars);"
     }
 
-    select name="granularity" hx-get=(format!("/{}", repo)) hx-target="#popular_tables" {
-      @for (days, title) in &granularities {
-        option value=(days) selected[*days == granularity] { (title) }
+    select name="period" hx-get=(format!("/{}", repo)) hx-target="#popular_tables" hx-swap="outerHTML" {
+      @for (days, title) in &periods {
+        option value=(days) selected[*days == period] { (title) }
       }
     }
 
-    (repo_popular_tables(db, &repo, granularity).await?)
+    (repo_popular_tables(db, &repo, &qs).await?)
   );
 
   Ok(base(vec![(repo, None)], html))
@@ -268,9 +301,9 @@ pub async fn index(State(state): State<Arc<AppState>>, req: Request) -> HtmlRes 
   ];
 
   fn filter_url(qs: &RepoFilter, col: &RepoSort) -> String {
-    let dir = match qs.sort == *col && qs.direction == Direction::Asc {
-      true => "desc",
-      false => "asc",
+    let dir = match qs.sort == *col && qs.direction == Direction::Desc {
+      true => "asc",
+      false => "desc",
     };
 
     format!("/?sort={}&direction={}", col, dir)
@@ -285,6 +318,7 @@ pub async fn index(State(state): State<Arc<AppState>>, req: Request) -> HtmlRes 
                 hx-trigger="click"
                 hx-get=(filter_url(&qs, &col.2))
                 hx-target="#repos_table"
+                hx-swap="outerHTML"
                 {
                   (col.0)
                   @if col.2 == qs.sort {
