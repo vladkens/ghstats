@@ -50,6 +50,12 @@ services:
 4. Click genereate token & copy it
 5. Save token to `.env` file with name `GITHUB_TOKEN=???`
 
+## How it works?
+
+Every hour `ghstats` loads the list of public repositories and their statistics, and saves the data in SQLite. If at the first startup there is no repositories in the database, synchronization will happen immediately, if `ghstats` is restarted again, synchronization will be performed according to the scheduler. Data is stored per day, re-fetching data for the current day will update existing records in the database.
+
+All public repositories that can be accessed are saved. If you need more detailed configuration – open PR please.
+
 ## 🤝 Contributing
 
 All contributions are welcome! Feel free to open an issue or submit a pull request.

@@ -9,7 +9,7 @@ mod pages;
 mod utils;
 
 use db_client::{DbClient, RepoFilter};
-use gh_client::GhClient;
+use gh_client::{GhClient, Repo};
 use utils::Res;
 
 struct AppState {
@@ -41,6 +41,21 @@ async fn health() -> impl IntoResponse {
   (StatusCode::OK, axum::response::Json(msg))
 }
 
+async fn update_repo_metrics(db: &DbClient, gh: &GhClient, repo: &Repo, date: &str) -> Res {
+  let views = gh.traffic_views(&repo.full_name).await?;
+  let clones = gh.traffic_clones(&repo.full_name).await?;
+  let referrers = gh.traffic_refs(&repo.full_name).await?;
+  let popular_paths = gh.traffic_paths(&repo.full_name).await?;
+
+  db.insert_stats(&repo, date).await?;
+  db.insert_views(&repo, &views).await?;
+  db.insert_clones(&repo, &clones).await?;
+  db.insert_referrers(&repo, date, &referrers).await?;
+  db.insert_paths(&repo, date, &popular_paths).await?;
+
+  Ok(())
+}
+
 async fn update_metrics(db: &DbClient, gh: &GhClient) -> Res {
   let stime = std::time::Instant::now();
 
@@ -49,16 +64,14 @@ async fn update_metrics(db: &DbClient, gh: &GhClient) -> Res {
 
   let repos = gh.get_repos().await?;
   for repo in repos {
-    let views = gh.traffic_views(&repo.full_name).await?;
-    let clones = gh.traffic_clones(&repo.full_name).await?;
-    let referrers = gh.traffic_refs(&repo.full_name).await?;
-    let popular_paths = gh.traffic_paths(&repo.full_name).await?;
-
-    db.insert_stats(&repo, &date).await?;
-    db.insert_views(&repo, &views).await?;
-    db.insert_clones(&repo, &clones).await?;
-    db.insert_referrers(&repo, &date, &referrers).await?;
-    db.insert_paths(&repo, &date, &popular_paths).await?;
+    match update_repo_metrics(db, gh, &repo, &date).await {
+      Err(e) => {
+        tracing::warn!("error updating metrics for {}: {:?}", repo.full_name, e);
+        continue;
+      }
+      // Ok(_) => tracing::info!("updated metrics for {}", repo.full_name),
+      Ok(_) => {}
+    }
   }
 
   tracing::info!("update_metrics took {:?}", stime.elapsed());

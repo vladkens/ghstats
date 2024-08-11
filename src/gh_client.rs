@@ -86,7 +86,8 @@ impl GhClient {
     let mut page = 1;
 
     loop {
-      let url = format!("{}/user/repos?type=owner&per_page=100&page={}", self.base_url, page);
+      let url = format!("{}/user/repos?visibility=public", self.base_url);
+      let url = format!("{}&per_page=100&page={}", url, page);
       let rep = self.client.get(url).send().await?.error_for_status()?;
 
       let link = match rep.headers().get("link") {

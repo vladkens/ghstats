@@ -297,7 +297,7 @@ impl DbClient {
   }
 
   pub async fn insert_stats(&self, repo: &Repo, date: &str) -> Res {
-    self.insert_repo(repo).await?;
+    let _ = self.insert_repo(repo).await?;
 
     let qs = "
     INSERT INTO repo_stats AS t (repo_id, date, stars, forks, watchers, issues)
