@@ -7,7 +7,7 @@ use thousands::Separable;
 use crate::db_client::{
   DbClient, Direction, PopularFilter, PopularKind, PopularSort, RepoFilter, RepoMetrics, RepoSort,
 };
-use crate::utils::HtmlRes;
+use crate::types::HtmlRes;
 use crate::AppState;
 
 #[derive(Debug)]

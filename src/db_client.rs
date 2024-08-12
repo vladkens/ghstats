@@ -1,14 +1,17 @@
+use std::future::Future;
+use std::pin::Pin;
+
 use anyhow::Ok;
 use serde::{Deserialize, Serialize};
 use serde_variant::to_variant_name;
 use sqlx::{sqlite::SqliteConnectOptions, FromRow, SqlitePool};
 
 use crate::gh_client::{Repo, RepoClones, RepoPopularPath, RepoReferrer, RepoViews};
-use crate::utils::Res;
+use crate::types::Res;
 
 // MARK: Migrations
 
-async fn migrate(db: &SqlitePool) -> Res {
+async fn migrate_v1(db: &SqlitePool) -> Res {
   let mut queries = vec![];
 
   let qs = "CREATE TABLE IF NOT EXISTS repos (
@@ -68,6 +71,35 @@ async fn migrate(db: &SqlitePool) -> Res {
   Ok(())
 }
 
+async fn migrate_v2(db: &SqlitePool) -> Res {
+  let qs = "ALTER TABLE repos ADD COLUMN stars_synced BOOLEAN DEFAULT FALSE;";
+  sqlx::query(qs).execute(db).await?;
+  Ok(())
+}
+
+async fn migrate<'a>(db: &'a SqlitePool) -> Res {
+  type BoxFn = Box<dyn for<'a> Fn(&'a SqlitePool) -> Pin<Box<dyn Future<Output = Res> + 'a>>>;
+  let migrations: Vec<BoxFn> = vec![
+    Box::new(|db| Box::pin(migrate_v1(db))),
+    // Box::new(|db| Box::pin(migrate_v2(db))),
+  ];
+
+  let version: (i32,) = sqlx::query_as("PRAGMA user_version").fetch_one(db).await?;
+  let version = version.0;
+
+  for (idx, func) in migrations.iter().enumerate() {
+    let mig_ver = idx as i32 + 1;
+    if version < mig_ver {
+      tracing::info!("running migration to v{}", mig_ver);
+      let _ = func(db).await?;
+      let qs = format!("PRAGMA user_version = {}", mig_ver);
+      sqlx::raw_sql(&qs).execute(db).await?;
+    }
+  }
+
+  Ok(())
+}
+
 pub async fn get_db(db_path: &str) -> Res<SqlitePool> {
   let opts = SqliteConnectOptions::new().filename(db_path).create_if_missing(true);
   let pool = SqlitePool::connect_with(opts).await?;
@@ -75,7 +107,7 @@ pub async fn get_db(db_path: &str) -> Res<SqlitePool> {
   Ok(pool)
 }
 
-// MARK: DTOs
+// MARK: Models
 
 #[derive(Clone, Debug, Serialize, Deserialize, FromRow)]
 pub struct RepoMetrics {
@@ -104,6 +136,14 @@ pub struct RepoPopularItem {
   pub name: String,
   pub count: i64,
   pub uniques: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, FromRow)]
+pub struct RepoItem {
+  pub id: i64,
+  pub name: String,
+  pub archived: bool,
+  pub stars_synced: bool,
 }
 
 // MARK: Filters
@@ -310,6 +350,12 @@ impl DbClient {
     Ok(items)
   }
 
+  pub async fn repos_to_sync(&self) -> Res<Vec<RepoItem>> {
+    let qs = "SELECT * FROM repos WHERE stars_synced = FALSE;";
+    let items = sqlx::query_as(qs).fetch_all(&self.db).await?;
+    Ok(items)
+  }
+
   // MARK: Inserters
 
   pub async fn insert_repo(&self, repo: &Repo) -> Res {
@@ -355,6 +401,22 @@ impl DbClient {
       .bind(repo.open_issues_count as i32)
       .execute(&self.db)
       .await?;
+
+    Ok(())
+  }
+
+  pub async fn insert_stars(&self, repo: &str, stars: &Vec<(String, u32)>) -> Res {
+    let qs = "
+    INSERT INTO repo_stats AS t (repo_id, date, stars)
+    VALUES ((SELECT id FROM repos WHERE name = $1), $2, $3)
+    ON CONFLICT(repo_id, date) DO UPDATE SET
+      stars = MAX(t.stars, excluded.stars);
+    ";
+
+    for (date, count) in stars {
+      let _ =
+        sqlx::query(qs).bind(repo).bind(&date).bind(count.clone() as i32).execute(&self.db).await?;
+    }
 
     Ok(())
   }

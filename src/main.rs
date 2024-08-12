@@ -5,12 +5,13 @@ use axum::{http::StatusCode, response::IntoResponse, Router};
 
 mod db_client;
 mod gh_client;
+mod helpers;
 mod pages;
-mod utils;
+mod types;
 
 use db_client::{DbClient, RepoFilter};
-use gh_client::{GhClient, Repo};
-use utils::Res;
+use gh_client::GhClient;
+use types::Res;
 
 struct AppState {
   db: DbClient,
@@ -37,26 +38,6 @@ impl AppState {
   }
 }
 
-async fn health() -> impl IntoResponse {
-  let msg = serde_json::json!({ "status": "ok" });
-  (StatusCode::OK, axum::response::Json(msg))
-}
-
-async fn update_repo_metrics(db: &DbClient, gh: &GhClient, repo: &Repo, date: &str) -> Res {
-  let views = gh.traffic_views(&repo.full_name).await?;
-  let clones = gh.traffic_clones(&repo.full_name).await?;
-  let referrers = gh.traffic_refs(&repo.full_name).await?;
-  let popular_paths = gh.traffic_paths(&repo.full_name).await?;
-
-  db.insert_stats(&repo, date).await?;
-  db.insert_views(&repo, &views).await?;
-  db.insert_clones(&repo, &clones).await?;
-  db.insert_referrers(&repo, date, &referrers).await?;
-  db.insert_paths(&repo, date, &popular_paths).await?;
-
-  Ok(())
-}
-
 async fn update_metrics(db: &DbClient, gh: &GhClient) -> Res {
   let stime = std::time::Instant::now();
 
@@ -65,7 +46,7 @@ async fn update_metrics(db: &DbClient, gh: &GhClient) -> Res {
 
   let repos = gh.get_repos().await?;
   for repo in &repos {
-    match update_repo_metrics(db, gh, &repo, &date).await {
+    match helpers::update_repo_metrics(db, gh, &repo, &date).await {
       Err(e) => {
         tracing::warn!("failed to update metrics for {}: {:?}", repo.full_name, e);
         continue;
@@ -131,6 +112,11 @@ async fn start_cron(state: Arc<AppState>) -> Res {
   runner.add(job).await?;
 
   Ok(())
+}
+
+async fn health() -> impl IntoResponse {
+  let msg = serde_json::json!({ "status": "ok" });
+  (StatusCode::OK, axum::response::Json(msg))
 }
 
 #[tokio::main]

@@ -1,7 +1,12 @@
-use reqwest::header::{HeaderMap, HeaderValue};
-use serde::{Deserialize, Serialize};
+use std::vec;
 
-use crate::utils::Res;
+use reqwest::{
+  header::{HeaderMap, HeaderValue},
+  RequestBuilder,
+};
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
+
+use crate::types::Res;
 
 // MARK: Types
 
@@ -54,6 +59,11 @@ pub struct RepoReferrer {
   pub uniques: u32,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct RepoStar {
+  pub starred_at: String,
+}
+
 // MARK: GhClient
 
 pub struct GhClient {
@@ -80,31 +90,40 @@ impl GhClient {
     Ok(GhClient { client, base_url })
   }
 
-  // https://docs.github.com/en/rest/repos/repos?apiVersion=2022-11-28#list-repositories-for-the-authenticated-user
-  pub async fn get_repos(&self) -> Res<Vec<Repo>> {
-    let mut items: Vec<Repo> = vec![];
+  async fn with_pagination<T: DeserializeOwned>(&self, req: RequestBuilder) -> Res<Vec<T>> {
+    let mut items: Vec<T> = vec![];
+    let per_page = 100;
     let mut page = 1;
 
     loop {
-      let url = format!("{}/user/repos?visibility=public", self.base_url);
-      let url = format!("{}&per_page=100&page={}", url, page);
-      let rep = self.client.get(url).send().await?.error_for_status()?;
+      let req = req.try_clone().unwrap();
+      let req = req.query(&[("per_page", &per_page.to_string())]);
+      let req = req.query(&[("page", &page.to_string())]);
+      let rep = req.send().await?.error_for_status()?;
 
-      let link = match rep.headers().get("link") {
+      let cur = match rep.headers().get("link") {
         Some(l) => l.to_str().unwrap().to_string(),
         None => "".to_string(),
       };
 
-      let dat = rep.json::<Vec<Repo>>().await?;
+      let dat = rep.json::<Vec<T>>().await?;
       items.extend(dat);
 
-      match link.contains(r#"rel="next""#) {
+      match cur.contains(r#"rel="next""#) {
         true => page += 1,
         false => break,
       }
     }
 
     Ok(items)
+  }
+
+  // https://docs.github.com/en/rest/repos/repos?apiVersion=2022-11-28#list-repositories-for-the-authenticated-user
+  pub async fn get_repos(&self) -> Res<Vec<Repo>> {
+    let url = format!("{}/user/repos?visibility=public", self.base_url);
+    let req = self.client.get(url);
+    let dat: Vec<Repo> = self.with_pagination(req).await?;
+    Ok(dat)
   }
 
   // https://docs.github.com/en/rest/metrics/traffic?apiVersion=2022-11-28
@@ -143,5 +162,13 @@ impl GhClient {
     let ver = dat["tag_name"].as_str().unwrap().to_string();
     let ver = ver.trim_start_matches("v").to_string();
     Ok(ver)
+  }
+
+  pub async fn get_stars(&self, repo: &str) -> Res<Vec<RepoStar>> {
+    let url = format!("{}/repos/{}/stargazers", self.base_url, repo);
+    let req = self.client.get(url).header("Accept", "application/vnd.github.v3.star+json");
+
+    let dat: Vec<RepoStar> = self.with_pagination(req).await?;
+    return Ok(dat);
   }
 }

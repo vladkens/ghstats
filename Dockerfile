@@ -9,7 +9,7 @@ ADD . .
 RUN touch src/main.rs && cargo build --release --frozen
 
 FROM alpine:latest
-LABEL org.opencontainers.image.source https://github.com/vladkens/ghstats
+LABEL org.opencontainers.image.source = "https://github.com/vladkens/ghstats"
 COPY --from=builder /app/target/release/ghstats /app/ghstats
 
 WORKDIR /app
