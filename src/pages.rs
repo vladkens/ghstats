@@ -7,7 +7,7 @@ use thousands::Separable;
 use crate::db_client::{
   DbClient, Direction, PopularFilter, PopularKind, PopularSort, RepoFilter, RepoMetrics, RepoSort,
 };
-use crate::types::HtmlRes;
+use crate::types::{AppError, HtmlRes};
 use crate::AppState;
 
 #[derive(Debug)]
@@ -34,14 +34,20 @@ fn maybe_url(item: &(String, Option<String>)) -> Markup {
 }
 
 fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
-  let brand = format!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+  let (app_name, app_version) = (env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
   let last_release = state.last_release.lock().unwrap().clone();
-  let is_new_release = last_release != env!("CARGO_PKG_VERSION");
+  let is_new_release = last_release != app_version;
+
+  let title = match navs.len() {
+    0 => app_name,
+    _ => &format!("{} · {}", navs.last().unwrap().0, app_name),
+  };
 
   html!(
     html {
       head {
+        title { (title) }
         link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2.0.6/css/pico.min.css" {}
         script src="https://unpkg.com/chart.js@4.4.3/dist/chart.umd.js" {}
         script src="https://unpkg.com/htmx.org@2.0.1" {}
@@ -71,7 +77,7 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
                 style="font-size: 18px;"
                 target="_blank"
               {
-                (brand)
+                (format!("{} v{}", app_name, app_version))
               }
             }
           }
@@ -216,7 +222,7 @@ pub async fn repo_page(
 
   let totals = match db.get_repo_totals(&repo).await? {
     Some(x) => x,
-    None => return Ok(base(&state, vec![], html!(h1 { "Repo not found" }))),
+    None => return AppError::not_found(),
   };
 
   let metrics = db.get_metrics(&repo).await?;
