@@ -110,7 +110,7 @@ pub async fn get_db(db_path: &str) -> Res<SqlitePool> {
 // MARK: Models
 
 #[derive(Clone, Debug, Serialize, Deserialize, FromRow)]
-pub struct RepoMetrics {
+pub struct RepoTotals {
   pub id: i64,
   pub name: String,
   pub description: Option<String>,
@@ -119,6 +119,15 @@ pub struct RepoMetrics {
   pub forks: i32,
   pub watchers: i32,
   pub issues: i32,
+  pub clones_count: i32,
+  pub clones_uniques: i32,
+  pub views_count: i32,
+  pub views_uniques: i32,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize, FromRow)]
+pub struct RepoMetrics {
+  pub date: String,
   pub clones_count: i32,
   pub clones_uniques: i32,
   pub views_count: i32,
@@ -264,7 +273,7 @@ impl DbClient {
 
   // MARK: Getters
 
-  pub async fn get_repo_totals(&self, repo: &str) -> Res<Option<RepoMetrics>> {
+  pub async fn get_repo_totals(&self, repo: &str) -> Res<Option<RepoTotals>> {
     let qs = format!("{} WHERE r.name = $1;", TOTAL_QUERY);
     let item = sqlx::query_as(qs.as_str()).bind(repo).fetch_optional(&self.db).await?;
     Ok(item)
@@ -274,7 +283,7 @@ impl DbClient {
     let qs = "
     SELECT * FROM repo_stats rs
     INNER JOIN repos r ON r.id = rs.repo_id
-    WHERE r.name = $1
+    WHERE r.name = $1 AND (rs.clones_count > 0 OR rs.views_count > 0)
     ORDER BY rs.date ASC;
     ";
 
@@ -282,7 +291,7 @@ impl DbClient {
     Ok(items)
   }
 
-  pub async fn get_repos(&self, filter: &RepoFilter) -> Res<Vec<RepoMetrics>> {
+  pub async fn get_repos(&self, filter: &RepoFilter) -> Res<Vec<RepoTotals>> {
     let qs = format!("{} ORDER BY {} {}", TOTAL_QUERY, filter.sort, filter.direction);
     let items = sqlx::query_as(qs.as_str()).fetch_all(&self.db).await?;
     Ok(items)

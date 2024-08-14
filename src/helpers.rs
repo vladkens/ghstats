@@ -27,6 +27,7 @@ pub async fn get_stars_history(gh: &GhClient, repo: &str) -> Res<Vec<(String, u3
   let mut dat: HashMap<String, u32> = HashMap::new();
   for star in stars {
     let date = star.starred_at.split("T").next().unwrap().to_owned();
+    let date = format!("{date}T00:00:00Z"); // db stores dates as UTC midnight
     dat.entry(date).and_modify(|e| *e += 1).or_insert(1);
   }
 

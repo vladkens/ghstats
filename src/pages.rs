@@ -5,7 +5,7 @@ use maud::{html, Markup, PreEscaped};
 use thousands::Separable;
 
 use crate::db_client::{
-  DbClient, Direction, PopularFilter, PopularKind, PopularSort, RepoFilter, RepoMetrics, RepoSort,
+  DbClient, Direction, PopularFilter, PopularKind, PopularSort, RepoFilter, RepoSort, RepoTotals,
 };
 use crate::types::{AppError, HtmlRes};
 use crate::AppState;
@@ -48,9 +48,11 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
     html {
       head {
         title { (title) }
-        link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2.0.6/css/pico.min.css" {}
-        script src="https://unpkg.com/chart.js@4.4.3/dist/chart.umd.js" {}
-        script src="https://unpkg.com/htmx.org@2.0.1" {}
+        link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2.0" {}
+        script src="https://unpkg.com/chart.js@4.4" {}
+        script src="https://unpkg.com/luxon@3.5" {}
+        script src="https://unpkg.com/chartjs-adapter-luxon@1.3" {}
+        script src="https://unpkg.com/htmx.org@2.0" {}
         style { (PreEscaped(include_str!("app.css"))) }
       }
       body {
@@ -304,7 +306,7 @@ pub async fn index(State(state): State<Arc<AppState>>, req: Request) -> HtmlRes 
   let db = &state.db;
   let repos = db.get_repos(&qs).await?;
 
-  let cols: Vec<(&str, Box<dyn Fn(&RepoMetrics) -> Markup>, RepoSort)> = vec![
+  let cols: Vec<(&str, Box<dyn Fn(&RepoTotals) -> Markup>, RepoSort)> = vec![
     ("Name", Box::new(|x| html!(a href=(format!("/{}", x.name)) { (x.name) })), RepoSort::Name),
     ("Issues", Box::new(|x| html!((x.issues.separate_with_commas()))), RepoSort::Issues),
     ("Forks", Box::new(|x| html!((x.forks.separate_with_commas()))), RepoSort::Forks),
