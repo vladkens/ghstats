@@ -53,8 +53,6 @@ fn get_custom_links() -> Vec<(String, String)> {
     .map(|x| x.unwrap())
     .collect();
 
-  // println!("GHS_LINKS: {:?}", std::env::var("GHS_LINKS").unwrap_or_default());
-  // println!("links: {:?}", links);
   links
 }
 
@@ -69,16 +67,26 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
     _ => &format!("{} · {}", navs.last().unwrap().0, app_name),
   };
 
+  let favicon = include_str!("../assets/favicon.svg")
+    .replace("\n", "")
+    .replace("\"", "%22")
+    .replace("#", "%23");
+  let favicon = format!("data:image/svg+xml,{}", favicon);
+
   html!(
     html {
       head {
+        meta charset="utf-8" {}
+        meta name="viewport" content="width=device-width, initial-scale=1" {}
         title { (title) }
+
+        link rel="icon" type="image/svg+xml" href=(PreEscaped(favicon)) {}
         link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2.0" {}
         script src="https://unpkg.com/chart.js@4.4" {}
         script src="https://unpkg.com/luxon@3.5" {}
         script src="https://unpkg.com/chartjs-adapter-luxon@1.3" {}
         script src="https://unpkg.com/htmx.org@2.0" {}
-        style { (PreEscaped(include_str!("app.css"))) }
+        style { (PreEscaped(include_str!("../assets/app.css"))) }
       }
       body {
         main class="container-fluid pt-0" style="max-width: 1450px;" {
@@ -308,7 +316,7 @@ pub async fn repo_page(
       }
     }
 
-    script { (PreEscaped(include_str!("app.js"))) }
+    script { (PreEscaped(include_str!("../assets/app.js"))) }
     script {
       "const Metrics = "(PreEscaped(serde_json::to_string(&metrics)?))";"
       "const Stars = "(PreEscaped(serde_json::to_string(&stars)?))";"
