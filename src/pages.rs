@@ -33,6 +33,31 @@ fn maybe_url(item: &(String, Option<String>)) -> Markup {
   }
 }
 
+fn get_custom_links() -> Vec<(String, String)> {
+  let links = std::env::var("GHS_CUSTOM_LINKS").unwrap_or_default();
+  let links: Vec<(String, String)> = links
+    .split(",")
+    .map(|x| {
+      let parts: Vec<&str> = x.split("|").collect();
+      if parts.len() != 2 {
+        return None;
+      }
+
+      if parts[0].is_empty() || parts[1].is_empty() {
+        return None;
+      }
+
+      Some((parts[0].to_string(), parts[1].to_string()))
+    })
+    .filter(|x| x.is_some())
+    .map(|x| x.unwrap())
+    .collect();
+
+  // println!("GHS_LINKS: {:?}", std::env::var("GHS_LINKS").unwrap_or_default());
+  // println!("links: {:?}", links);
+  links
+}
+
 fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
   let (app_name, app_version) = (env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
@@ -56,8 +81,8 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
         style { (PreEscaped(include_str!("app.css"))) }
       }
       body {
-        main class="container pt-0" {
-          div class="header" {
+        main class="container-fluid pt-0" style="max-width: 1450px;" {
+          div class="flex-row items-center gap-2 justify-between" {
             nav aria-label="breadcrumb" {
               ul {
                 li { a href="/" { "Repos" } }
@@ -67,7 +92,13 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
               }
             }
 
-            div class="flex items-center gap-2" {
+            div class="flex-row items-center gap-2" {
+              div class="flex-row items-center gap-4 pr-4" style="font-size: 18px;" {
+                @for (name, url) in &get_custom_links() {
+                  a href=(url) target="_blank" { (name) }
+                }
+              }
+
               @if is_new_release {
                 a href=(format!("https://github.com/vladkens/ghstats/releases/tag/v{last_release}"))
                   target="_blank" class="no-underline"
@@ -75,7 +106,7 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
               }
 
               a href="https://github.com/vladkens/ghstats"
-                class="secondary flex items-center gap-2 no-underline font-mono"
+                class="secondary flex-row items-center gap-2 no-underline font-mono"
                 style="font-size: 18px;"
                 target="_blank"
               {
@@ -234,7 +265,7 @@ pub async fn repo_page(
     div class="grid" style="grid-template-columns: 1fr 2fr;" {
       div class="grid" style="grid-template-rows: 2fr 1fr; grid-template-columns: 1fr;" {
         article class="mb-0" {
-          hgroup class="flex flex-col gap-2" {
+          hgroup class="flex-row flex-col gap-2" {
             h3 {
               a href=(format!("https://github.com/{}", repo)) class="contrast" { (totals.name) }
             }
@@ -245,7 +276,7 @@ pub async fn repo_page(
         div class="grid" {
           article class="flex-col" {
             h6 class="mb-0" { "Total Clones" }
-            h4 class="mb-0 grow flex items-center" {
+            h4 class="mb-0 grow flex-row items-center" {
               (totals.clones_uniques.separate_with_commas())
               " / "
               (totals.clones_count.separate_with_commas())
@@ -253,7 +284,7 @@ pub async fn repo_page(
           }
           article class="flex-col" {
             h6 class="mb-0" { "Total Views" }
-            h4 class="mb-0 grow flex items-center" {
+            h4 class="mb-0 grow flex-row items-center" {
               (totals.views_uniques.separate_with_commas())
               " / "
               (totals.views_count.separate_with_commas())

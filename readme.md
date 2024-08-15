@@ -56,6 +56,18 @@ Every hour `ghstats` loads the list of public repositories and their statistics,
 
 All public repositories that can be accessed are saved. If you need more detailed configuration – open PR please.
 
+## Configuration
+
+### Custom links
+
+If you plan to display your stats publicly, there is an option to add custom links to the header via environment variables, e.g.:
+
+```sh
+GHS_CUSTOM_LINKS="Blog|https://medium.com/@vladkens,Github|https://github.com/vladkens,Buy me a coffee|https://buymeacoffee.com/vladkens"
+```
+
+See example [here](https://github.com/vladkens/ghstats/issues/8).
+
 ## 🤝 Contributing
 
 All contributions are welcome! Feel free to open an issue or submit a pull request.
