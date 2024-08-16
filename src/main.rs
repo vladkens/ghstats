@@ -124,7 +124,16 @@ async fn main() -> Res {
 
   let state = Arc::new(AppState::new().await?);
   let service = router.with_state(state.clone()).into_make_service();
-  start_cron(state.clone()).await?;
+
+  let cron_state = state.clone();
+  tokio::spawn(async move {
+    loop {
+      match start_cron(cron_state.clone()).await {
+        Err(e) => tracing::error!("failed to start cron: {:?}", e),
+        Ok(_) => break,
+      }
+    }
+  });
 
   let host = std::env::var("HOST").unwrap_or("127.0.0.1".to_string());
   let port = std::env::var("PORT").unwrap_or("8080".to_string());

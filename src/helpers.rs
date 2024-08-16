@@ -7,20 +7,10 @@ use crate::{
 };
 
 async fn check_hidden_repos(db: &DbClient, repos: &Vec<Repo>) -> Res {
-  let now_ids = repos.iter().map(|r| r.id).collect::<Vec<_>>();
+  let now_ids = repos.iter().map(|r| r.id as i64).collect::<Vec<_>>();
   let was_ids = db.get_repos_ids().await?;
   let hidden = was_ids.into_iter().filter(|id| !now_ids.contains(id)).collect::<Vec<_>>();
-  let _ = db.mark_hidden_repos(&hidden).await?;
-
-  let hidden_names = repos
-    .iter()
-    .filter(|r| hidden.contains(&r.id))
-    .map(|r| r.full_name.clone())
-    .collect::<Vec<_>>();
-
-  if !hidden_names.is_empty() {
-    tracing::warn!("repos marked as hidden: {:?}", hidden_names);
-  }
+  let _ = db.mark_repo_hidden(&hidden).await?;
 
   Ok(())
 }
@@ -48,6 +38,7 @@ pub async fn update_metrics(db: &DbClient, gh: &GhClient) -> Res {
 
   tracing::info!("update_metrics took {:?} for {} repos", stime.elapsed(), repos.len());
   db.update_deltas().await?;
+  sync_stars(db, gh).await?;
 
   Ok(())
 }
@@ -68,7 +59,9 @@ async fn update_repo_metrics(db: &DbClient, gh: &GhClient, repo: &Repo, date: &s
   Ok(())
 }
 
-pub async fn get_stars_history(gh: &GhClient, repo: &str) -> Res<Vec<(String, u32)>> {
+/// Get stars history for a repo
+/// vec![(date_str, acc_stars, new_stars)), ...]
+pub async fn get_stars_history(gh: &GhClient, repo: &str) -> Res<Vec<(String, u32, u32)>> {
   let stars = gh.get_stars(repo).await?;
 
   let mut dat: HashMap<String, u32> = HashMap::new();
@@ -81,16 +74,24 @@ pub async fn get_stars_history(gh: &GhClient, repo: &str) -> Res<Vec<(String, u3
   let mut dat = dat.into_iter().collect::<Vec<_>>();
   dat.sort_by(|a, b| a.0.cmp(&b.0));
 
-  for i in 1..dat.len() {
-    dat[i].1 += dat[i - 1].1;
+  let mut rs: Vec<(String, u32, u32)> = Vec::with_capacity(dat.len());
+  for i in 0..dat.len() {
+    let (date, new_count) = &dat[i];
+    let acc_count = if i > 0 { rs[i - 1].1 + new_count } else { new_count.clone() };
+    rs.push((date.clone(), acc_count, new_count.clone()));
   }
 
-  Ok(dat)
+  Ok(rs)
 }
 
 pub async fn sync_stars(db: &DbClient, gh: &GhClient) -> Res {
+  let mut pages_collected = 0;
+
   let repos = db.repos_to_sync().await?;
   for repo in repos {
+    let stime = std::time::Instant::now();
+    // tracing::info!("sync_stars for {}", repo.name);
+
     let stars = match get_stars_history(gh, &repo.name).await {
       Ok(stars) => stars,
       Err(e) => {
@@ -99,7 +100,23 @@ pub async fn sync_stars(db: &DbClient, gh: &GhClient) -> Res {
       }
     };
 
-    db.insert_stars(&repo.name, &stars).await?;
+    db.insert_stars(repo.id, &stars).await?;
+    db.mark_repo_stars_synced(repo.id).await?;
+
+    let stars_count = stars.iter().map(|(_, _, c)| c).sum::<u32>();
+    tracing::info!(
+      "sync_stars for {} done in {:?}, {stars_count} starts added",
+      repo.name,
+      stime.elapsed(),
+    );
+
+    // gh api rate limit is 5000 req/h, so this code will do up to 1000 req/h
+    // to not block other possible user pipelines
+    pages_collected += (stars_count + 99) / 100;
+    if pages_collected > 1000 {
+      tracing::info!("sync_stars: {} pages collected, will continue next hour", pages_collected);
+      break;
+    }
   }
 
   Ok(())
@@ -136,8 +153,6 @@ fn is_included(repo: &str, rules: &str) -> bool {
   if rules.is_empty() {
     return true;
   }
-
-  println!("rules: {:?}", rules);
 
   let exclude: Vec<&str> = rules.iter().filter_map(|x| x.strip_prefix('!')).collect();
   let include: Vec<&str> = rules.iter().filter(|&&x| !x.starts_with('!')).cloned().collect();

@@ -283,10 +283,10 @@ impl DbClient {
 
   // MARK: Getters
 
-  pub async fn get_repos_ids(&self) -> Res<Vec<u64>> {
+  pub async fn get_repos_ids(&self) -> Res<Vec<i64>> {
     let qs = "SELECT id FROM repos WHERE hidden = FALSE;";
     let items: Vec<(i64,)> = sqlx::query_as(qs).fetch_all(&self.db).await?;
-    Ok(items.into_iter().map(|x| x.0 as u64).collect())
+    Ok(items.into_iter().map(|x| x.0).collect())
   }
 
   pub async fn get_repo_totals(&self, repo: &str) -> Res<Option<RepoTotals>> {
@@ -434,17 +434,21 @@ impl DbClient {
     Ok(())
   }
 
-  pub async fn insert_stars(&self, repo: &str, stars: &Vec<(String, u32)>) -> Res {
+  pub async fn insert_stars(&self, repo_id: i64, stars: &Vec<(String, u32, u32)>) -> Res {
     let qs = "
     INSERT INTO repo_stats AS t (repo_id, date, stars)
-    VALUES ((SELECT id FROM repos WHERE name = $1), $2, $3)
+    VALUES ((SELECT id FROM repos WHERE id = $1), $2, $3)
     ON CONFLICT(repo_id, date) DO UPDATE SET
       stars = MAX(t.stars, excluded.stars);
     ";
 
-    for (date, count) in stars {
-      let _ =
-        sqlx::query(qs).bind(repo).bind(&date).bind(count.clone() as i32).execute(&self.db).await?;
+    for (date, acc_count, _) in stars {
+      let _ = sqlx::query(qs)
+        .bind(repo_id)
+        .bind(&date)
+        .bind(acc_count.clone() as i32)
+        .execute(&self.db)
+        .await?;
     }
 
     Ok(())
@@ -544,7 +548,6 @@ impl DbClient {
   // MARK: Updater
 
   pub async fn update_deltas(&self) -> Res {
-    let stime = std::time::Instant::now();
     let items = [("repo_referrers", "referrer"), ("repo_popular_paths", "path")];
 
     for (table, col) in items {
@@ -567,14 +570,19 @@ impl DbClient {
       let _ = sqlx::query(qs.as_str()).execute(&self.db).await?;
     }
 
-    tracing::info!("update_deltas took {:?}", stime.elapsed());
     Ok(())
   }
 
-  pub async fn mark_hidden_repos(&self, repos_ids: &Vec<u64>) -> Res {
+  pub async fn mark_repo_hidden(&self, repos_ids: &Vec<i64>) -> Res {
     let ids = repos_ids.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
     let qs = format!("UPDATE repos SET hidden = TRUE WHERE id IN ({});", ids);
     let _ = sqlx::query(&qs).execute(&self.db).await?;
+    Ok(())
+  }
+
+  pub async fn mark_repo_stars_synced(&self, repo_id: i64) -> Res {
+    let qs = "UPDATE repos SET stars_synced = TRUE WHERE id = $1;";
+    let _ = sqlx::query(qs).bind(repo_id).execute(&self.db).await?;
     Ok(())
   }
 }
