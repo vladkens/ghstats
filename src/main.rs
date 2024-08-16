@@ -38,30 +38,6 @@ impl AppState {
   }
 }
 
-async fn update_metrics(db: &DbClient, gh: &GhClient) -> Res {
-  let stime = std::time::Instant::now();
-
-  let date = chrono::Utc::now().to_utc().to_rfc3339();
-  let date = date.split("T").next().unwrap().to_owned() + "T00:00:00Z";
-
-  let repos = gh.get_repos().await?;
-  for repo in &repos {
-    match helpers::update_repo_metrics(db, gh, &repo, &date).await {
-      Err(e) => {
-        tracing::warn!("failed to update metrics for {}: {:?}", repo.full_name, e);
-        continue;
-      }
-      // Ok(_) => tracing::info!("updated metrics for {}", repo.full_name),
-      Ok(_) => {}
-    }
-  }
-
-  tracing::info!("update_metrics took {:?} for {} repos", stime.elapsed(), repos.len());
-  db.update_deltas().await?;
-
-  Ok(())
-}
-
 async fn check_new_release(state: Arc<AppState>) -> Res {
   let tag = state.gh.get_latest_release_ver("vladkens/ghstats").await?;
   let mut last_tag = state.last_release.lock().unwrap();
@@ -80,7 +56,7 @@ async fn start_cron(state: Arc<AppState>) -> Res {
   let repos = state.db.get_repos(&RepoFilter::default()).await?;
   if repos.len() == 0 {
     tracing::info!("no repos found, load initial metrics");
-    match update_metrics(&state.db, &state.gh).await {
+    match helpers::update_metrics(&state.db, &state.gh).await {
       Err(e) => tracing::error!("failed to update metrics: {:?}", e),
       Ok(_) => {}
     }
@@ -100,7 +76,7 @@ async fn start_cron(state: Arc<AppState>) -> Res {
     Box::pin(async move {
       let _ = check_new_release(state.clone()).await;
 
-      match update_metrics(&state.db, &state.gh).await {
+      match helpers::update_metrics(&state.db, &state.gh).await {
         Err(e) => tracing::error!("failed to update metrics: {:?}", e),
         Ok(_) => {}
       }
@@ -136,15 +112,15 @@ async fn main() -> Res {
   tracing::info!("{}", brand);
 
   let router = Router::new()
-    .route("/health", get(health))
     .route("/", get(pages::index))
-    .route("/:owner/:repo", get(pages::repo_page));
-
-  let router = router.layer(
-    TraceLayer::new_for_http()
-      .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
-      .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
-  );
+    .route("/:owner/:repo", get(pages::repo_page))
+    .layer(
+      TraceLayer::new_for_http()
+        .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
+        .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
+    )
+    // do not show logs for this routes
+    .route("/health", get(health));
 
   let state = Arc::new(AppState::new().await?);
   let service = router.with_state(state.clone()).into_make_service();

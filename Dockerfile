@@ -9,13 +9,13 @@ ADD . .
 RUN touch src/main.rs && cargo build --release --frozen
 
 FROM alpine:latest
-LABEL org.opencontainers.image.source=https://github.com/vladkens/ghstats
-COPY --from=builder /app/target/release/ghstats /app/ghstats
+LABEL org.opencontainers.image.source="https://github.com/vladkens/ghstats"
 
 WORKDIR /app
+COPY --from=builder /app/target/release/ghstats .
+
 ENV HOST=0.0.0.0
 ENV PORT=8080
 EXPOSE 8080
-CMD ["/app/ghstats"]
-
 HEALTHCHECK CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/health || exit 1
+CMD ["/app/ghstats"]

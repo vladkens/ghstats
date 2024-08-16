@@ -7,6 +7,7 @@ use thousands::Separable;
 use crate::db_client::{
   DbClient, Direction, PopularFilter, PopularKind, PopularSort, RepoFilter, RepoSort, RepoTotals,
 };
+use crate::helpers::is_repo_included;
 use crate::types::{AppError, HtmlRes};
 use crate::AppState;
 
@@ -89,7 +90,7 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
         style { (PreEscaped(include_str!("../assets/app.css"))) }
       }
       body {
-        main class="container-fluid pt-0" style="max-width: 1450px;" {
+        main class="container-fluid pt-0 main-box" {
           div class="flex-row items-center gap-2 justify-between" {
             nav aria-label="breadcrumb" {
               ul {
@@ -238,6 +239,10 @@ pub async fn repo_page(
   req: Request,
 ) -> HtmlRes {
   let repo = format!("{}/{}", owner, repo);
+  if !is_repo_included(&repo) {
+    return AppError::not_found();
+  }
+
   let qs: Query<PopularFilter> = Query::try_from_uri(req.uri())?;
   let db = &state.db;
 
@@ -344,6 +349,7 @@ pub async fn index(State(state): State<Arc<AppState>>, req: Request) -> HtmlRes 
 
   let db = &state.db;
   let repos = db.get_repos(&qs).await?;
+  let repos = repos.into_iter().filter(|x| is_repo_included(&x.name)).collect::<Vec<_>>();
 
   let cols: Vec<(&str, Box<dyn Fn(&RepoTotals) -> Markup>, RepoSort)> = vec![
     ("Name", Box::new(|x| html!(a href=(format!("/{}", x.name)) { (x.name) })), RepoSort::Name),

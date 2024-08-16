@@ -66,6 +66,21 @@ If you plan to display your stats publicly, there is an option to add custom lin
 GHS_CUSTOM_LINKS="Blog|https://medium.com/@vladkens,Github|https://github.com/vladkens,Buy me a coffee|https://buymeacoffee.com/vladkens"
 ```
 
+### Filter repos
+
+You can filter repos for display (and data collection). You can select a specific org/user or a specific list of repositories. This is configured via the `GHS_FILTER` environment variable. You can use negation in the rules to remove a specific repo or org/user using the `!` symbol. By default all repos show.
+
+_Note: Statistics on previously downloaded repos remain in database, but they are hidden from display._
+
+Usage examples:
+
+```sh
+GHS_FILTER=vladkens/macmon,vladkens/ghstats # show only this two repo
+GHS_FILTER=vladkens/*,foo-org/bar # show all vladkens repos and one repo from `foo-org`
+GHS_FILTER=vladkens/*,!vladkens/apigen-ts # show all vladkens repos except `apigen-ts`
+GHS_FILTER=*,!vladkens/apigen-ts,!foo-org/bar # show all repos expect two
+```
+
 See example [here](https://github.com/vladkens/ghstats/issues/8).
 
 ## 🤝 Contributing
