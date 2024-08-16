@@ -65,23 +65,33 @@ async fn migrate_v1(db: &SqlitePool) -> Res {
   queries.push(qs);
 
   for qs in queries {
-    sqlx::query(qs).execute(db).await?;
+    let _ = sqlx::query(qs).execute(db).await?;
   }
 
   Ok(())
 }
 
 async fn migrate_v2(db: &SqlitePool) -> Res {
-  let qs = "ALTER TABLE repos ADD COLUMN stars_synced BOOLEAN DEFAULT FALSE;";
-  sqlx::query(qs).execute(db).await?;
+  let queries = vec![
+    "ALTER TABLE repos ADD COLUMN stars_synced BOOLEAN DEFAULT FALSE;",
+    "ALTER TABLE repos ADD COLUMN fork BOOLEAN DEFAULT FALSE;",
+    // can be deleted or marked as private or user removed from org
+    // keep in db – but hide from UI and updates
+    "ALTER TABLE repos ADD COLUMN hidden BOOLEAN DEFAULT FALSE;",
+  ];
+
+  for qs in queries {
+    let _ = sqlx::query(qs).execute(db).await?;
+  }
+
   Ok(())
 }
 
 async fn migrate<'a>(db: &'a SqlitePool) -> Res {
   type BoxFn = Box<dyn for<'a> Fn(&'a SqlitePool) -> Pin<Box<dyn Future<Output = Res> + 'a>>>;
   let migrations: Vec<BoxFn> = vec![
-    Box::new(|db| Box::pin(migrate_v1(db))),
-    // Box::new(|db| Box::pin(migrate_v2(db))),
+    Box::new(|db| Box::pin(migrate_v1(db))), //
+    Box::new(|db| Box::pin(migrate_v2(db))),
   ];
 
   let version: (i32,) = sqlx::query_as("PRAGMA user_version").fetch_one(db).await?;
@@ -273,26 +283,35 @@ impl DbClient {
 
   // MARK: Getters
 
+  pub async fn get_repos_ids(&self) -> Res<Vec<u64>> {
+    let qs = "SELECT id FROM repos WHERE hidden = FALSE;";
+    let items: Vec<(i64,)> = sqlx::query_as(qs).fetch_all(&self.db).await?;
+    Ok(items.into_iter().map(|x| x.0 as u64).collect())
+  }
+
   pub async fn get_repo_totals(&self, repo: &str) -> Res<Option<RepoTotals>> {
-    let qs = format!("{} WHERE r.name = $1;", TOTAL_QUERY);
+    let qs = format!("{} WHERE r.hidden = FALSE AND r.name = $1;", TOTAL_QUERY);
     let item = sqlx::query_as(qs.as_str()).bind(repo).fetch_optional(&self.db).await?;
     Ok(item)
   }
 
-  pub async fn get_metrics(&self, name: &str) -> Res<Vec<RepoMetrics>> {
+  pub async fn get_metrics(&self, repo: &str) -> Res<Vec<RepoMetrics>> {
     let qs = "
     SELECT * FROM repo_stats rs
     INNER JOIN repos r ON r.id = rs.repo_id
-    WHERE r.name = $1 AND (rs.clones_count > 0 OR rs.views_count > 0)
+    WHERE r.hidden = FALSE AND r.name = $1 AND (rs.clones_count > 0 OR rs.views_count > 0)
     ORDER BY rs.date ASC;
     ";
 
-    let items = sqlx::query_as(qs).bind(name).fetch_all(&self.db).await?;
+    let items = sqlx::query_as(qs).bind(repo).fetch_all(&self.db).await?;
     Ok(items)
   }
 
   pub async fn get_repos(&self, filter: &RepoFilter) -> Res<Vec<RepoTotals>> {
-    let qs = format!("{} ORDER BY {} {}", TOTAL_QUERY, filter.sort, filter.direction);
+    let qs = format!(
+      "{} WHERE r.hidden = FALSE ORDER BY {} {}",
+      TOTAL_QUERY, filter.sort, filter.direction
+    );
     let items = sqlx::query_as(qs.as_str()).fetch_all(&self.db).await?;
     Ok(items)
   }
@@ -301,7 +320,7 @@ impl DbClient {
     let qs = "
     SELECT date, stars FROM repo_stats rs
     INNER JOIN repos r ON r.id = rs.repo_id
-    WHERE r.name = $1
+    WHERE r.hidden = FALSE AND r.name = $1
     ORDER BY rs.date ASC;
     ";
 
@@ -350,7 +369,7 @@ impl DbClient {
     SELECT {col} as name, SUM(count_delta) AS count, SUM(uniques_delta) AS uniques
     FROM {table} rr
     INNER JOIN repos r ON r.id = rr.repo_id
-    WHERE r.name = $1 AND {time_where}
+    WHERE r.hidden = FALSE AND r.name = $1 AND {time_where}
     GROUP BY rr.{col}
     ORDER BY {order_by};
     ");
@@ -360,7 +379,7 @@ impl DbClient {
   }
 
   pub async fn repos_to_sync(&self) -> Res<Vec<RepoItem>> {
-    let qs = "SELECT * FROM repos WHERE stars_synced = FALSE;";
+    let qs = "SELECT * FROM repos WHERE stars_synced = FALSE AND hidden = FALSE";
     let items = sqlx::query_as(qs).fetch_all(&self.db).await?;
     Ok(items)
   }
@@ -369,12 +388,14 @@ impl DbClient {
 
   pub async fn insert_repo(&self, repo: &Repo) -> Res {
     let qs = "
-    INSERT INTO repos (id, name, description, archived)
-    VALUES ($1, $2, $3, $4)
+    INSERT INTO repos (id, name, description, archived, fork)
+    VALUES ($1, $2, $3, $4, $5)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       description = excluded.description,
-      archived = excluded.archived;
+      archived = excluded.archived,
+      fork = excluded.fork,
+      hidden = FALSE; -- reset hidden flag if repo was hidden and appeared again
     ";
 
     let _ = sqlx::query(qs)
@@ -382,6 +403,7 @@ impl DbClient {
       .bind(&repo.full_name)
       .bind(&repo.description)
       .bind(repo.archived)
+      .bind(repo.fork)
       .execute(&self.db)
       .await?;
 
@@ -389,8 +411,6 @@ impl DbClient {
   }
 
   pub async fn insert_stats(&self, repo: &Repo, date: &str) -> Res {
-    let _ = self.insert_repo(repo).await?;
-
     let qs = "
     INSERT INTO repo_stats AS t (repo_id, date, stars, forks, watchers, issues)
     VALUES ($1, $2, $3, $4, $5, $6)
@@ -548,6 +568,13 @@ impl DbClient {
     }
 
     tracing::info!("update_deltas took {:?}", stime.elapsed());
+    Ok(())
+  }
+
+  pub async fn mark_hidden_repos(&self, repos_ids: &Vec<u64>) -> Res {
+    let ids = repos_ids.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
+    let qs = format!("UPDATE repos SET hidden = TRUE WHERE id IN ({});", ids);
+    let _ = sqlx::query(&qs).execute(&self.db).await?;
     Ok(())
   }
 }

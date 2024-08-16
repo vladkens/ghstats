@@ -6,6 +6,25 @@ use crate::{
   types::Res,
 };
 
+async fn check_hidden_repos(db: &DbClient, repos: &Vec<Repo>) -> Res {
+  let now_ids = repos.iter().map(|r| r.id).collect::<Vec<_>>();
+  let was_ids = db.get_repos_ids().await?;
+  let hidden = was_ids.into_iter().filter(|id| !now_ids.contains(id)).collect::<Vec<_>>();
+  let _ = db.mark_hidden_repos(&hidden).await?;
+
+  let hidden_names = repos
+    .iter()
+    .filter(|r| hidden.contains(&r.id))
+    .map(|r| r.full_name.clone())
+    .collect::<Vec<_>>();
+
+  if !hidden_names.is_empty() {
+    tracing::warn!("repos marked as hidden: {:?}", hidden_names);
+  }
+
+  Ok(())
+}
+
 pub async fn update_metrics(db: &DbClient, gh: &GhClient) -> Res {
   let stime = std::time::Instant::now();
 
@@ -13,8 +32,9 @@ pub async fn update_metrics(db: &DbClient, gh: &GhClient) -> Res {
   let date = date.split("T").next().unwrap().to_owned() + "T00:00:00Z";
 
   let repos = gh.get_repos().await?;
-  let repos = repos.into_iter().filter(|r| is_repo_included(&r.full_name)).collect::<Vec<_>>();
+  let _ = check_hidden_repos(db, &repos).await?;
 
+  let repos = repos.into_iter().filter(|r| is_repo_included(&r.full_name)).collect::<Vec<_>>();
   for repo in &repos {
     match update_repo_metrics(db, gh, &repo, &date).await {
       Err(e) => {
@@ -38,6 +58,7 @@ async fn update_repo_metrics(db: &DbClient, gh: &GhClient, repo: &Repo, date: &s
   let referrers = gh.traffic_refs(&repo.full_name).await?;
   let popular_paths = gh.traffic_paths(&repo.full_name).await?;
 
+  db.insert_repo(&repo).await?;
   db.insert_stats(&repo, date).await?;
   db.insert_views(&repo, &views).await?;
   db.insert_clones(&repo, &clones).await?;
