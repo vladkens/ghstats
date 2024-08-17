@@ -19,7 +19,9 @@ LABEL org.opencontainers.image.source="https://github.com/vladkens/ghstats"
 
 WORKDIR /app
 COPY --from=builder /app/target/release/ghstats .
+RUN addgroup -g 1000 -S app && adduser -u 1000 -S app -G app && chown -R app:app /app
 
+USER app
 ENV HOST=0.0.0.0
 ENV PORT=8080
 EXPOSE 8080
