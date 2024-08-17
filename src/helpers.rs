@@ -123,7 +123,7 @@ pub async fn sync_stars(db: &DbClient, gh: &GhClient) -> Res {
 }
 
 pub fn is_repo_included(repo: &str) -> bool {
-  let rules = std::env::var("REPO_FILTER").unwrap_or_default();
+  let rules = std::env::var("GHS_FILTER").unwrap_or_default();
   is_included(repo, &rules)
 }
 
