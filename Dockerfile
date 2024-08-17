@@ -1,12 +1,18 @@
-FROM rust:1.80-alpine AS builder
-RUN apk add --no-cache build-base musl-dev libressl-dev
-
+FROM rust:alpine AS chef
 WORKDIR /app
-ADD Cargo.toml Cargo.lock ./
-RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release --locked
+RUN apk add --no-cache build-base && cargo install cargo-chef
 
-ADD . .
-RUN touch src/main.rs && cargo build --release --frozen
+FROM chef AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM chef AS builder
+RUN apk add --no-cache build-base musl-dev libressl-dev
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
+
+COPY . .
+RUN cargo build --release --frozen
 
 FROM alpine:latest
 LABEL org.opencontainers.image.source="https://github.com/vladkens/ghstats"
