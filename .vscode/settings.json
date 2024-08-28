@@ -1,13 +1,18 @@
 {
   "[rust]": {
-    "editor.defaultFormatter": "rust-lang.rust-analyzer",
-    "editor.formatOnSave": true,
+    "editor.defaultFormatter": "rust-lang.rust-analyzer"
+  },
+  "[toml]": {
+    "editor.defaultFormatter": "tamasfe.even-better-toml"
+  },
+  "[markdown]": {
+    "editor.wordWrap": "wordWrapColumn",
+    "editor.wordWrapColumn": 99
   },
   "editor.formatOnSave": true,
   "files.exclude": { "Cargo.lock": true },
-  "rust-analyzer.lens.implementations.enable": false,
   "terminal.integrated.tabStopWidth": 2,
   "code-runner.executorMap": {
-    "rust": "cargo run -r #$fileName",
-  },
+    "rust": "cargo run -r #$fileName"
+  }
 }

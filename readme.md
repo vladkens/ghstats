@@ -58,6 +58,10 @@ All public repositories that can be accessed are saved. If you need more detaile
 
 ## Configuration
 
+### Host & Port
+
+You can to change default host / port app will run on with `HOST` (default `0.0.0.0`) and `PORT` (default `8080`) environment variables.
+
 ### Custom links
 
 If you plan to display your stats publicly, there is an option to add custom links to the header via environment variables, e.g.:
