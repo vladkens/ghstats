@@ -3,9 +3,6 @@ name = "ghstats"
 version = "0.3.1"
 edition = "2021"
 
-[lints.rust]
-dead_code = "allow"
-
 [dependencies]
 axum = "0.7.5"
 maud = { version = "0.26.0", features = ["axum"] }
@@ -23,3 +20,12 @@ tracing = "0.1.40"
 tower-http = { version = "0.5.2", features = ["trace"] }
 dotenvy = "0.15.7"
 serde_variant = "0.1.3"
+
+[lints.rust]
+dead_code = "allow"
+
+[profile.dev]
+debug = 0
+
+[profile.release]
+strip = true

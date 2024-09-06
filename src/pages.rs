@@ -207,6 +207,12 @@ async fn popular_table(
         }
 
         tbody {
+          @if items.is_empty() {
+            tr {
+              td colspan=(cols.len()) .text-center { "No data for given period" }
+            }
+          }
+
           @for item in items {
             tr {
               @for (idx, col) in cols.iter().enumerate() {
@@ -243,7 +249,7 @@ pub async fn repo_page(
     return AppError::not_found();
   }
 
-  let qs: Query<PopularFilter> = Query::try_from_uri(req.uri())?;
+  let mut qs: Query<PopularFilter> = Query::try_from_uri(req.uri())?;
   let db = &state.db;
 
   let periods = vec![
@@ -254,7 +260,7 @@ pub async fn repo_page(
     (-1, "All time"),
   ];
 
-  let period = match periods.iter().all(|x| x.0 != qs.period) {
+  qs.period = match periods.iter().all(|x| x.0 != qs.period) {
     true => 7,
     false => qs.period,
   };
@@ -332,7 +338,7 @@ pub async fn repo_page(
 
     select name="period" hx-get=(format!("/{}", repo)) hx-target="#popular_tables" hx-swap="outerHTML" {
       @for (days, title) in &periods {
-        option value=(days) selected[*days == period] { (title) }
+        option value=(days) selected[*days == qs.period] { (title) }
       }
     }
 
