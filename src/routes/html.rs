@@ -7,7 +7,7 @@ use thousands::Separable;
 use crate::db_client::{
   DbClient, Direction, PopularFilter, PopularKind, PopularSort, RepoFilter, RepoSort, RepoTotals,
 };
-use crate::helpers::is_repo_included;
+use crate::helpers::{get_filtered_repos, is_repo_included};
 use crate::types::{AppError, HtmlRes};
 use crate::AppState;
 
@@ -19,10 +19,7 @@ struct TablePopularItem {
 }
 
 fn get_hx_target(req: &Request) -> Option<&str> {
-  match req.headers().get("hx-target") {
-    Some(x) => Some(x.to_str().unwrap_or_default()),
-    None => None,
-  }
+  crate::helpers::get_header(req, "hx-target")
 }
 
 fn maybe_url(item: &(String, Option<String>)) -> Markup {
@@ -68,7 +65,7 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
     _ => &format!("{} · {}", navs.last().unwrap().0, app_name),
   };
 
-  let favicon = include_str!("../assets/favicon.svg")
+  let favicon = include_str!("../../assets/favicon.svg")
     .replace("\n", "")
     .replace("\"", "%22")
     .replace("#", "%23");
@@ -87,7 +84,7 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
         script src="https://unpkg.com/luxon@3.5" {}
         script src="https://unpkg.com/chartjs-adapter-luxon@1.3" {}
         script src="https://unpkg.com/htmx.org@2.0" {}
-        style { (PreEscaped(include_str!("../assets/app.css"))) }
+        style { (PreEscaped(include_str!("../../assets/app.css"))) }
       }
       body {
         main class="container-fluid pt-0 main-box" {
@@ -327,7 +324,7 @@ pub async fn repo_page(
       }
     }
 
-    script { (PreEscaped(include_str!("../assets/app.js"))) }
+    script { (PreEscaped(include_str!("../../assets/app.js"))) }
     script {
       "const Metrics = "(PreEscaped(serde_json::to_string(&metrics)?))";"
       "const Stars = "(PreEscaped(serde_json::to_string(&stars)?))";"
@@ -351,11 +348,9 @@ pub async fn repo_page(
 // https://docs.rs/axum/latest/axum/extract/index.html#common-extractors
 pub async fn index(State(state): State<Arc<AppState>>, req: Request) -> HtmlRes {
   // let qs: Query<HashMap<String, String>> = Query::try_from_uri(req.uri())?;
-  let qs: Query<RepoFilter> = Query::try_from_uri(req.uri())?;
-
   let db = &state.db;
-  let repos = db.get_repos(&qs).await?;
-  let repos = repos.into_iter().filter(|x| is_repo_included(&x.name)).collect::<Vec<_>>();
+  let qs: Query<RepoFilter> = Query::try_from_uri(req.uri())?;
+  let repos = get_filtered_repos(&db, &qs).await?;
 
   let cols: Vec<(&str, Box<dyn Fn(&RepoTotals) -> Markup>, RepoSort)> = vec![
     ("Name", Box::new(|x| html!(a href=(format!("/{}", x.name)) { (x.name) })), RepoSort::Name),

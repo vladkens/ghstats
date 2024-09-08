@@ -6,7 +6,7 @@ use axum::{http::StatusCode, response::IntoResponse, Router};
 mod db_client;
 mod gh_client;
 mod helpers;
-mod pages;
+mod routes;
 mod types;
 
 use db_client::{DbClient, RepoFilter};
@@ -97,7 +97,6 @@ async fn health() -> impl IntoResponse {
 
 #[tokio::main]
 async fn main() -> Res {
-  use crate::pages;
   use tower_http::trace::{self, TraceLayer};
   use tracing::Level;
 
@@ -112,15 +111,14 @@ async fn main() -> Res {
   tracing::info!("{}", brand);
 
   let router = Router::new()
-    .route("/", get(pages::index))
-    .route("/:owner/:repo", get(pages::repo_page))
+    .nest("/api", routes::api_routes())
+    .merge(routes::html_routes())
     .layer(
       TraceLayer::new_for_http()
         .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
         .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
     )
-    // do not show logs for this routes
-    .route("/health", get(health));
+    .route("/health", get(health)); // do not show logs for this route
 
   let state = Arc::new(AppState::new().await?);
   let service = router.with_state(state.clone()).into_make_service();

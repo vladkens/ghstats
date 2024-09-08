@@ -1,6 +1,7 @@
 // https://github.com/tokio-rs/axum/blob/main/examples/anyhow-error-response/src/main.rs
 
 pub type Res<T = ()> = anyhow::Result<T>;
+pub type JsonRes<T> = Result<axum::Json<T>, AppError>;
 pub type HtmlRes = Result<maud::Markup, AppError>;
 
 pub struct AppError(anyhow::Error);

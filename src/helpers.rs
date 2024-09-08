@@ -1,10 +1,19 @@
 use std::collections::HashMap;
 
+use axum::extract::{Query, Request};
+
 use crate::{
-  db_client::DbClient,
+  db_client::{DbClient, RepoFilter, RepoTotals},
   gh_client::{GhClient, Repo},
   types::Res,
 };
+
+pub fn get_header<'a>(req: &'a Request, name: &'a str) -> Option<&'a str> {
+  match req.headers().get(name) {
+    Some(x) => Some(x.to_str().unwrap_or_default()),
+    None => None,
+  }
+}
 
 async fn check_hidden_repos(db: &DbClient, repos: &Vec<Repo>) -> Res {
   let now_ids = repos.iter().map(|r| r.id as i64).collect::<Vec<_>>();
@@ -170,6 +179,12 @@ fn is_included(repo: &str, rules: &str) -> bool {
   }
 
   return false;
+}
+
+pub async fn get_filtered_repos(db: &DbClient, qs: &Query<RepoFilter>) -> Res<Vec<RepoTotals>> {
+  let repos = db.get_repos(&qs).await?;
+  let repos = repos.into_iter().filter(|x| is_repo_included(&x.name)).collect::<Vec<_>>();
+  Ok(repos)
 }
 
 #[cfg(test)]
