@@ -6,7 +6,7 @@ edition = "2021"
 [dependencies]
 axum = "0.7.5"
 maud = { version = "0.26.0", features = ["axum"] }
-reqwest = { version = "0.12.5", features = ["json"] }
+reqwest = { version = "0.12.5", features = ["json", "rustls-tls"], default-features = false }
 serde_json = "1.0.120"
 serde = { version = "1.0.204", features = ["serde_derive"] }
 tokio = { version = "1.38.1", features = ["full"] }

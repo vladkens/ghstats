@@ -7,11 +7,12 @@
   },
   "[markdown]": {
     "editor.wordWrap": "wordWrapColumn",
-    "editor.wordWrapColumn": 99
+    "editor.wordWrapColumn": 100
   },
   "editor.formatOnSave": true,
   "files.exclude": { "Cargo.lock": true },
   "terminal.integrated.tabStopWidth": 2,
+  "evenBetterToml.formatter.columnWidth": 100,
   "code-runner.executorMap": {
     "rust": "cargo run -r #$fileName"
   }
