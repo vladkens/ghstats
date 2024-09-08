@@ -1,4 +1,4 @@
-use std::vec;
+use std::{time::Duration, vec};
 
 use reqwest::{
   header::{HeaderMap, HeaderValue},
@@ -84,9 +84,12 @@ impl GhClient {
     headers.insert("Authorization", auth_header);
     headers.insert("User-Agent", HeaderValue::from_str(&user_agent)?);
 
-    let client = reqwest::Client::builder().default_headers(headers).build()?;
-    let base_url = "https://api.github.com".to_string();
+    let client = reqwest::Client::builder()
+      .default_headers(headers)
+      .read_timeout(Duration::from_secs(30))
+      .build()?;
 
+    let base_url = "https://api.github.com".to_string();
     Ok(GhClient { client, base_url })
   }
 
