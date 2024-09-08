@@ -87,6 +87,45 @@ GHS_FILTER=*,!vladkens/apigen-ts,!foo-org/bar # show all repos expect two
 
 See example [here](https://github.com/vladkens/ghstats/issues/8).
 
+### API endpoint
+
+You have the ability to get collected data by `ghstats` via API. At the moment there is only one method available to get all repos list – if you need other data – open PR, please. `GHS_API_TOKEN` environment variable must be set for the API to work. All API calls if protected by `x-api-token` header, which should be same with `GHS_API_TOKEN` variable. CORS is enabled for all hosts, so you can access API from personal pages.
+
+#### Endpoints
+
+`/api/repos` – will return list of all repos and overall metrics. Data returted in JSON format. Usage example:
+
+```sh
+curl -H "x-api-token:1234" http://127.0.0.1:8080/api/repos
+```
+
+```json
+{
+  "total_count": 20,
+  "total_stars": 1000,
+  "total_forks": 200,
+  "total_views": 20000,
+  "total_clones": 500,
+  "items": [
+    {
+      "id": 833875266,
+      "name": "vladkens/ghstats",
+      "description": "🤩📈 Self-hosted dashboard for tracking GitHub repos traffic history longer than 14 days.",
+      "date": "2024-09-08T00:00:00Z",
+      "stars": 110,
+      "forks": 1,
+      "watchers": 110,
+      "issues": 5,
+      "clones_count": 90,
+      "clones_uniques": 45,
+      "views_count": 1726,
+      "views_uniques": 659
+    }
+    // ...
+  ]
+}
+```
+
 ## 🤝 Contributing
 
 All contributions are welcome! Feel free to open an issue or submit a pull request.
