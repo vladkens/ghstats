@@ -1,3 +1,5 @@
-target/
-data/
-.env
+*
+!Cargo.toml
+!Cargo.lock
+!/assets/
+!/src/

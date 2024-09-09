@@ -11,3 +11,6 @@ docker-run:
 
 docker-log:
 	docker logs ghstats --follow
+
+gh-cache-clear:
+	gh cache delete --all
