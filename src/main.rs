@@ -104,7 +104,7 @@ async fn main() -> Res {
   tracing_subscriber::fmt() //
     .with_target(false)
     .compact()
-    .with_max_level(Level::TRACE)
+    // .with_max_level(Level::TRACE)
     .init();
 
   let brand = format!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
