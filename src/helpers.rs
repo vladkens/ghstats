@@ -53,13 +53,17 @@ pub async fn update_metrics(db: &DbClient, gh: &GhClient) -> Res {
 }
 
 async fn update_repo_metrics(db: &DbClient, gh: &GhClient, repo: &Repo, date: &str) -> Res {
+  let prs = gh.get_open_pull_requests(&repo.full_name).await?;
   let views = gh.traffic_views(&repo.full_name).await?;
   let clones = gh.traffic_clones(&repo.full_name).await?;
   let referrers = gh.traffic_refs(&repo.full_name).await?;
+
   let popular_paths = gh.traffic_paths(&repo.full_name).await?;
 
   db.insert_repo(&repo).await?;
   db.insert_stats(&repo, date).await?;
+  db.insert_issues(&repo, date, &prs).await?;
+  db.insert_prs(&repo, date, &prs).await?;
   db.insert_views(&repo, &views).await?;
   db.insert_clones(&repo, &clones).await?;
   db.insert_referrers(&repo, date, &referrers).await?;

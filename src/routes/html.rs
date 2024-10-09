@@ -355,6 +355,7 @@ pub async fn index(State(state): State<Arc<AppState>>, req: Request) -> HtmlRes 
   let cols: Vec<(&str, Box<dyn Fn(&RepoTotals) -> Markup>, RepoSort)> = vec![
     ("Name", Box::new(|x| html!(a href=(format!("/{}", x.name)) { (x.name) })), RepoSort::Name),
     ("Issues", Box::new(|x| html!((x.issues.separate_with_commas()))), RepoSort::Issues),
+    ("PRs", Box::new(|x| html!((x.prs.separate_with_commas()))), RepoSort::Prs),
     ("Forks", Box::new(|x| html!((x.forks.separate_with_commas()))), RepoSort::Forks),
     ("Clones", Box::new(|x| html!((x.clones_count.separate_with_commas()))), RepoSort::Clones),
     ("Stars", Box::new(|x| html!((x.stars.separate_with_commas()))), RepoSort::Stars),

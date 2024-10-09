@@ -24,6 +24,12 @@ pub struct Repo {
 }
 
 #[derive(Debug, Deserialize, Serialize)]
+pub struct PullRequest {
+  pub id: u64,
+  pub title: String,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
 pub struct TrafficDaily {
   pub timestamp: String,
   pub uniques: u32,
@@ -126,6 +132,13 @@ impl GhClient {
     let url = format!("{}/user/repos?visibility=public", self.base_url);
     let req = self.client.get(url);
     let dat: Vec<Repo> = self.with_pagination(req).await?;
+    Ok(dat)
+  }
+
+  pub async fn get_open_pull_requests(&self, repo: &str) -> Res<Vec<PullRequest>> {
+    let url = format!("{}/repos/{}/pulls?state=open", self.base_url, repo);
+    let req = self.client.get(url);
+    let dat: Vec<PullRequest> = self.with_pagination(req).await?;
     Ok(dat)
   }
 
