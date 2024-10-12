@@ -52,6 +52,9 @@ async fn check_new_release(state: Arc<AppState>) -> Res {
 async fn start_cron(state: Arc<AppState>) -> Res {
   use tokio_cron_scheduler::{Job, JobScheduler};
 
+  // note: for development, uncomment to update metrics on start
+  // helpers::update_metrics(&state.db, &state.gh).await?;
+
   // if new db, update metrics immediately
   let repos = state.db.get_repos(&RepoFilter::default()).await?;
   if repos.len() == 0 {
@@ -138,7 +141,7 @@ async fn main() -> Res {
   let addr = format!("{}:{}", host, port);
 
   let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
-  tracing::info!("listening on {}", addr);
+  tracing::info!("listening on http://{}", addr);
   axum::serve(listener, service).await.unwrap();
 
   Ok(())

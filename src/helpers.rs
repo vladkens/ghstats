@@ -61,9 +61,7 @@ async fn update_repo_metrics(db: &DbClient, gh: &GhClient, repo: &Repo, date: &s
   let popular_paths = gh.traffic_paths(&repo.full_name).await?;
 
   db.insert_repo(&repo).await?;
-  db.insert_stats(&repo, date).await?;
-  db.insert_issues(&repo, date, &prs).await?;
-  db.insert_prs(&repo, date, &prs).await?;
+  db.insert_stats(&repo, date, &prs).await?;
   db.insert_views(&repo, &views).await?;
   db.insert_clones(&repo, &clones).await?;
   db.insert_referrers(&repo, date, &referrers).await?;

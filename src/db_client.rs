@@ -423,14 +423,16 @@ impl DbClient {
     Ok(())
   }
 
-  pub async fn insert_stats(&self, repo: &Repo, date: &str) -> Res {
+  pub async fn insert_stats(&self, repo: &Repo, date: &str, prs: &Vec<PullRequest>) -> Res {
     let qs = "
-    INSERT INTO repo_stats AS t (repo_id, date, stars, forks, watchers)
-    VALUES ($1, $2, $3, $4, $5)
+    INSERT INTO repo_stats AS t (repo_id, date, stars, forks, watchers, issues, prs)
+    VALUES ($1, $2, $3, $4, $5, $6, $7)
     ON CONFLICT(repo_id, date) DO UPDATE SET
       stars = MAX(t.stars, excluded.stars),
       forks = MAX(t.forks, excluded.forks),
-      watchers = MAX(t.watchers, excluded.watchers);
+      watchers = MAX(t.watchers, excluded.watchers),
+      issues = MAX(t.issues, excluded.issues),
+      prs = MAX(t.prs, excluded.prs);
     ";
 
     let _ = sqlx::query(qs)
@@ -439,43 +441,7 @@ impl DbClient {
       .bind(repo.stargazers_count as i32)
       .bind(repo.forks_count as i32)
       .bind(repo.watchers_count as i32)
-      .execute(&self.db)
-      .await?;
-
-    Ok(())
-  }
-
-  pub async fn insert_issues(&self, repo: &Repo, date: &str, prs: &[PullRequest]) -> Res {
-    let issues_count = repo.open_issues_count - prs.len() as u32;
-
-    let qs = "
-    INSERT INTO repo_stats AS t (repo_id, date, issues)
-    VALUES ($1, $2, $3)
-    ON CONFLICT(repo_id, date) DO UPDATE SET
-      issues = excluded.issues;
-    ";
-
-    let _ = sqlx::query(qs)
-      .bind(repo.id as i64)
-      .bind(&date)
-      .bind(issues_count as i32)
-      .execute(&self.db)
-      .await?;
-
-    Ok(())
-  }
-
-  pub async fn insert_prs(&self, repo: &Repo, date: &str, prs: &[PullRequest]) -> Res {
-    let qs = "
-    INSERT INTO repo_stats AS t (repo_id, date, prs)
-    VALUES ($1, $2, $3)
-    ON CONFLICT(repo_id, date) DO UPDATE SET
-      prs = excluded.prs;
-    ";
-
-    let _ = sqlx::query(qs)
-      .bind(repo.id as i64)
-      .bind(&date)
+      .bind(repo.open_issues_count as i32 - prs.len() as i32)
       .bind(prs.len() as i32)
       .execute(&self.db)
       .await?;
