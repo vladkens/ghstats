@@ -116,6 +116,7 @@ curl -H "x-api-token:1234" http://127.0.0.1:8080/api/repos
       "forks": 1,
       "watchers": 110,
       "issues": 5,
+      "prs": 1,
       "clones_count": 90,
       "clones_uniques": 45,
       "views_count": 1726,

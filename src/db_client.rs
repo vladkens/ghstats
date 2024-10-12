@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use serde_variant::to_variant_name;
 use sqlx::{sqlite::SqliteConnectOptions, FromRow, SqlitePool};
 
-use crate::gh_client::{Repo, RepoClones, RepoPopularPath, RepoReferrer, RepoViews};
+use crate::gh_client::{PullRequest, Repo, RepoClones, RepoPopularPath, RepoReferrer, RepoViews};
 use crate::types::Res;
 
 // MARK: Migrations
@@ -87,11 +87,22 @@ async fn migrate_v2(db: &SqlitePool) -> Res {
   Ok(())
 }
 
+async fn migrate_v3(db: &SqlitePool) -> Res {
+  let queries = vec!["ALTER TABLE repo_stats ADD COLUMN prs INTEGER NOT NULL DEFAULT 0;"];
+
+  for qs in queries {
+    let _ = sqlx::query(qs).execute(db).await?;
+  }
+
+  Ok(())
+}
+
 async fn migrate<'a>(db: &'a SqlitePool) -> Res {
   type BoxFn = Box<dyn for<'a> Fn(&'a SqlitePool) -> Pin<Box<dyn Future<Output = Res> + 'a>>>;
   let migrations: Vec<BoxFn> = vec![
     Box::new(|db| Box::pin(migrate_v1(db))), //
     Box::new(|db| Box::pin(migrate_v2(db))),
+    Box::new(|db| Box::pin(migrate_v3(db))),
   ];
 
   let version: (i32,) = sqlx::query_as("PRAGMA user_version").fetch_one(db).await?;
@@ -129,6 +140,7 @@ pub struct RepoTotals {
   pub forks: i32,
   pub watchers: i32,
   pub issues: i32,
+  pub prs: i32,
   pub clones_count: i32,
   pub clones_uniques: i32,
   pub views_count: i32,
@@ -199,6 +211,7 @@ pub enum RepoSort {
   Forks,
   Watchers,
   Issues,
+  Prs,
   #[serde(rename = "clones_count")]
   Clones,
   #[serde(rename = "views_count")]
@@ -264,7 +277,7 @@ INNER JOIN (
     latest.*
 	FROM repo_stats rs
 	INNER JOIN (
-		SELECT repo_id, MAX(date) AS date, stars, forks, watchers, issues
+		SELECT repo_id, MAX(date) AS date, stars, forks, watchers, issues, prs
 		FROM repo_stats GROUP BY repo_id
 	) latest ON latest.repo_id = rs.repo_id
 	GROUP BY rs.repo_id
@@ -412,13 +425,12 @@ impl DbClient {
 
   pub async fn insert_stats(&self, repo: &Repo, date: &str) -> Res {
     let qs = "
-    INSERT INTO repo_stats AS t (repo_id, date, stars, forks, watchers, issues)
-    VALUES ($1, $2, $3, $4, $5, $6)
+    INSERT INTO repo_stats AS t (repo_id, date, stars, forks, watchers)
+    VALUES ($1, $2, $3, $4, $5)
     ON CONFLICT(repo_id, date) DO UPDATE SET
       stars = MAX(t.stars, excluded.stars),
       forks = MAX(t.forks, excluded.forks),
-      watchers = MAX(t.watchers, excluded.watchers),
-      issues = MAX(t.issues, excluded.issues);
+      watchers = MAX(t.watchers, excluded.watchers);
     ";
 
     let _ = sqlx::query(qs)
@@ -427,7 +439,44 @@ impl DbClient {
       .bind(repo.stargazers_count as i32)
       .bind(repo.forks_count as i32)
       .bind(repo.watchers_count as i32)
-      .bind(repo.open_issues_count as i32)
+      .execute(&self.db)
+      .await?;
+
+    Ok(())
+  }
+
+  pub async fn insert_issues(&self, repo: &Repo, date: &str, prs: &[PullRequest]) -> Res {
+    let issues_count = repo.open_issues_count - prs.len() as u32;
+
+    let qs = "
+    INSERT INTO repo_stats AS t (repo_id, date, issues)
+    VALUES ($1, $2, $3)
+    ON CONFLICT(repo_id, date) DO UPDATE SET
+      issues = excluded.issues;
+    ";
+
+    let _ = sqlx::query(qs)
+      .bind(repo.id as i64)
+      .bind(&date)
+      .bind(issues_count as i32)
+      .execute(&self.db)
+      .await?;
+
+    Ok(())
+  }
+
+  pub async fn insert_prs(&self, repo: &Repo, date: &str, prs: &[PullRequest]) -> Res {
+    let qs = "
+    INSERT INTO repo_stats AS t (repo_id, date, prs)
+    VALUES ($1, $2, $3)
+    ON CONFLICT(repo_id, date) DO UPDATE SET
+      prs = excluded.prs;
+    ";
+
+    let _ = sqlx::query(qs)
+      .bind(repo.id as i64)
+      .bind(&date)
+      .bind(prs.len() as i32)
       .execute(&self.db)
       .await?;
 
