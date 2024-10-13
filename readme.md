@@ -45,11 +45,11 @@ services:
 
 ### Github token generation
 
-`ghstats` need Github Token to collect traffic data from API. Token can be obtained with following steps:
+`ghstats` needs Github Token to collect traffic data from API. Token can be obtained with following steps:
 
 1. Go to https://github.com/settings/tokens
 2. Generate new token > Generate new token (classic)
-3. Enter name, eg: `ghstats`. Scopes: `public_repo`
+3. Enter name, e.g.: `ghstats`. Scopes: `public_repo`
 4. Click genereate token & copy it
 5. Save token to `.env` file with name `GITHUB_TOKEN=???`
 
@@ -75,7 +75,7 @@ GHS_CUSTOM_LINKS="Blog|https://medium.com/@vladkens,Github|https://github.com/vl
 
 ### Filter repos
 
-You can filter repos for display (and data collection). You can select a specific org/user or a specific list of repositories. This is configured via the `GHS_FILTER` environment variable. You can use negation in the rules to remove a specific repo or org/user using the `!` symbol. By default all repos show.
+You can filter repos for display (and data collection). You can select a specific org/user or a specific list of repositories. This is configured via the `GHS_FILTER` environment variable. You can use negation in the rules to remove a specific repo or org/user using the `!` symbol. By default, all repos are shown.
 
 _Note: Statistics on previously downloaded repos remain in database, but they are hidden from display._
 
@@ -89,6 +89,10 @@ GHS_FILTER=*,!vladkens/apigen-ts,!foo-org/bar # show all repos expect two
 ```
 
 See example [here](https://github.com/vladkens/ghstats/issues/8).
+
+### Filter forks
+
+Regardless of the repo filter specified, you can set `GHS_FILTER_FORKS` environment variable to filter any forked repositories. The variable takes `true|false` or `1|0` values.
 
 ### API endpoint
 

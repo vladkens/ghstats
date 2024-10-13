@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::env;
 
 use axum::extract::{Query, Request};
 
@@ -33,7 +34,8 @@ pub async fn update_metrics(db: &DbClient, gh: &GhClient) -> Res {
   let repos = gh.get_repos().await?;
   let _ = check_hidden_repos(db, &repos).await?;
 
-  let repos = repos.into_iter().filter(|r| is_repo_included(&r.full_name)).collect::<Vec<_>>();
+  let repos =
+    repos.into_iter().filter(|r| is_repo_included(&r.full_name, r.fork)).collect::<Vec<_>>();
   for repo in &repos {
     match update_repo_metrics(db, gh, &repo, &date).await {
       Err(e) => {
@@ -133,12 +135,18 @@ pub async fn sync_stars(db: &DbClient, gh: &GhClient) -> Res {
   Ok(())
 }
 
-pub fn is_repo_included(repo: &str) -> bool {
-  let rules = std::env::var("GHS_FILTER").unwrap_or_default();
-  is_included(repo, &rules)
+pub fn is_repo_included(repo: &str, is_fork: bool) -> bool {
+  let rules = env::var("GHS_FILTER").unwrap_or_default();
+  let filter_forks = env::var("GHS_FILTER_FORKS").unwrap_or_default().to_lowercase();
+  let exclude_forks = filter_forks == "true" || filter_forks == "1";
+  is_included(repo, &rules, is_fork, exclude_forks)
 }
 
-fn is_included(repo: &str, rules: &str) -> bool {
+fn is_included(repo: &str, rules: &str, is_fork: bool, exclude_forks: bool) -> bool {
+  if exclude_forks && is_fork {
+    return false;
+  }
+
   let repo = repo.trim().to_lowercase();
   if repo.is_empty()
     || repo.matches('/').count() != 1
@@ -156,7 +164,6 @@ fn is_included(repo: &str, rules: &str) -> bool {
       if f.is_empty() {
         return false;
       }
-
       return *f == "*" || f.matches('/').count() == 1;
     })
     .collect();
@@ -185,7 +192,7 @@ fn is_included(repo: &str, rules: &str) -> bool {
 
 pub async fn get_filtered_repos(db: &DbClient, qs: &Query<RepoFilter>) -> Res<Vec<RepoTotals>> {
   let repos = db.get_repos(&qs).await?;
-  let repos = repos.into_iter().filter(|x| is_repo_included(&x.name)).collect::<Vec<_>>();
+  let repos = repos.into_iter().filter(|x| is_repo_included(&x.name, x.fork)).collect::<Vec<_>>();
   Ok(repos)
 }
 
@@ -196,78 +203,102 @@ mod tests {
   #[test]
   fn test_included_with_empty_env() {
     let r = "";
-    assert_eq!(is_included("foo/bar", r), true);
-    assert_eq!(is_included("foo/baz", r), true);
-    assert_eq!(is_included("abc/123", r), true);
-    assert_eq!(is_included("abc/xyz-123", r), true);
+
+    assert_eq!(is_included("foo/bar", r, false, false), true);
+    assert_eq!(is_included("foo/baz", r, false, false), true);
+    assert_eq!(is_included("abc/123", r, false, false), true);
+    assert_eq!(is_included("abc/xyz-123", r, false, false), true);
+
     // negative tests – non repo patterns
-    assert_eq!(is_included("foo/", r), false);
-    assert_eq!(is_included("/bar", r), false);
-    assert_eq!(is_included("foo", r), false);
-    assert_eq!(is_included("foo/bar/baz", r), false);
-    // assert_eq!(is_repo_included("*", r), false);
-    // assert_eq!(is_repo_included("foo/*", r), false);
-    // assert_eq!(is_repo_included("*/bar", r), false);
+    assert_eq!(is_included("foo/", r, false, false), false);
+    assert_eq!(is_included("/bar", r, false, false), false);
+    assert_eq!(is_included("foo", r, false, false), false);
+    assert_eq!(is_included("foo/bar/baz", r, false, false), false);
+    // assert_eq!(is_repo_included("*", r, false, false), false);
+    // assert_eq!(is_repo_included("foo/*", r, false, false), false);
+    // assert_eq!(is_repo_included("*/bar", r, false, false), false);
   }
 
   #[test]
   fn test_included_with_env() {
     let r = "foo/*,abc/xyz";
-    assert_eq!(is_included("foo/bar", r), true);
-    assert_eq!(is_included("foo/abc", r), true);
-    assert_eq!(is_included("foo/abc-123", r), true);
-    assert_eq!(is_included("abc/xyz", r), true);
-    assert_eq!(is_included("abc/123", r), false);
-    assert_eq!(is_included("foo/bar/baz", r), false);
+
+    assert_eq!(is_included("foo/bar", r, false, false), true);
+    assert_eq!(is_included("foo/abc", r, false, false), true);
+    assert_eq!(is_included("foo/abc-123", r, false, false), true);
+    assert_eq!(is_included("abc/xyz", r, false, false), true);
+    assert_eq!(is_included("abc/123", r, false, false), false);
+    assert_eq!(is_included("foo/bar/baz", r, false, false), false);
 
     // check case sensitivity
-    assert_eq!(is_included("FOO/BAR", r), true);
-    assert_eq!(is_included("Foo/Bar", r), true);
+    assert_eq!(is_included("FOO/BAR", r, false, false), true);
+    assert_eq!(is_included("Foo/Bar", r, false, false), true);
 
     let r = "FOO/*,Abc/XYZ";
-    assert_eq!(is_included("foo/bar", r), true);
-    assert_eq!(is_included("foo/abc", r), true);
-    assert_eq!(is_included("foo/abc-123", r), true);
-    assert_eq!(is_included("abc/xyz", r), true);
+
+    assert_eq!(is_included("foo/bar", r, false, false), true);
+    assert_eq!(is_included("foo/abc", r, false, false), true);
+    assert_eq!(is_included("foo/abc-123", r, false, false), true);
+    assert_eq!(is_included("abc/xyz", r, false, false), true);
   }
 
   #[test]
   fn test_include_with_exclude_rule() {
     let r = "foo/*,!foo/bar";
-    assert_eq!(is_included("foo/bar", r), false);
-    assert_eq!(is_included("FOO/Bar", r), false);
 
-    assert_eq!(is_included("foo/abc", r), true);
-    assert_eq!(is_included("foo/abc-123", r), true);
-    assert_eq!(is_included("abc/xyz", r), false);
+    assert_eq!(is_included("foo/bar", r, false, false), false);
+    assert_eq!(is_included("FOO/Bar", r, false, false), false);
+
+    assert_eq!(is_included("foo/abc", r, false, false), true);
+    assert_eq!(is_included("foo/abc-123", r, false, false), true);
+    assert_eq!(is_included("abc/xyz", r, false, false), false);
 
     let r = "foo/*,!foo/bar,!foo/baz,abc/xyz";
-    assert_eq!(is_included("foo/bar", r), false);
-    assert_eq!(is_included("foo/baz", r), false);
-    assert_eq!(is_included("abc/xyz", r), true);
-    assert_eq!(is_included("foo/123", r), true);
+
+    assert_eq!(is_included("foo/bar", r, false, false), false);
+    assert_eq!(is_included("foo/baz", r, false, false), false);
+    assert_eq!(is_included("abc/xyz", r, false, false), true);
+    assert_eq!(is_included("foo/123", r, false, false), true);
   }
 
   #[test]
-  fn test_include_all_expect() {
+  fn test_include_all_except() {
     let r = "*";
-    assert_eq!(is_included("foo/bar", r), true);
-    assert_eq!(is_included("abc/123", r), true);
+
+    assert_eq!(is_included("foo/bar", r, false, false), true);
+    assert_eq!(is_included("abc/123", r, false, false), true);
 
     let r = "-*";
-    assert_eq!(is_included("foo/bar", r), true);
-    assert_eq!(is_included("abc/123", r), true);
+
+    assert_eq!(is_included("foo/bar", r, false, false), true);
+    assert_eq!(is_included("abc/123", r, false, false), true);
 
     let r = "*,!foo/bar,!abc/123";
-    assert_eq!(is_included("foo/bar", r), false);
-    assert_eq!(is_included("abc/123", r), false);
-    assert_eq!(is_included("foo/baz", r), true);
-    assert_eq!(is_included("abc/xyz", r), true);
+
+    assert_eq!(is_included("foo/bar", r, false, false), false);
+    assert_eq!(is_included("abc/123", r, false, false), false);
+    assert_eq!(is_included("foo/baz", r, false, false), true);
+    assert_eq!(is_included("abc/xyz", r, false, false), true);
 
     let r = "*,!foo/*";
-    assert_eq!(is_included("foo/bar", r), false);
-    assert_eq!(is_included("foo/baz", r), false);
-    assert_eq!(is_included("abc/123", r), true);
-    assert_eq!(is_included("abc/xyz", r), true);
+
+    assert_eq!(is_included("foo/bar", r, false, false), false);
+    assert_eq!(is_included("foo/baz", r, false, false), false);
+    assert_eq!(is_included("abc/123", r, false, false), true);
+    assert_eq!(is_included("abc/xyz", r, false, false), true);
+  }
+
+  #[test]
+  fn test_exclude_forks() {
+    let r = "*";
+    let ef = false;
+
+    assert_eq!(is_included("foo/bar", r, false, ef), true);
+    assert_eq!(is_included("abc/123", r, true, ef), true);
+
+    let ef = true;
+
+    assert_eq!(is_included("foo/bar", r, false, ef), true);
+    assert_eq!(is_included("abc/123", r, true, ef), false);
   }
 }
