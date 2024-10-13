@@ -135,6 +135,7 @@ pub struct RepoTotals {
   pub id: i64,
   pub name: String,
   pub description: Option<String>,
+  pub fork: bool,
   pub date: String,
   pub stars: i32,
   pub forks: i32,
