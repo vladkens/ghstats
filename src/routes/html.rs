@@ -242,10 +242,6 @@ pub async fn repo_page(
   req: Request,
 ) -> HtmlRes {
   let repo = format!("{}/{}", owner, repo);
-  if !is_repo_included(&repo) {
-    return AppError::not_found();
-  }
-
   let mut qs: Query<PopularFilter> = Query::try_from_uri(req.uri())?;
   let db = &state.db;
 
@@ -276,6 +272,10 @@ pub async fn repo_page(
 
   let metrics = db.get_metrics(&repo).await?;
   let stars = db.get_stars(&repo).await?;
+
+  if !is_repo_included(&repo, totals.fork) {
+    return AppError::not_found();
+  }
 
   let html = html!(
     div class="grid" style="grid-template-columns: 1fr 2fr;" {
