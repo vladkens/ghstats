@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Arc};
 
 use axum::extract::Request;
 
 use crate::{
   db_client::DbClient,
   gh_client::{GhClient, Repo},
+  state::AppState,
   types::Res,
 };
 
@@ -24,22 +25,22 @@ async fn check_hidden_repos(db: &DbClient, repos: &Vec<Repo>) -> Res {
   Ok(())
 }
 
-pub async fn update_metrics(db: &DbClient, gh: &GhClient, filter: &GhsFilter) -> Res {
+pub async fn update_metrics(state: Arc<AppState>) -> Res {
   let stime = std::time::Instant::now();
 
   let date = chrono::Utc::now().to_utc().to_rfc3339();
   let date = date.split("T").next().unwrap().to_owned() + "T00:00:00Z";
 
-  let repos = gh.get_repos().await?;
-  let _ = check_hidden_repos(db, &repos).await?;
+  let repos = state.gh.get_repos(state.include_private).await?;
+  let _ = check_hidden_repos(&state.db, &repos).await?;
 
   let repos = repos //
-    .into_iter()
-    .filter(|r| filter.is_included(&r.full_name, r.fork, r.archived))
+    .iter()
+    .filter(|r| state.filter.is_included(&r.full_name, r.fork, r.archived))
     .collect::<Vec<_>>();
 
   for repo in &repos {
-    match update_repo_metrics(db, gh, &repo, &date).await {
+    match update_repo_metrics(&state.db, &state.gh, &repo, &date).await {
       Err(e) => {
         tracing::warn!("failed to update metrics for {}: {:?}", repo.full_name, e);
         continue;
@@ -50,8 +51,8 @@ pub async fn update_metrics(db: &DbClient, gh: &GhClient, filter: &GhsFilter) ->
   }
 
   tracing::info!("update_metrics took {:?} for {} repos", stime.elapsed(), repos.len());
-  db.update_deltas().await?;
-  sync_stars(db, gh).await?;
+  state.db.update_deltas().await?;
+  sync_stars(&state.db, &state.gh).await?;
 
   Ok(())
 }
@@ -137,6 +138,7 @@ pub async fn sync_stars(db: &DbClient, gh: &GhClient) -> Res {
   Ok(())
 }
 
+#[derive(Debug)]
 pub struct GhsFilter {
   pub include_repos: Vec<String>,
   pub exclude_repos: Vec<String>,
@@ -148,8 +150,8 @@ pub struct GhsFilter {
 impl GhsFilter {
   pub fn new(rules: &str) -> Self {
     let mut default_all = false;
-    let mut exclude_forks = true;
-    let mut exclude_archs = true;
+    let mut exclude_forks = false;
+    let mut exclude_archs = false;
     let mut include_repos: Vec<&str> = Vec::new();
     let mut exclude_repos: Vec<&str> = Vec::new();
 
@@ -216,7 +218,7 @@ impl GhsFilter {
         }
 
         // skip wildcards for forks / archived
-        if is_fork || is_arch {
+        if (self.exclude_forks && is_fork) || (self.exclude_archs && is_arch) {
           continue;
         }
 
@@ -246,66 +248,65 @@ mod tests {
   use super::*;
 
   #[test]
-  fn test_included_with_empty_env() {
+  fn test_empty_fitler() {
     let r = &GhsFilter::new("");
+
     assert!(r.is_included("foo/bar", false, false));
     assert!(r.is_included("foo/baz", false, false));
     assert!(r.is_included("abc/123", false, false));
     assert!(r.is_included("abc/xyz-123", false, false));
-    // negative tests – non repo patterns
+
+    // exclude invalid names
     assert!(!r.is_included("foo/", false, false));
     assert!(!r.is_included("/bar", false, false));
     assert!(!r.is_included("foo", false, false));
     assert!(!r.is_included("foo/bar/baz", false, false));
+
+    // include forks / archived
+    assert!(r.is_included("foo/bar", true, false));
+    assert!(r.is_included("foo/bar", false, true));
+    assert!(r.is_included("foo/bar", true, true));
   }
 
   #[test]
-  fn test_included_with_env() {
+  fn test_filter_names() {
     let r = &GhsFilter::new("foo/*,abc/xyz");
+
     assert!(r.is_included("foo/bar", false, false));
-    assert!(r.is_included("foo/abc", false, false));
-    assert!(r.is_included("foo/abc-123", false, false));
+    assert!(r.is_included("foo/123", false, false));
     assert!(r.is_included("abc/xyz", false, false));
-    assert!(!r.is_included("abc/123", false, false));
+
     assert!(!r.is_included("foo/bar/baz", false, false));
+    assert!(!r.is_included("abc/123", false, false));
 
-    // check case sensitivity
-    assert!(r.is_included("FOO/BAR", false, false));
-    assert!(r.is_included("Foo/Bar", false, false));
+    // include forks / archived
+    assert!(r.is_included("foo/bar", true, false));
+    assert!(r.is_included("foo/bar", false, true));
 
-    let r = &GhsFilter::new("FOO/*,Abc/XYZ");
-    assert!(r.is_included("foo/bar", false, false));
-    assert!(r.is_included("foo/abc", false, false));
-    assert!(r.is_included("foo/abc-123", false, false));
-    assert!(r.is_included("abc/xyz", false, false));
-
+    // exact org/user match
     let r = &GhsFilter::new("foo/*");
     assert!(!r.is_included("fooo/bar", false, false));
   }
 
   #[test]
-  fn test_include_with_exclude_rule() {
-    let r = &GhsFilter::new("foo/*,!foo/bar");
-    assert!(!r.is_included("foo/bar", false, false));
-    assert!(!r.is_included("FOO/Bar", false, false));
+  fn test_filter_names_case() {
+    let r = &GhsFilter::new("foo/*,abc/xyz");
+    assert!(r.is_included("FOO/BAR", false, false));
+    assert!(r.is_included("Foo/Bar", false, false));
 
-    assert!(r.is_included("foo/abc", false, false));
-    assert!(r.is_included("foo/abc-123", false, false));
-    assert!(!r.is_included("abc/xyz", false, false));
-
-    let r = &GhsFilter::new("foo/*,!foo/bar,!foo/baz,abc/xyz");
-    assert!(!r.is_included("foo/bar", false, false));
-    assert!(!r.is_included("foo/baz", false, false));
+    let r = &GhsFilter::new("FOO/*,Abc/XYZ");
+    assert!(r.is_included("foo/bar", false, false));
+    assert!(r.is_included("foo/baz", false, false));
     assert!(r.is_included("abc/xyz", false, false));
-    assert!(r.is_included("foo/123", false, false));
-    assert!(!r.is_included("abc/123", false, false)); // not in rules, so excluded
   }
 
   #[test]
-  fn test_include_all_expect() {
+  fn test_filter_all_expect() {
     let r = &GhsFilter::new("*");
     assert!(r.is_included("foo/bar", false, false));
     assert!(r.is_included("abc/123", false, false));
+    assert!(r.is_included("abc/123", true, false));
+    assert!(r.is_included("abc/123", true, true));
 
     let r = &GhsFilter::new("-*"); // single rule invalid, include all
     assert!(r.is_included("foo/bar", false, false));
@@ -325,55 +326,59 @@ mod tests {
   }
 
   #[test]
-  fn test_exclude_forks() {
-    let r = &GhsFilter::new("*,!fork");
-    assert!(r.is_included("foo/bar", false, false));
-    assert!(!r.is_included("abc/123", true, false));
+  fn test_filter_names_only() {
+    let r = &GhsFilter::new("foo/*,!foo/bar");
+    assert!(!r.is_included("abc/xyz", false, false));
+    assert!(!r.is_included("foo/bar", false, false));
+    assert!(!r.is_included("FOO/Bar", false, false));
 
-    let r = &GhsFilter::new("!fork");
-    assert!(r.is_included("foo/bar", false, false));
-    assert!(!r.is_included("abc/123", true, false));
+    assert!(r.is_included("foo/abc", false, false));
+    assert!(r.is_included("foo/abc", true, false));
+    assert!(r.is_included("foo/abc", true, true));
 
-    let r = &GhsFilter::new("!fork,abc/123");
-    assert!(r.is_included("abc/123", true, false)); // explicitly added
-    assert!(!r.is_included("abc/xyz", true, false));
+    let r = &GhsFilter::new("foo/*,!foo/bar,!foo/baz,abc/xyz");
+    assert!(!r.is_included("foo/bar", false, false));
+    assert!(!r.is_included("foo/baz", false, false));
+    assert!(!r.is_included("abc/123", false, false));
 
-    let r = &GhsFilter::new("!fork,abc/*,abc/xyz");
-    assert!(!r.is_included("abc/123", true, false)); // no wildcard for forks
-    assert!(r.is_included("abc/xyz", true, false)); // explicitly added
+    assert!(r.is_included("foo/123", false, false));
+    assert!(r.is_included("foo/123", true, false));
+    assert!(r.is_included("foo/123", false, true));
+
+    assert!(r.is_included("abc/xyz", false, false));
+    assert!(r.is_included("abc/xyz", true, false));
+    assert!(r.is_included("abc/xyz", false, true));
   }
 
   #[test]
-  fn test_exclude_archived() {
-    let r = &GhsFilter::new("*,!archived");
+  fn test_filter_meta() {
+    let r = &GhsFilter::new("*,!fork,!archived,foo/baz");
+    assert!(r.exclude_forks);
     assert!(r.exclude_archs);
+    assert!(r.default_all);
+
     assert!(r.is_included("foo/bar", false, false));
+    assert!(!r.is_included("foo/bar", true, false));
+    assert!(!r.is_included("foo/bar", false, true));
+
+    assert!(r.is_included("abc/123", false, false));
+    assert!(!r.is_included("abc/123", true, false));
     assert!(!r.is_included("abc/123", false, true));
 
-    let r = &GhsFilter::new("!archived");
-    assert!(r.is_included("foo/bar", false, false));
-    assert!(!r.is_included("abc/123", false, true));
+    // explicitly added
+    assert!(r.is_included("foo/baz", false, false));
+    assert!(r.is_included("foo/baz", true, false));
+    assert!(r.is_included("foo/baz", false, true));
+  }
 
-    let r = &GhsFilter::new("!archived,abc/123");
-    assert!(r.is_included("abc/123", false, true)); // explicitly added
-    assert!(!r.is_included("abc/xyz", false, true));
+  #[test]
+  fn test_filter_meta_wildcard() {
+    let r = &GhsFilter::new("!fork,abc/*,abc/xyz");
+    assert!(!r.is_included("abc/123", true, false)); // no wildcard for forks
+    assert!(r.is_included("abc/xyz", true, false)); // explicitly added
 
     let r = &GhsFilter::new("!archived,abc/*,abc/xyz");
     assert!(!r.is_included("abc/123", false, true)); // no wildcard for archived
     assert!(r.is_included("abc/xyz", false, true)); // explicitly added
-  }
-
-  #[test]
-  fn test_exclude_meta() {
-    let r = &GhsFilter::new("*,!fork,!archived,abc/xyz");
-    assert!(r.exclude_forks);
-    assert!(r.exclude_archs);
-
-    assert!(r.is_included("abc/123", false, false));
-    assert!(!r.is_included("abc/123", true, true));
-    assert!(r.is_included("abc/xyz", true, true));
-
-    let r = &GhsFilter::new("*,abc/xyz,!fork,!archived");
-    assert!(r.is_included("abc/xyz", true, true));
   }
 }

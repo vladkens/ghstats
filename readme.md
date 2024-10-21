@@ -51,7 +51,9 @@ services:
 2. Generate new token > Generate new token (classic)
 3. Enter name, e.g.: `ghstats`. Scopes: `public_repo`
 4. Click genereate token & copy it
-5. Save token to `.env` file with name `GITHUB_TOKEN=???`
+5. Save token to `.env` file with name `GITHUB_TOKEN=ghp_XXX`
+
+Note: If you want to access private repos too, choose full `repo` scope and set `GHS_INCLUDE_PRIVATE=true` to env.
 
 ## How it works?
 

@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 
 use axum::routing::get;
 use axum::{http::StatusCode, response::IntoResponse, Router};
@@ -7,48 +7,12 @@ mod db_client;
 mod gh_client;
 mod helpers;
 mod routes;
+mod state;
 mod types;
 
-use db_client::{DbClient, RepoFilter, RepoTotals};
-use gh_client::GhClient;
-use helpers::GhsFilter;
+use db_client::RepoFilter;
+use state::AppState;
 use types::Res;
-
-struct AppState {
-  db: DbClient,
-  gh: GhClient,
-  filter: GhsFilter,
-  last_release: Mutex<String>,
-}
-
-impl AppState {
-  async fn new() -> Res<Self> {
-    let gh_token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
-    if gh_token.is_empty() {
-      tracing::error!("missing GITHUB_TOKEN");
-      std::process::exit(1);
-    }
-
-    let db_path = std::env::var("DB_PATH").unwrap_or("./data/ghstats.db".to_string());
-    tracing::info!("db_path: {}", db_path);
-
-    let db = DbClient::new(&db_path).await?;
-    let gh = GhClient::new(gh_token)?;
-
-    let filter = std::env::var("GHS_FILTER").unwrap_or_default();
-    let filter = GhsFilter::new(&filter);
-
-    let last_release = Mutex::new(env!("CARGO_PKG_VERSION").to_string());
-    Ok(Self { db, gh, filter, last_release })
-  }
-
-  async fn get_repos_filtered(&self, qs: &RepoFilter) -> Res<Vec<RepoTotals>> {
-    let repos = self.db.get_repos(&qs).await?;
-    let repos = repos.into_iter().filter(|x| self.filter.is_included(&x.name, x.fork, x.archived));
-    let repos = repos.collect::<Vec<_>>();
-    Ok(repos)
-  }
-}
 
 async fn check_new_release(state: Arc<AppState>) -> Res {
   let tag = state.gh.get_latest_release_ver("vladkens/ghstats").await?;
@@ -65,13 +29,13 @@ async fn start_cron(state: Arc<AppState>) -> Res {
   use tokio_cron_scheduler::{Job, JobScheduler};
 
   // note: for development, uncomment to update metrics on start
-  // helpers::update_metrics(&state.db, &state.gh, &state.filter).await?;
+  helpers::update_metrics(state.clone()).await?;
 
   // if new db, update metrics immediately
   let repos = state.db.get_repos(&RepoFilter::default()).await?;
   if repos.len() == 0 {
     tracing::info!("no repos found, load initial metrics");
-    match helpers::update_metrics(&state.db, &state.gh, &state.filter).await {
+    match helpers::update_metrics(state.clone()).await {
       Err(e) => tracing::error!("failed to update metrics: {:?}", e),
       Ok(_) => {}
     }
@@ -91,7 +55,7 @@ async fn start_cron(state: Arc<AppState>) -> Res {
     Box::pin(async move {
       let _ = check_new_release(state.clone()).await;
 
-      match helpers::update_metrics(&state.db, &state.gh, &state.filter).await {
+      match helpers::update_metrics(state.clone()).await {
         Err(e) => tracing::error!("failed to update metrics: {:?}", e),
         Ok(_) => {}
       }

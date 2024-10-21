@@ -128,8 +128,9 @@ impl GhClient {
   }
 
   // https://docs.github.com/en/rest/repos/repos?apiVersion=2022-11-28#list-repositories-for-the-authenticated-user
-  pub async fn get_repos(&self) -> Res<Vec<Repo>> {
-    let url = format!("{}/user/repos?visibility=public", self.base_url);
+  pub async fn get_repos(&self, include_private: bool) -> Res<Vec<Repo>> {
+    let visibility = if include_private { "all" } else { "public" };
+    let url = format!("{}/user/repos?visibility={}", self.base_url, visibility);
     let req = self.client.get(url);
     let dat: Vec<Repo> = self.with_pagination(req).await?;
     Ok(dat)
