@@ -381,4 +381,24 @@ mod tests {
     assert!(!r.is_included("abc/123", false, true)); // no wildcard for archived
     assert!(r.is_included("abc/xyz", false, true)); // explicitly added
   }
+
+  #[test]
+  fn test_issue18() {
+    // test order of rules not affecting the result
+    let rules = vec!["foo/*,!foo/bar", "!foo/bar,foo/*"];
+    for r in rules {
+      let r = &GhsFilter::new(r);
+      assert!(!r.is_included("foo/bar", false, false)); // explicitly excluded
+      assert!(!r.is_included("abc/abc", false, false)); // not included by default
+      assert!(r.is_included("foo/baz", false, false)); // wildcard included
+    }
+
+    let rules = vec!["foo/*,!fork", "!fork,foo/*"];
+    for r in rules {
+      let r = &GhsFilter::new(r);
+      assert!(r.is_included("foo/bar", false, false)); // wildcard included
+      assert!(!r.is_included("foo/bar", true, false)); // forks excluded
+      assert!(!r.is_included("abc/abc", false, false)); // not included by default
+    }
+  }
 }
