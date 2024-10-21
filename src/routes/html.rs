@@ -7,7 +7,6 @@ use thousands::Separable;
 use crate::db_client::{
   DbClient, Direction, PopularFilter, PopularKind, PopularSort, RepoFilter, RepoSort, RepoTotals,
 };
-use crate::helpers::{get_filtered_repos, is_repo_included};
 use crate::types::{AppError, HtmlRes};
 use crate::AppState;
 
@@ -270,12 +269,12 @@ pub async fn repo_page(
     None => return AppError::not_found(),
   };
 
-  let metrics = db.get_metrics(&repo).await?;
-  let stars = db.get_stars(&repo).await?;
-
-  if !is_repo_included(&repo, totals.fork) {
+  if !state.filter.is_included(&totals.name, totals.fork, totals.archived) {
     return AppError::not_found();
   }
+
+  let metrics = db.get_metrics(&repo).await?;
+  let stars = db.get_stars(&repo).await?;
 
   let html = html!(
     div class="grid" style="grid-template-columns: 1fr 2fr;" {
@@ -348,9 +347,8 @@ pub async fn repo_page(
 // https://docs.rs/axum/latest/axum/extract/index.html#common-extractors
 pub async fn index(State(state): State<Arc<AppState>>, req: Request) -> HtmlRes {
   // let qs: Query<HashMap<String, String>> = Query::try_from_uri(req.uri())?;
-  let db = &state.db;
   let qs: Query<RepoFilter> = Query::try_from_uri(req.uri())?;
-  let repos = get_filtered_repos(&db, &qs).await?;
+  let repos = state.get_repos_filtered(&qs).await?;
 
   let cols: Vec<(&str, Box<dyn Fn(&RepoTotals) -> Markup>, RepoSort)> = vec![
     ("Name", Box::new(|x| html!(a href=(format!("/{}", x.name)) { (x.name) })), RepoSort::Name),

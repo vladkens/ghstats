@@ -86,13 +86,24 @@ GHS_FILTER=vladkens/macmon,vladkens/ghstats # show only this two repo
 GHS_FILTER=vladkens/*,foo-org/bar # show all vladkens repos and one repo from `foo-org`
 GHS_FILTER=vladkens/*,!vladkens/apigen-ts # show all vladkens repos except `apigen-ts`
 GHS_FILTER=*,!vladkens/apigen-ts,!foo-org/bar # show all repos expect two
+
+GHS_FILTER=*,!fork # show all repos expect forks
+GHS_FILTER=vladkens/*,!fork # show all vladkens repos expect forks
+GHS_FILTER=*,vladkens/some-fork,!fork # show all repos expect forks and keep `some-fork`
+
+GHS_FILTER=*,!archived # show all repos expect archived
 ```
 
-See example [here](https://github.com/vladkens/ghstats/issues/8).
+Filtering rules:
 
-### Filter forks
-
-Regardless of the repo filter specified, you can set `GHS_FILTER_FORKS` environment variable to filter any forked repositories. The variable takes `true|false` or `1|0` values.
+- If no filter provided all repos will be shown (implicitly `*`)
+- There are two kind of rules: direct (`foo/bar`, `foo/*`) and meta (`*`, `!fork`, `!archived`)
+- Direct rule can be wildcard (`foo/*` – include all repos of `foo` org / user)
+- Direct rules are applied first, then meta
+- If no direct rules specified, all repos included by default (implicitly `*`)
+- If at least one direct rule – all repos excluded by default (pass `*` explicitly to include all)
+- Meta-exclusion rules are: `!fork`, `!archived`
+- Wildcard rules do not work with meta-exclusion rules
 
 ### API endpoint
 
