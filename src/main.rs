@@ -116,9 +116,30 @@ async fn main() -> Res {
   let port = std::env::var("PORT").unwrap_or("8080".to_string());
   let addr = format!("{}:{}", host, port);
 
-  let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+  let listener = tokio::net::TcpListener::bind(&addr).await?;
   tracing::info!("listening on http://{}", addr);
-  axum::serve(listener, service).await.unwrap();
+  axum::serve(listener, service).with_graceful_shutdown(shutdown_signal()).await?;
 
   Ok(())
+}
+
+// https://github.com/tokio-rs/axum/discussions/1894
+async fn shutdown_signal() {
+  use tokio::signal;
+
+  let ctrl_c = async {
+    signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
+  };
+
+  let terminate = async {
+    signal::unix::signal(signal::unix::SignalKind::terminate())
+      .expect("failed to install signal handler")
+      .recv()
+      .await;
+  };
+
+  tokio::select! {
+      _ = ctrl_c => {},
+      _ = terminate => {},
+  }
 }

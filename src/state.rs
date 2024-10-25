@@ -36,6 +36,7 @@ impl AppState {
 
     let filter = std::env::var("GHS_FILTER").unwrap_or_default();
     let filter = GhsFilter::new(&filter);
+    tracing::info!("{:?}", filter);
 
     let include_private = env_bool("GHS_INCLUDE_PRIVATE");
 
