@@ -9,6 +9,18 @@ use crate::{
   types::Res,
 };
 
+pub fn truncate_middle(text: &str, max_len: usize) -> String {
+  if text.len() <= max_len {
+    return text.to_string();
+  }
+
+  let part_len = (max_len - 3) / 2;
+  let start = &text[..part_len];
+  let end = &text[text.len() - part_len..];
+
+  format!("{}...{}", start, end)
+}
+
 pub fn get_header<'a>(req: &'a Request, name: &'a str) -> Option<&'a str> {
   match req.headers().get(name) {
     Some(x) => Some(x.to_str().unwrap_or_default()),

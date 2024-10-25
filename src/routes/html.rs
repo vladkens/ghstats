@@ -7,6 +7,7 @@ use thousands::Separable;
 use crate::db_client::{
   DbClient, Direction, PopularFilter, PopularKind, PopularSort, RepoFilter, RepoSort, RepoTotals,
 };
+use crate::helpers::truncate_middle;
 use crate::types::{AppError, HtmlRes};
 use crate::AppState;
 
@@ -25,7 +26,7 @@ fn maybe_url(item: &(String, Option<String>)) -> Markup {
   let (name, url) = item;
 
   match url {
-    Some(url) => html!(a href=(url) { (name) }),
+    Some(url) => html!(a href=(url) { (truncate_middle(name, 40)) }),
     None => html!(span { (name) }),
   }
 }
