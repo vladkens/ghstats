@@ -176,7 +176,7 @@ async fn popular_table(
       false => "desc",
     };
 
-    format!("/{}?sort={}&direction={}", repo, col, dir)
+    format!("/{}?sort={}&direction={}&period={}", repo, col, dir, qs.period)
   }
 
   let html = html!(
