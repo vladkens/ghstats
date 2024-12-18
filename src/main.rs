@@ -1,7 +1,12 @@
 use std::sync::Arc;
 
-use axum::routing::get;
-use axum::{http::StatusCode, response::IntoResponse, Router};
+use axum::{response::IntoResponse, routing::get, Router};
+use db_client::RepoFilter;
+use reqwest::StatusCode;
+use state::AppState;
+use tower_http::trace::{self, TraceLayer};
+use tracing::Level;
+use types::Res;
 
 mod db_client;
 mod gh_client;
@@ -9,10 +14,7 @@ mod helpers;
 mod routes;
 mod state;
 mod types;
-
-use db_client::RepoFilter;
-use state::AppState;
-use types::Res;
+mod utils;
 
 async fn check_new_release(state: Arc<AppState>) -> Res {
   let tag = state.gh.get_latest_release_ver("vladkens/ghstats").await?;
@@ -76,15 +78,8 @@ async fn health() -> impl IntoResponse {
 
 #[tokio::main]
 async fn main() -> Res {
-  use tower_http::trace::{self, TraceLayer};
-  use tracing::Level;
-
   dotenvy::dotenv().ok();
-  tracing_subscriber::fmt() //
-    .with_target(false)
-    .compact()
-    // .with_max_level(Level::TRACE)
-    .init();
+  utils::init_logger();
 
   let brand = format!("{} v{}", env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
   tracing::info!("{}", brand);
@@ -106,7 +101,10 @@ async fn main() -> Res {
   tokio::spawn(async move {
     loop {
       match start_cron(cron_state.clone()).await {
-        Err(e) => tracing::error!("failed to start cron: {:?}", e),
+        Err(e) => {
+          tracing::error!("failed to start cron: {:?}", e);
+          tokio::time::sleep(std::time::Duration::from_secs(10)).await;
+        }
         Ok(_) => break,
       }
     }
@@ -118,28 +116,7 @@ async fn main() -> Res {
 
   let listener = tokio::net::TcpListener::bind(&addr).await?;
   tracing::info!("listening on http://{}", addr);
-  axum::serve(listener, service).with_graceful_shutdown(shutdown_signal()).await?;
+  axum::serve(listener, service).with_graceful_shutdown(utils::shutdown_signal()).await?;
 
   Ok(())
-}
-
-// https://github.com/tokio-rs/axum/discussions/1894
-async fn shutdown_signal() {
-  use tokio::signal;
-
-  let ctrl_c = async {
-    signal::ctrl_c().await.expect("failed to install Ctrl+C handler");
-  };
-
-  let terminate = async {
-    signal::unix::signal(signal::unix::SignalKind::terminate())
-      .expect("failed to install signal handler")
-      .recv()
-      .await;
-  };
-
-  tokio::select! {
-      _ = ctrl_c => {},
-      _ = terminate => {},
-  }
 }

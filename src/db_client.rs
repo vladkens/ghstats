@@ -100,7 +100,7 @@ async fn migrate_v3(db: &SqlitePool) -> Res {
 async fn migrate<'a>(db: &'a SqlitePool) -> Res {
   type BoxFn = Box<dyn for<'a> Fn(&'a SqlitePool) -> Pin<Box<dyn Future<Output = Res> + 'a>>>;
   let migrations: Vec<BoxFn> = vec![
-    Box::new(|db| Box::pin(migrate_v1(db))), //
+    Box::new(|db| Box::pin(migrate_v1(db))),
     Box::new(|db| Box::pin(migrate_v2(db))),
     Box::new(|db| Box::pin(migrate_v3(db))),
   ];
