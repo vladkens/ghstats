@@ -119,7 +119,7 @@ You have the ability to get collected data by `ghstats` via API. At the moment t
 curl -H "x-api-token:1234" http://127.0.0.1:8080/api/repos
 ```
 
-```json
+```jsonc
 {
   "total_count": 20,
   "total_stars": 1000,
