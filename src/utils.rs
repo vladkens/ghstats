@@ -8,7 +8,7 @@ pub fn init_logger() {
     .with_target(false)
     .with_span_name(false)
     .with_span_path(false)
-    .with_ansi_color(true);
+    .with_ansi_color(false);
 
   let subscriber = Registry::default()
     .with(EnvFilter::builder().with_default_directive(Level::INFO.into()).from_env_lossy())
