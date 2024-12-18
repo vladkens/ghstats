@@ -66,5 +66,6 @@ commit_preprocessors = [
 commit_parsers = [
   { message = "^feat", group = "<!-- 0 --> Features" },
   { message = "^fix", group = "<!-- 1 --> Bug Fixes" },
-  { message = "^chore|^ci", group = "<!-- 2 --> Other" },
+  { message = "^chore", group = "<!-- 2 --> Other" },
+  { message = "^ci", skip = true },
 ]
