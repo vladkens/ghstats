@@ -63,8 +63,17 @@ jobs:
             ghcr.io/${{ github.repository }}:${{ github.ref_name }}
             ghcr.io/${{ github.repository }}:latest
 
+      - name: Generate a changelog
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+        id: git-cliff
+        uses: orhun/git-cliff-action@v4
+        with:
+          args: --latest
+
       - name: Create Github Release
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         uses: softprops/action-gh-release@v2
+        with:
+          body: steps.git-cliff.outputs.changelog
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
