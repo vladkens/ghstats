@@ -124,6 +124,8 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
         script src="https://unpkg.com/luxon@3.5" {}
         script src="https://unpkg.com/chartjs-adapter-luxon@1.3" {}
         script src="https://unpkg.com/htmx.org@2.0" {}
+        script { "htmx.config.historyCacheSize = 0;" }
+        script { (PreEscaped(include_str!("../../assets/app.js"))) }
         style { (PreEscaped(include_str!("../../assets/app.css"))) }
       }
       body {
@@ -352,13 +354,14 @@ pub async fn repo_page(
       }
     }
 
-    script { (PreEscaped(include_str!("../../assets/app.js"))) }
     script {
-      "const Metrics = "(PreEscaped(serde_json::to_string(&metrics)?))";"
-      "const Stars = "(PreEscaped(serde_json::to_string(&stars)?))";"
-      "renderMetrics('chart_clones', Metrics, 'clones_uniques', 'clones_count');"
-      "renderMetrics('chart_views', Metrics, 'views_uniques', 'views_count');"
-      "renderStars('chart_stars', Stars);"
+      "(function() {"
+      "const metrics = "(PreEscaped(serde_json::to_string(&metrics)?))";"
+      "const stars = "(PreEscaped(serde_json::to_string(&stars)?))";"
+      "window.renderMetrics('chart_clones', metrics, 'clones_uniques', 'clones_count');"
+      "window.renderMetrics('chart_views', metrics, 'views_uniques', 'views_count');"
+      "window.renderStars('chart_stars', stars);"
+      "})();"
     }
 
     select name="period" hx-get=(format!("/{}", repo)) hx-target="#popular_tables" hx-swap="outerHTML" hx-push-url="true" {
