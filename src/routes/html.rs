@@ -231,6 +231,7 @@ async fn popular_table(
                 hx-get=(filter_url(repo, qs, &col.2))
                 hx-target=(format!("#{}", html_id))
                 hx-swap="outerHTML"
+                hx-replace-url="true"
               {
                 (col.0)
                 @if col.2 == qs.sort {
@@ -360,7 +361,7 @@ pub async fn repo_page(
       "renderStars('chart_stars', Stars);"
     }
 
-    select name="period" hx-get=(format!("/{}", repo)) hx-target="#popular_tables" hx-swap="outerHTML" {
+    select name="period" hx-get=(format!("/{}", repo)) hx-target="#popular_tables" hx-swap="outerHTML" hx-push-url="true" {
       @for (days, title) in &periods {
         option value=(days) selected[*days == qs.period] { (title) }
       }
@@ -428,6 +429,7 @@ pub async fn index(
                 hx-get=(filter_url(&qs, &col.2))
                 hx-target="#repos_table"
                 hx-swap="outerHTML"
+                hx-replace-url="true"
                 {
                   (col.0)
                   @if col.2 == qs.sort {
@@ -472,6 +474,7 @@ pub async fn index(
           hx-target="#repos_table"
           hx-swap="outerHTML"
           hx-include="[name='q'], #filter_sort, #filter_direction"
+          hx-push-url="true"
         {
           option value="" selected[cur_owner.is_empty()] { "All owners" }
           @for owner in &owners {
@@ -489,6 +492,7 @@ pub async fn index(
         hx-target="#repos_table"
         hx-swap="outerHTML"
         hx-include="[name='owner'], #filter_sort, #filter_direction"
+        hx-replace-url="true"
       {}
     }
 
