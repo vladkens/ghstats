@@ -11,7 +11,12 @@ pub fn init_logger() {
     .with_ansi_color(false);
 
   let subscriber = Registry::default()
-    .with(EnvFilter::builder().with_default_directive(Level::INFO.into()).from_env_lossy())
+    .with(
+      EnvFilter::builder()
+        .with_default_directive(Level::INFO.into())
+        .from_env_lossy()
+        .add_directive("tokio_cron_scheduler=warn".parse().unwrap()),
+    )
     .with(logfmt.layer());
 
   dispatcher::set_global_default(Dispatch::new(subscriber)).expect("failed to set global logger");

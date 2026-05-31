@@ -29,33 +29,12 @@ async fn check_new_release(state: Arc<AppState>) -> Res {
   Ok(())
 }
 
-async fn start_cron(state: Arc<AppState>) -> Res {
-  use tokio_cron_scheduler::{Job, JobScheduler};
+fn metrics_cron_schedule() -> String {
+  std::env::var("GHS_CRON_SCHEDULE").unwrap_or_else(|_| DEFAULT_METRICS_CRON.to_string())
+}
 
-  let cron_schedule = std::env::var("GHS_CRON_SCHEDULE").unwrap_or(DEFAULT_METRICS_CRON.to_string());
-  tracing::info!("metrics cron schedule: {}", cron_schedule);
-
-  // note: for development, uncomment to update metrics on start
-  helpers::update_metrics(state.clone()).await?;
-
-  // if new db, update metrics immediately
-  let repos = state.db.get_repos(&RepoFilter::default()).await?;
-  if repos.is_empty() {
-    tracing::info!("no repos found, load initial metrics");
-    if let Err(e) = helpers::update_metrics(state.clone()).await {
-      tracing::error!("failed to update metrics: {:?}", e);
-    }
-  } else {
-    state.db.update_deltas().await?;
-  }
-
-  // https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api?apiVersion=2022-11-28
-  // >> All of these requests count towards your personal rate limit of 5,000 requests per hour.
-
-  // https://docs.github.com/en/repositories/viewing-activity-and-data-for-your-repository/viewing-traffic-to-a-repository
-  // >> Full clones and visitor information update hourly, while referring sites and popular content sections update daily.
-
-  let job = Job::new_async(cron_schedule.as_str(), move |_, _| {
+fn new_metrics_job(state: Arc<AppState>, cron_schedule: &str) -> Res<tokio_cron_scheduler::Job> {
+  let job = tokio_cron_scheduler::Job::new_async(cron_schedule, move |_, _| {
     let state = state.clone();
     Box::pin(async move {
       let _ = check_new_release(state.clone()).await;
@@ -66,9 +45,51 @@ async fn start_cron(state: Arc<AppState>) -> Res {
     })
   })?;
 
+  Ok(job)
+}
+
+async fn start_cron(state: Arc<AppState>, cron_schedule: &str) -> Res {
+  use tokio_cron_scheduler::JobScheduler;
+
+  let job = match new_metrics_job(state.clone(), cron_schedule) {
+    Ok(job) => {
+      tracing::info!("metrics cron schedule: {}", cron_schedule);
+      job
+    }
+    Err(e) => {
+      tracing::warn!(
+        "invalid metrics cron schedule '{}': {:?}; using default '{}'",
+        cron_schedule,
+        e,
+        DEFAULT_METRICS_CRON
+      );
+      let job = new_metrics_job(state.clone(), DEFAULT_METRICS_CRON)?;
+      tracing::info!("metrics cron schedule: {}", DEFAULT_METRICS_CRON);
+      job
+    }
+  };
+
+  // Try once on startup, but keep the scheduler alive if GitHub is unavailable.
+  if let Err(e) = helpers::update_metrics(state.clone()).await {
+    tracing::error!("failed to update metrics: {:?}", e);
+  }
+
+  let repos = state.db.get_repos(&RepoFilter::default()).await?;
+  if repos.is_empty() {
+    tracing::info!("no repos found after startup sync; waiting for next scheduled metrics update");
+  } else if let Err(e) = state.db.update_deltas().await {
+    tracing::error!("failed to update deltas: {:?}", e);
+  }
+
+  // https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api?apiVersion=2022-11-28
+  // >> All of these requests count towards your personal rate limit of 5,000 requests per hour.
+
+  // https://docs.github.com/en/repositories/viewing-activity-and-data-for-your-repository/viewing-traffic-to-a-repository
+  // >> Full clones and visitor information update hourly, while referring sites and popular content sections update daily.
+
   let runner = JobScheduler::new().await?;
-  runner.start().await?;
   runner.add(job).await?;
+  runner.start().await?;
 
   Ok(())
 }
@@ -100,8 +121,9 @@ async fn main() -> Res {
   let service = router.with_state(state.clone()).into_make_service();
 
   let cron_state = state.clone();
+  let cron_schedule = metrics_cron_schedule();
   tokio::spawn(async move {
-    while let Err(e) = start_cron(cron_state.clone()).await {
+    while let Err(e) = start_cron(cron_state.clone(), &cron_schedule).await {
       tracing::error!("failed to start cron: {:?}", e);
       tokio::time::sleep(std::time::Duration::from_secs(10)).await;
     }
