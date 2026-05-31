@@ -1,0 +1,17 @@
+services:
+  ghstats:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: ghstats:local
+    container_name: ghstats
+    restart: unless-stopped
+    env_file:
+      - .env
+    ports:
+      - "${HOST_PORT:-8080}:8080"
+    volumes:
+      - ghstats-data:/app/data
+
+volumes:
+  ghstats-data:

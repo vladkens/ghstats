@@ -15,7 +15,8 @@ FROM alpine:latest AS runtime
 LABEL org.opencontainers.image.source="https://github.com/vladkens/ghstats"
 WORKDIR /app
 
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+RUN addgroup -S appgroup && adduser -S appuser -G appgroup && \
+  mkdir -p /app/data && chown appuser:appgroup /app/data
 USER appuser
 
 ARG TARGETPLATFORM

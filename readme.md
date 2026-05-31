@@ -43,6 +43,16 @@ services:
       - ./data:/app/data
 ```
 
+### Build locally with Docker Compose
+
+This repository includes a `docker-compose.yml` that builds the local `Dockerfile`, loads variables from `.env`, and stores SQLite data in a Docker named volume.
+
+```sh
+docker compose up --build -d
+```
+
+By default, the local compose setup exposes the app at http://127.0.0.1:8080. You can change the host port with `HOST_PORT` in `.env`.
+
 ### Github token generation
 
 `ghstats` needs Github Token to collect traffic data from API. Token can be obtained with following steps:
@@ -66,6 +76,16 @@ All public repositories that can be accessed are saved. If you need more detaile
 ### Host & Port
 
 You can to change default host / port app will run on with `HOST` (default `0.0.0.0`) and `PORT` (default `8080`) environment variables.
+
+### Metrics schedule
+
+You can change how often metrics are pulled with the `GHS_CRON_SCHEDULE` environment variable. It uses the six-field cron format from `tokio-cron-scheduler`. The default is `0 59 * * * *`, which runs at minute 59 of every hour.
+
+For example, to pull metrics once per day at 00:59:
+
+```sh
+GHS_CRON_SCHEDULE="0 59 0 * * *"
+```
 
 ### Custom links
 
