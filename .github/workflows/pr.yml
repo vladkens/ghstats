@@ -1,0 +1,29 @@
+name: pr
+
+on:
+  pull_request:
+
+permissions: read-all
+
+jobs:
+  test:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/cache@v5
+        with:
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-
+          save-always: true
+          path: |
+            ~/.cargo/bin/
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            target/
+
+      - run: rustup update --no-self-update stable && rustup default stable
+      - run: make prepare
+      - run: git diff --exit-code
+      - run: make test
