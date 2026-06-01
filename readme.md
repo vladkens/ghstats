@@ -45,7 +45,7 @@ services:
 
 ### Build locally with Docker Compose
 
-This repository includes a `docker-compose.yml` that builds the local `Dockerfile`, loads variables from `.env`, and stores SQLite data in a Docker named volume.
+This repository includes a `compose.yml` that builds the local `Dockerfile`, loads variables from `.env`, and stores SQLite data in a Docker named volume.
 
 ```sh
 docker compose up --build -d
