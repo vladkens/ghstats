@@ -4,7 +4,7 @@ use std::pin::Pin;
 use anyhow::Ok;
 use serde::{Deserialize, Serialize};
 use serde_variant::to_variant_name;
-use sqlx::{FromRow, SqlitePool, sqlite::SqliteConnectOptions};
+use sqlx::{AssertSqlSafe, FromRow, SqlitePool, sqlite::SqliteConnectOptions};
 
 use crate::gh_client::{PullRequest, Repo, RepoClones, RepoPopularPath, RepoReferrer, RepoViews};
 use crate::types::Res;
@@ -114,7 +114,7 @@ async fn migrate(db: &SqlitePool) -> Res {
       tracing::info!("running migration to v{}", mig_ver);
       func(db).await?;
       let qs = format!("PRAGMA user_version = {}", mig_ver);
-      sqlx::raw_sql(&qs).execute(db).await?;
+      sqlx::raw_sql(AssertSqlSafe(qs)).execute(db).await?;
     }
   }
 
@@ -293,7 +293,7 @@ impl DbClient {
 
   pub async fn get_repo_totals(&self, repo: &str) -> Res<Option<RepoTotals>> {
     let qs = format!("{} WHERE r.hidden = FALSE AND r.name = $1;", TOTAL_QUERY);
-    let item = sqlx::query_as(qs.as_str()).bind(repo).fetch_optional(&self.db).await?;
+    let item = sqlx::query_as(AssertSqlSafe(qs)).bind(repo).fetch_optional(&self.db).await?;
     Ok(item)
   }
 
@@ -314,7 +314,7 @@ impl DbClient {
       "{} WHERE r.hidden = FALSE ORDER BY {} {}",
       TOTAL_QUERY, filter.sort, filter.direction
     );
-    let items = sqlx::query_as(qs.as_str()).fetch_all(&self.db).await?;
+    let items = sqlx::query_as(AssertSqlSafe(qs)).fetch_all(&self.db).await?;
     Ok(items)
   }
 
@@ -376,7 +376,7 @@ impl DbClient {
     ORDER BY {order_by};
     ");
 
-    let items = sqlx::query_as(&qs).bind(repo).fetch_all(&self.db).await?;
+    let items = sqlx::query_as(AssertSqlSafe(qs)).bind(repo).fetch_all(&self.db).await?;
     Ok(items)
   }
 
@@ -567,7 +567,7 @@ impl DbClient {
       WHERE rr.repo_id = cte.repo_id AND rr.date = cte.date AND rr.{col} = cte.{col};
       ");
 
-      let _ = sqlx::query(qs.as_str()).execute(&self.db).await?;
+      let _ = sqlx::query(AssertSqlSafe(qs)).execute(&self.db).await?;
     }
 
     Ok(())
@@ -576,7 +576,7 @@ impl DbClient {
   pub async fn mark_repo_hidden(&self, repos_ids: &[i64]) -> Res {
     let ids = repos_ids.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
     let qs = format!("UPDATE repos SET hidden = TRUE WHERE id IN ({});", ids);
-    let _ = sqlx::query(&qs).execute(&self.db).await?;
+    let _ = sqlx::query(AssertSqlSafe(qs)).execute(&self.db).await?;
     Ok(())
   }
 
