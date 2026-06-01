@@ -1,5 +1,5 @@
-*
-!Cargo.toml
-!Cargo.lock
-!/assets/
-!/src/
+.DS_Store
+.env
+.git
+data
+target

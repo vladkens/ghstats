@@ -26,6 +26,14 @@ Self-hosted dashboard for tracking GitHub repos traffic history longer than 14 d
 docker run -d --env-file .env -p 8080:8080 -v ./data:/app/data --name ghstats ghcr.io/vladkens/ghstats:latest
 ```
 
+Note: ghstats Docker images run as a non-root user. If you upgrade an existing
+installation and the container cannot write to SQLite, fix the mounted data
+directory ownership once:
+
+```sh
+docker run --rm -u root -v ./data:/app/data ghcr.io/vladkens/ghstats:latest chown -R appuser:appgroup /app/data
+```
+
 Or Docker Compose:
 
 ```yaml

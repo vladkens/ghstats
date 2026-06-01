@@ -8,7 +8,8 @@ RUN apk add --no-cache musl-dev zig && \
   cargo install cargo-zigbuild --locked
 
 WORKDIR /app
-COPY . .
+COPY Cargo.toml Cargo.lock ./
+COPY --parents assets src ./
 RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,target=/app/target \
   cargo zigbuild --release --locked --target x86_64-unknown-linux-musl --target aarch64-unknown-linux-musl && \
   mkdir -p /out/linux/ && \

@@ -19,8 +19,8 @@ update:
 	cargo upgrade -i
 
 docker-build:
-	docker build -t ghstats .
-	docker images -q ghstats | xargs docker inspect -f '{{.Size}}' | xargs numfmt --to=iec
+	docker build -t ghstats:latest .
+	docker images -q ghstats:latest | xargs docker inspect -f '{{.Size}}' | xargs numfmt --to=iec
 
 # --- Deploy ---
 
