@@ -1,4 +1,5 @@
 use std::sync::Mutex;
+use std::time::Instant;
 
 use crate::{
   db_client::{DbClient, RepoFilter, RepoTotals},
@@ -7,9 +8,24 @@ use crate::{
   types::Res,
 };
 
+pub const DB_HEALTH_INTERVAL_SECS: u64 = 60 * 60;
+pub const DB_NOT_WRITABLE_MESSAGE: &str = "SQLite database is not writable. If ghstats runs in Docker with a bind-mounted data directory, make the mounted directory writable by the container user, for example: docker exec -u root ghstats chown -R appuser:appgroup /app/data";
+
 fn env_bool(key: &str) -> bool {
   let val = std::env::var(key).unwrap_or_else(|_| "false".to_string()).to_lowercase();
   val == "true" || val == "1"
+}
+
+#[derive(Clone)]
+pub struct DbHealth {
+  pub checked_at: Instant,
+  pub result: Result<(), String>,
+}
+
+impl DbHealth {
+  fn new(result: Result<(), String>) -> Self {
+    Self { checked_at: Instant::now(), result }
+  }
 }
 
 pub struct AppState {
@@ -18,6 +34,7 @@ pub struct AppState {
   pub filter: GhsFilter,
   pub include_private: bool,
   pub last_release: Mutex<String>,
+  db_health: Mutex<DbHealth>,
 }
 
 impl AppState {
@@ -32,6 +49,12 @@ impl AppState {
     tracing::info!("db_path: {}", db_path);
 
     let db = DbClient::new(&db_path).await?;
+    if let Err(e) = db.check_writable().await {
+      let details = e.to_string();
+      tracing::error!("{}: {}", DB_NOT_WRITABLE_MESSAGE, details);
+      anyhow::bail!("{}: {}", DB_NOT_WRITABLE_MESSAGE, details);
+    }
+
     let gh = GhClient::new(gh_token)?;
 
     let filter = std::env::var("GHS_FILTER").unwrap_or_default();
@@ -41,7 +64,21 @@ impl AppState {
     let include_private = env_bool("GHS_INCLUDE_PRIVATE");
 
     let last_release = Mutex::new(env!("CARGO_PKG_VERSION").to_string());
-    Ok(Self { db, gh, filter, include_private, last_release })
+    let db_health = Mutex::new(DbHealth::new(Ok(())));
+    Ok(Self { db, gh, filter, include_private, last_release, db_health })
+  }
+
+  pub fn db_health(&self) -> DbHealth {
+    self.db_health.lock().unwrap().clone()
+  }
+
+  pub async fn update_db_health(&self) {
+    let result = self.db.check_writable().await.map_err(|e| e.to_string());
+    if let Err(e) = &result {
+      tracing::error!("{}: {}", DB_NOT_WRITABLE_MESSAGE, e);
+    }
+
+    *self.db_health.lock().unwrap() = DbHealth::new(result);
   }
 
   pub async fn get_repos_filtered(&self, qs: &RepoFilter) -> Res<Vec<RepoTotals>> {

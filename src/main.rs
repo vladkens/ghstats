@@ -1,9 +1,9 @@
 use std::sync::Arc;
 
-use axum::{Router, response::IntoResponse, routing::get};
+use axum::{Router, extract::State, response::IntoResponse, routing::get};
 use db_client::RepoFilter;
 use reqwest::StatusCode;
-use state::AppState;
+use state::{AppState, DB_HEALTH_INTERVAL_SECS, DB_NOT_WRITABLE_MESSAGE};
 use tower_http::trace::{self, TraceLayer};
 use tracing::Level;
 use types::Res;
@@ -94,9 +94,33 @@ async fn start_cron(state: Arc<AppState>, cron_schedule: &str) -> Res {
   Ok(())
 }
 
-async fn health() -> impl IntoResponse {
-  let msg = serde_json::json!({ "status": "ok" });
-  (StatusCode::OK, axum::response::Json(msg))
+async fn start_db_healthcheck(state: Arc<AppState>) {
+  let interval = std::time::Duration::from_secs(DB_HEALTH_INTERVAL_SECS);
+  loop {
+    tokio::time::sleep(interval).await;
+    state.update_db_health().await;
+  }
+}
+
+async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+  let health = state.db_health();
+  match health.result {
+    Ok(_) => {
+      let msg = serde_json::json!({ "status": "ok" });
+      (StatusCode::OK, axum::response::Json(msg))
+    }
+    Err(details) => {
+      let msg = serde_json::json!({
+        "status": "error",
+        "error": "database_not_writable",
+        "message": DB_NOT_WRITABLE_MESSAGE,
+        "details": details,
+        "checked_seconds_ago": health.checked_at.elapsed().as_secs(),
+        "check_interval_seconds": DB_HEALTH_INTERVAL_SECS,
+      });
+      (StatusCode::SERVICE_UNAVAILABLE, axum::response::Json(msg))
+    }
+  }
 }
 
 #[tokio::main]
@@ -119,6 +143,11 @@ async fn main() -> Res {
 
   let state = Arc::new(AppState::new().await?);
   let service = router.with_state(state.clone()).into_make_service();
+
+  let health_state = state.clone();
+  tokio::spawn(async move {
+    start_db_healthcheck(health_state).await;
+  });
 
   let cron_state = state.clone();
   let cron_schedule = metrics_cron_schedule();

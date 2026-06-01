@@ -24,5 +24,5 @@ COPY --from=builder /out/${TARGETPLATFORM} /app/ghstats
 
 ENV HOST=0.0.0.0 PORT=8080
 EXPOSE ${PORT}
-HEALTHCHECK CMD wget --no-verbose --tries=1 --spider http://127.0.0.1:${PORT}/health || exit 1
+HEALTHCHECK CMD wget --quiet --tries=1 -O - http://127.0.0.1:${PORT}/health || exit 1
 CMD ["/app/ghstats"]

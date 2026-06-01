@@ -283,6 +283,34 @@ impl DbClient {
     Ok(Self { db })
   }
 
+  pub async fn check_writable(&self) -> Res {
+    let mut tx = self.db.begin().await?;
+
+    sqlx::query(
+      "
+      CREATE TABLE IF NOT EXISTS _ghstats_healthcheck (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        checked_at TEXT NOT NULL
+      );
+      ",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    sqlx::query(
+      "
+      INSERT INTO _ghstats_healthcheck (id, checked_at)
+      VALUES (1, datetime('now'))
+      ON CONFLICT(id) DO UPDATE SET checked_at = excluded.checked_at;
+      ",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    tx.rollback().await?;
+    Ok(())
+  }
+
   // MARK: Getters
 
   pub async fn get_repos_ids(&self) -> Res<Vec<i64>> {
