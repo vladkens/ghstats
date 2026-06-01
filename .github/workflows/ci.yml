@@ -20,7 +20,6 @@ jobs:
         with:
           key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-
-          save-always: true
           path: |
             ~/.cargo/bin/
             ~/.cargo/registry/index/
@@ -29,8 +28,7 @@ jobs:
             target/
 
       - run: rustup update --no-self-update stable && rustup default stable
-      - run: make prepare
-      - run: git diff --exit-code
+      - run: make check
       - run: make test
 
   docker:
