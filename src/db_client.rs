@@ -1,17 +1,15 @@
-use std::future::Future;
-use std::pin::Pin;
+use std::sync::Mutex;
 
-use anyhow::Ok;
+use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 use serde_variant::to_variant_name;
-use sqlx::{AssertSqlSafe, FromRow, SqlitePool, sqlite::SqliteConnectOptions};
 
 use crate::gh_client::{PullRequest, Repo, RepoClones, RepoPopularPath, RepoReferrer, RepoViews};
 use crate::types::Res;
 
 // MARK: Migrations
 
-async fn migrate_v1(db: &SqlitePool) -> Res {
+fn migrate_v1(db: &Connection) -> Res {
   let mut queries = vec![];
 
   let qs = "CREATE TABLE IF NOT EXISTS repos (
@@ -65,13 +63,13 @@ async fn migrate_v1(db: &SqlitePool) -> Res {
   queries.push(qs);
 
   for qs in queries {
-    let _ = sqlx::query(qs).execute(db).await?;
+    db.execute(qs, [])?;
   }
 
   Ok(())
 }
 
-async fn migrate_v2(db: &SqlitePool) -> Res {
+fn migrate_v2(db: &Connection) -> Res {
   let queries = vec![
     "ALTER TABLE repos ADD COLUMN stars_synced BOOLEAN DEFAULT FALSE;",
     "ALTER TABLE repos ADD COLUMN fork BOOLEAN DEFAULT FALSE;",
@@ -81,56 +79,48 @@ async fn migrate_v2(db: &SqlitePool) -> Res {
   ];
 
   for qs in queries {
-    let _ = sqlx::query(qs).execute(db).await?;
+    db.execute(qs, [])?;
   }
 
   Ok(())
 }
 
-async fn migrate_v3(db: &SqlitePool) -> Res {
+fn migrate_v3(db: &Connection) -> Res {
   let queries = vec!["ALTER TABLE repo_stats ADD COLUMN prs INTEGER NOT NULL DEFAULT 0;"];
 
   for qs in queries {
-    let _ = sqlx::query(qs).execute(db).await?;
+    db.execute(qs, [])?;
   }
 
   Ok(())
 }
 
-async fn migrate(db: &SqlitePool) -> Res {
-  type BoxFn = Box<dyn for<'a> Fn(&'a SqlitePool) -> Pin<Box<dyn Future<Output = Res> + 'a>>>;
-  let migrations: Vec<BoxFn> = vec![
-    Box::new(|db| Box::pin(migrate_v1(db))),
-    Box::new(|db| Box::pin(migrate_v2(db))),
-    Box::new(|db| Box::pin(migrate_v3(db))),
-  ];
-
-  let version: (i32,) = sqlx::query_as("PRAGMA user_version").fetch_one(db).await?;
-  let version = version.0;
+fn migrate(db: &Connection) -> Res {
+  let migrations: Vec<fn(&Connection) -> Res> = vec![migrate_v1, migrate_v2, migrate_v3];
+  let version: i32 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
 
   for (idx, func) in migrations.iter().enumerate() {
     let mig_ver = idx as i32 + 1;
     if version < mig_ver {
       tracing::info!("running migration to v{}", mig_ver);
-      func(db).await?;
+      func(db)?;
       let qs = format!("PRAGMA user_version = {}", mig_ver);
-      sqlx::raw_sql(AssertSqlSafe(qs)).execute(db).await?;
+      db.execute_batch(&qs)?;
     }
   }
 
   Ok(())
 }
 
-pub async fn get_db(db_path: &str) -> Res<SqlitePool> {
-  let opts = SqliteConnectOptions::new().filename(db_path).create_if_missing(true);
-  let pool = SqlitePool::connect_with(opts).await?;
-  migrate(&pool).await?;
-  Ok(pool)
+pub async fn get_db(db_path: &str) -> Res<Connection> {
+  let db = Connection::open(db_path)?;
+  migrate(&db)?;
+  Ok(db)
 }
 
 // MARK: Models
 
-#[derive(Clone, Debug, Serialize, Deserialize, FromRow)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RepoTotals {
   pub id: i64,
   pub name: String,
@@ -149,7 +139,7 @@ pub struct RepoTotals {
   pub views_uniques: i32,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, FromRow)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RepoMetrics {
   pub date: String,
   pub clones_count: i32,
@@ -158,20 +148,20 @@ pub struct RepoMetrics {
   pub views_uniques: i32,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, FromRow)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RepoStars {
   pub date: String,
   pub stars: i32,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, FromRow)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RepoPopularItem {
   pub name: String,
   pub count: i64,
   pub uniques: i64,
 }
 
-#[derive(Clone, Debug, Serialize, Deserialize, FromRow)]
+#[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RepoItem {
   pub id: i64,
   pub name: String,
@@ -273,41 +263,91 @@ INNER JOIN (
 ) rs ON rs.repo_id = r.id
 ";
 
+fn repo_totals_from_row(row: &Row<'_>) -> rusqlite::Result<RepoTotals> {
+  Ok(RepoTotals {
+    id: row.get("id")?,
+    name: row.get("name")?,
+    description: row.get("description")?,
+    fork: row.get("fork")?,
+    archived: row.get("archived")?,
+    date: row.get("date")?,
+    stars: row.get("stars")?,
+    forks: row.get("forks")?,
+    watchers: row.get("watchers")?,
+    issues: row.get("issues")?,
+    prs: row.get("prs")?,
+    clones_count: row.get("clones_count")?,
+    clones_uniques: row.get("clones_uniques")?,
+    views_count: row.get("views_count")?,
+    views_uniques: row.get("views_uniques")?,
+  })
+}
+
+fn repo_metrics_from_row(row: &Row<'_>) -> rusqlite::Result<RepoMetrics> {
+  Ok(RepoMetrics {
+    date: row.get("date")?,
+    clones_count: row.get("clones_count")?,
+    clones_uniques: row.get("clones_uniques")?,
+    views_count: row.get("views_count")?,
+    views_uniques: row.get("views_uniques")?,
+  })
+}
+
+fn repo_stars_from_row(row: &Row<'_>) -> rusqlite::Result<RepoStars> {
+  Ok(RepoStars { date: row.get("date")?, stars: row.get("stars")? })
+}
+
+fn repo_popular_item_from_row(row: &Row<'_>) -> rusqlite::Result<RepoPopularItem> {
+  Ok(RepoPopularItem {
+    name: row.get("name")?,
+    count: row.get("count")?,
+    uniques: row.get("uniques")?,
+  })
+}
+
+fn repo_item_from_row(row: &Row<'_>) -> rusqlite::Result<RepoItem> {
+  Ok(RepoItem {
+    id: row.get("id")?,
+    name: row.get("name")?,
+    archived: row.get("archived")?,
+    stars_synced: row.get("stars_synced")?,
+  })
+}
+
 pub struct DbClient {
-  db: SqlitePool,
+  db: Mutex<Connection>,
 }
 
 impl DbClient {
   pub async fn new(db_path: &str) -> Res<Self> {
     let db = get_db(db_path).await?;
-    Ok(Self { db })
+    Ok(Self { db: Mutex::new(db) })
   }
 
   pub async fn check_writable(&self) -> Res {
-    let mut tx = self.db.begin().await?;
+    let mut db = self.db.lock().unwrap();
+    let tx = db.transaction()?;
 
-    sqlx::query(
+    tx.execute(
       "
       CREATE TABLE IF NOT EXISTS _ghstats_healthcheck (
         id INTEGER PRIMARY KEY CHECK (id = 1),
         checked_at TEXT NOT NULL
       );
       ",
-    )
-    .execute(&mut *tx)
-    .await?;
+      [],
+    )?;
 
-    sqlx::query(
+    tx.execute(
       "
       INSERT INTO _ghstats_healthcheck (id, checked_at)
       VALUES (1, datetime('now'))
       ON CONFLICT(id) DO UPDATE SET checked_at = excluded.checked_at;
       ",
-    )
-    .execute(&mut *tx)
-    .await?;
+      [],
+    )?;
 
-    tx.rollback().await?;
+    tx.rollback()?;
     Ok(())
   }
 
@@ -315,25 +355,33 @@ impl DbClient {
 
   pub async fn get_repos_ids(&self) -> Res<Vec<i64>> {
     let qs = "SELECT id FROM repos WHERE hidden = FALSE;";
-    let items: Vec<(i64,)> = sqlx::query_as(qs).fetch_all(&self.db).await?;
-    Ok(items.into_iter().map(|x| x.0).collect())
+    let db = self.db.lock().unwrap();
+    let mut stmt = db.prepare(qs)?;
+    let items = stmt.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<Vec<i64>>>()?;
+    Ok(items)
   }
 
   pub async fn get_repo_totals(&self, repo: &str) -> Res<Option<RepoTotals>> {
     let qs = format!("{} WHERE r.hidden = FALSE AND r.name = $1;", TOTAL_QUERY);
-    let item = sqlx::query_as(AssertSqlSafe(qs)).bind(repo).fetch_optional(&self.db).await?;
+    let db = self.db.lock().unwrap();
+    let item = db.query_row(&qs, params![repo], repo_totals_from_row).optional()?;
     Ok(item)
   }
 
   pub async fn get_metrics(&self, repo: &str) -> Res<Vec<RepoMetrics>> {
     let qs = "
-    SELECT * FROM repo_stats rs
+    SELECT rs.date, rs.clones_count, rs.clones_uniques, rs.views_count, rs.views_uniques
+    FROM repo_stats rs
     INNER JOIN repos r ON r.id = rs.repo_id
     WHERE r.hidden = FALSE AND r.name = $1 AND (rs.clones_count > 0 OR rs.views_count > 0)
     ORDER BY rs.date ASC;
     ";
 
-    let items = sqlx::query_as(qs).bind(repo).fetch_all(&self.db).await?;
+    let db = self.db.lock().unwrap();
+    let mut stmt = db.prepare(qs)?;
+    let items = stmt
+      .query_map(params![repo], repo_metrics_from_row)?
+      .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(items)
   }
 
@@ -342,7 +390,9 @@ impl DbClient {
       "{} WHERE r.hidden = FALSE ORDER BY {} {}",
       TOTAL_QUERY, filter.sort, filter.direction
     );
-    let items = sqlx::query_as(AssertSqlSafe(qs)).fetch_all(&self.db).await?;
+    let db = self.db.lock().unwrap();
+    let mut stmt = db.prepare(&qs)?;
+    let items = stmt.query_map([], repo_totals_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(items)
   }
 
@@ -354,7 +404,10 @@ impl DbClient {
     ORDER BY rs.date ASC;
     ";
 
-    let mut items: Vec<RepoStars> = sqlx::query_as(qs).bind(repo).fetch_all(&self.db).await?;
+    let db = self.db.lock().unwrap();
+    let mut stmt = db.prepare(qs)?;
+    let mut items: Vec<RepoStars> =
+      stmt.query_map(params![repo], repo_stars_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
 
     // restore gaps in data
     let mut prev_stars = 0;
@@ -404,13 +457,19 @@ impl DbClient {
     ORDER BY {order_by};
     ");
 
-    let items = sqlx::query_as(AssertSqlSafe(qs)).bind(repo).fetch_all(&self.db).await?;
+    let db = self.db.lock().unwrap();
+    let mut stmt = db.prepare(&qs)?;
+    let items = stmt
+      .query_map(params![repo], repo_popular_item_from_row)?
+      .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(items)
   }
 
   pub async fn repos_to_sync(&self) -> Res<Vec<RepoItem>> {
     let qs = "SELECT * FROM repos WHERE stars_synced = FALSE AND hidden = FALSE";
-    let items = sqlx::query_as(qs).fetch_all(&self.db).await?;
+    let db = self.db.lock().unwrap();
+    let mut stmt = db.prepare(qs)?;
+    let items = stmt.query_map([], repo_item_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(items)
   }
 
@@ -428,14 +487,11 @@ impl DbClient {
       hidden = FALSE; -- reset hidden flag if repo was hidden and appeared again
     ";
 
-    let _ = sqlx::query(qs)
-      .bind(repo.id as i64)
-      .bind(&repo.full_name)
-      .bind(&repo.description)
-      .bind(repo.archived)
-      .bind(repo.fork)
-      .execute(&self.db)
-      .await?;
+    let db = self.db.lock().unwrap();
+    db.execute(
+      qs,
+      params![repo.id as i64, &repo.full_name, &repo.description, repo.archived, repo.fork],
+    )?;
 
     Ok(())
   }
@@ -452,16 +508,19 @@ impl DbClient {
       prs = MAX(t.prs, excluded.prs);
     ";
 
-    let _ = sqlx::query(qs)
-      .bind(repo.id as i64)
-      .bind(date)
-      .bind(repo.stargazers_count as i32)
-      .bind(repo.forks_count as i32)
-      .bind(repo.watchers_count as i32)
-      .bind(repo.open_issues_count as i32 - prs.len() as i32)
-      .bind(prs.len() as i32)
-      .execute(&self.db)
-      .await?;
+    let db = self.db.lock().unwrap();
+    db.execute(
+      qs,
+      params![
+        repo.id as i64,
+        date,
+        repo.stargazers_count as i32,
+        repo.forks_count as i32,
+        repo.watchers_count as i32,
+        repo.open_issues_count as i32 - prs.len() as i32,
+        prs.len() as i32,
+      ],
+    )?;
 
     Ok(())
   }
@@ -474,9 +533,9 @@ impl DbClient {
       stars = MAX(t.stars, excluded.stars);
     ";
 
+    let db = self.db.lock().unwrap();
     for (date, acc_count, _) in stars {
-      let _ =
-        sqlx::query(qs).bind(repo_id).bind(date).bind(*acc_count as i32).execute(&self.db).await?;
+      db.execute(qs, params![repo_id, date, *acc_count as i32])?;
     }
 
     Ok(())
@@ -491,14 +550,12 @@ impl DbClient {
       clones_uniques = MAX(t.clones_uniques, excluded.clones_uniques);
     ";
 
+    let db = self.db.lock().unwrap();
     for doc in &clones.clones {
-      let _ = sqlx::query(qs)
-        .bind(repo.id as i64)
-        .bind(&doc.timestamp)
-        .bind(doc.count as i32)
-        .bind(doc.uniques as i32)
-        .execute(&self.db)
-        .await?;
+      db.execute(
+        qs,
+        params![repo.id as i64, &doc.timestamp, doc.count as i32, doc.uniques as i32],
+      )?;
     }
 
     Ok(())
@@ -513,14 +570,12 @@ impl DbClient {
       views_uniques = MAX(t.views_uniques, excluded.views_uniques);
     ";
 
+    let db = self.db.lock().unwrap();
     for doc in &views.views {
-      let _ = sqlx::query(qs)
-        .bind(repo.id as i64)
-        .bind(&doc.timestamp)
-        .bind(doc.count as i32)
-        .bind(doc.uniques as i32)
-        .execute(&self.db)
-        .await?;
+      db.execute(
+        qs,
+        params![repo.id as i64, &doc.timestamp, doc.count as i32, doc.uniques as i32],
+      )?;
     }
 
     Ok(())
@@ -535,15 +590,12 @@ impl DbClient {
       uniques = MAX(t.uniques, excluded.uniques);
     ";
 
+    let db = self.db.lock().unwrap();
     for rec in docs {
-      let _ = sqlx::query(qs)
-        .bind(repo.id as i64)
-        .bind(date)
-        .bind(&rec.referrer)
-        .bind(rec.count as i32)
-        .bind(rec.uniques as i32)
-        .execute(&self.db)
-        .await?;
+      db.execute(
+        qs,
+        params![repo.id as i64, date, &rec.referrer, rec.count as i32, rec.uniques as i32],
+      )?;
     }
 
     Ok(())
@@ -558,16 +610,12 @@ impl DbClient {
       uniques = MAX(t.uniques, excluded.uniques);
     ";
 
+    let db = self.db.lock().unwrap();
     for rec in docs {
-      let _ = sqlx::query(qs)
-        .bind(repo.id as i64)
-        .bind(date)
-        .bind(&rec.path)
-        .bind(&rec.title)
-        .bind(rec.count as i32)
-        .bind(rec.uniques as i32)
-        .execute(&self.db)
-        .await?;
+      db.execute(
+        qs,
+        params![repo.id as i64, date, &rec.path, &rec.title, rec.count as i32, rec.uniques as i32],
+      )?;
     }
 
     Ok(())
@@ -577,6 +625,7 @@ impl DbClient {
 
   pub async fn update_deltas(&self) -> Res {
     let items = [("repo_referrers", "referrer"), ("repo_popular_paths", "path")];
+    let db = self.db.lock().unwrap();
 
     for (table, col) in items {
       #[rustfmt::skip]
@@ -595,22 +644,320 @@ impl DbClient {
       WHERE rr.repo_id = cte.repo_id AND rr.date = cte.date AND rr.{col} = cte.{col};
       ");
 
-      let _ = sqlx::query(AssertSqlSafe(qs)).execute(&self.db).await?;
+      db.execute(&qs, [])?;
     }
 
     Ok(())
   }
 
   pub async fn mark_repo_hidden(&self, repos_ids: &[i64]) -> Res {
+    if repos_ids.is_empty() {
+      return Ok(());
+    }
+
     let ids = repos_ids.iter().map(|x| x.to_string()).collect::<Vec<_>>().join(",");
     let qs = format!("UPDATE repos SET hidden = TRUE WHERE id IN ({});", ids);
-    let _ = sqlx::query(AssertSqlSafe(qs)).execute(&self.db).await?;
+    let db = self.db.lock().unwrap();
+    db.execute(&qs, [])?;
     Ok(())
   }
 
   pub async fn mark_repo_stars_synced(&self, repo_id: i64) -> Res {
     let qs = "UPDATE repos SET stars_synced = TRUE WHERE id = $1;";
-    let _ = sqlx::query(qs).bind(repo_id).execute(&self.db).await?;
+    let db = self.db.lock().unwrap();
+    db.execute(qs, params![repo_id])?;
+    Ok(())
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use std::time::{SystemTime, UNIX_EPOCH};
+
+  use super::*;
+  use crate::gh_client::{
+    PullRequest, Repo, RepoClones, RepoPopularPath, RepoReferrer, RepoViews, TrafficDaily,
+  };
+
+  fn db_path(test_name: &str) -> String {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    std::env::temp_dir()
+      .join(format!("ghstats-{test_name}-{}-{nanos}.db", std::process::id()))
+      .to_string_lossy()
+      .into_owned()
+  }
+
+  async fn test_db(test_name: &str) -> Res<DbClient> {
+    DbClient::new(&db_path(test_name)).await
+  }
+
+  fn sample_repo(id: u64, full_name: &str) -> Repo {
+    Repo {
+      id,
+      full_name: full_name.to_string(),
+      description: Some(format!("{full_name} description")),
+      stargazers_count: 10,
+      forks_count: 2,
+      watchers_count: 3,
+      open_issues_count: 7,
+      fork: false,
+      archived: false,
+    }
+  }
+
+  fn pr(id: u64) -> PullRequest {
+    PullRequest { id, title: format!("PR {id}") }
+  }
+
+  fn daily(timestamp: &str, count: u32, uniques: u32) -> TrafficDaily {
+    TrafficDaily { timestamp: timestamp.to_string(), count, uniques }
+  }
+
+  #[tokio::test]
+  async fn migrates_schema_and_healthcheck_rolls_back() -> Res {
+    let db = test_db("migrations").await?;
+    db.check_writable().await?;
+
+    let conn = db.db.lock().unwrap();
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    assert_eq!(version, 3);
+
+    let mut stmt = conn.prepare(
+      "
+      SELECT name FROM sqlite_master
+      WHERE type = 'table'
+      ORDER BY name;
+      ",
+    )?;
+    let tables =
+      stmt.query_map([], |row| row.get(0))?.collect::<rusqlite::Result<Vec<String>>>()?;
+
+    assert!(tables.contains(&"repos".to_string()));
+    assert!(tables.contains(&"repo_stats".to_string()));
+    assert!(tables.contains(&"repo_referrers".to_string()));
+    assert!(tables.contains(&"repo_popular_paths".to_string()));
+    assert!(!tables.contains(&"_ghstats_healthcheck".to_string()));
+
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn repos_can_be_inserted_hidden_restored_and_marked_synced() -> Res {
+    let db = test_db("repos").await?;
+    let mut repo = sample_repo(1, "owner/repo");
+
+    db.insert_repo(&repo).await?;
+    assert_eq!(db.get_repos_ids().await?, vec![1]);
+    assert_eq!(db.repos_to_sync().await?.len(), 1);
+
+    db.mark_repo_stars_synced(1).await?;
+    assert!(db.repos_to_sync().await?.is_empty());
+
+    db.mark_repo_hidden(&[]).await?;
+    assert_eq!(db.get_repos_ids().await?, vec![1]);
+
+    db.mark_repo_hidden(&[1]).await?;
+    assert!(db.get_repos_ids().await?.is_empty());
+
+    repo.description = Some("updated".to_string());
+    repo.archived = true;
+    repo.fork = true;
+    db.insert_repo(&repo).await?;
+    assert_eq!(db.get_repos_ids().await?, vec![1]);
+
+    let conn = db.db.lock().unwrap();
+    let row: (String, bool, bool, bool, bool) = conn.query_row(
+      "SELECT description, archived, fork, hidden, stars_synced FROM repos WHERE id = 1",
+      [],
+      |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+    )?;
+    assert_eq!(row, ("updated".to_string(), true, true, false, true));
+
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn stats_upserts_feed_totals_metrics_and_sorting() -> Res {
+    let db = test_db("stats").await?;
+    let repo = sample_repo(1, "owner/repo");
+    let other = Repo {
+      id: 2,
+      full_name: "owner/other".to_string(),
+      stargazers_count: 50,
+      ..sample_repo(2, "owner/other")
+    };
+
+    db.insert_repo(&repo).await?;
+    db.insert_repo(&other).await?;
+
+    db.insert_stats(&repo, "2024-01-01T00:00:00Z", &[pr(1), pr(2)]).await?;
+    db.insert_stats(
+      &Repo {
+        stargazers_count: 8,
+        forks_count: 5,
+        watchers_count: 1,
+        open_issues_count: 9,
+        ..sample_repo(1, "owner/repo")
+      },
+      "2024-01-01T00:00:00Z",
+      &[pr(1)],
+    )
+    .await?;
+    db.insert_stats(
+      &Repo {
+        stargazers_count: 12,
+        forks_count: 3,
+        watchers_count: 4,
+        ..sample_repo(1, "owner/repo")
+      },
+      "2024-01-02T00:00:00Z",
+      &[],
+    )
+    .await?;
+    db.insert_stats(&other, "2024-01-02T00:00:00Z", &[]).await?;
+
+    db.insert_clones(
+      &repo,
+      &RepoClones {
+        count: 0,
+        uniques: 0,
+        clones: vec![daily("2024-01-01T00:00:00Z", 3, 2), daily("2024-01-02T00:00:00Z", 5, 4)],
+      },
+    )
+    .await?;
+    db.insert_views(
+      &repo,
+      &RepoViews {
+        count: 0,
+        uniques: 0,
+        views: vec![daily("2024-01-01T00:00:00Z", 30, 20), daily("2024-01-02T00:00:00Z", 50, 40)],
+      },
+    )
+    .await?;
+
+    let totals = db.get_repo_totals("owner/repo").await?.unwrap();
+    assert_eq!(totals.date, "2024-01-02T00:00:00Z");
+    assert_eq!(totals.stars, 12);
+    assert_eq!(totals.forks, 3);
+    assert_eq!(totals.watchers, 4);
+    assert_eq!(totals.issues, 7);
+    assert_eq!(totals.prs, 0);
+    assert_eq!(totals.clones_count, 8);
+    assert_eq!(totals.clones_uniques, 6);
+    assert_eq!(totals.views_count, 80);
+    assert_eq!(totals.views_uniques, 60);
+
+    let metrics = db.get_metrics("owner/repo").await?;
+    assert_eq!(metrics.len(), 2);
+    assert_eq!(metrics[0].date, "2024-01-01T00:00:00Z");
+    assert_eq!(metrics[1].date, "2024-01-02T00:00:00Z");
+
+    let repos = db
+      .get_repos(&RepoFilter {
+        sort: RepoSort::Stars,
+        direction: Direction::Desc,
+        ..RepoFilter::default()
+      })
+      .await?;
+    assert_eq!(
+      repos.iter().map(|x| x.name.as_str()).collect::<Vec<_>>(),
+      vec!["owner/other", "owner/repo"]
+    );
+
+    db.mark_repo_hidden(&[2]).await?;
+    assert!(db.get_repo_totals("owner/other").await?.is_none());
+    assert_eq!(db.get_repos(&RepoFilter::default()).await?.len(), 1);
+
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn stars_history_restores_gaps_and_ignores_leading_empty_rows() -> Res {
+    let db = test_db("stars").await?;
+    let repo = sample_repo(1, "owner/repo");
+    db.insert_repo(&repo).await?;
+
+    db.insert_clones(
+      &repo,
+      &RepoClones {
+        count: 0,
+        uniques: 0,
+        clones: vec![daily("2024-01-01T00:00:00Z", 1, 1), daily("2024-01-03T00:00:00Z", 1, 1)],
+      },
+    )
+    .await?;
+    db.insert_stars(
+      1,
+      &[("2024-01-02T00:00:00Z".to_string(), 2, 2), ("2024-01-04T00:00:00Z".to_string(), 5, 3)],
+    )
+    .await?;
+
+    let stars = db.get_stars("owner/repo").await?;
+    assert_eq!(
+      stars.iter().map(|x| (&x.date, x.stars)).collect::<Vec<_>>(),
+      vec![
+        (&"2024-01-02T00:00:00Z".to_string(), 2),
+        (&"2024-01-03T00:00:00Z".to_string(), 2),
+        (&"2024-01-04T00:00:00Z".to_string(), 5),
+      ]
+    );
+
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn popular_item_deltas_are_non_negative_and_sorted() -> Res {
+    let db = test_db("popular").await?;
+    let repo = sample_repo(1, "owner/repo");
+    db.insert_repo(&repo).await?;
+
+    db.insert_referrers(
+      &repo,
+      "2024-01-01T00:00:00Z",
+      &[
+        RepoReferrer { referrer: "google.com".to_string(), count: 10, uniques: 5 },
+        RepoReferrer { referrer: "reddit.com".to_string(), count: 1, uniques: 1 },
+      ],
+    )
+    .await?;
+    db.insert_referrers(
+      &repo,
+      "2024-01-02T00:00:00Z",
+      &[
+        RepoReferrer { referrer: "google.com".to_string(), count: 14, uniques: 3 },
+        RepoReferrer { referrer: "reddit.com".to_string(), count: 1, uniques: 1 },
+      ],
+    )
+    .await?;
+    db.insert_paths(
+      &repo,
+      "2024-01-01T00:00:00Z",
+      &[RepoPopularPath { path: "/".to_string(), title: "Home".to_string(), count: 7, uniques: 4 }],
+    )
+    .await?;
+    db.insert_paths(
+      &repo,
+      "2024-01-02T00:00:00Z",
+      &[RepoPopularPath { path: "/".to_string(), title: "Home".to_string(), count: 5, uniques: 2 }],
+    )
+    .await?;
+
+    db.update_deltas().await?;
+
+    let by_count =
+      PopularFilter { sort: PopularSort::Count, direction: Direction::Desc, period: 0 };
+    let refs = db.get_popular_items("owner/repo", &PopularKind::Refs, &by_count).await?;
+    assert_eq!(
+      refs.iter().map(|x| (&x.name, x.count, x.uniques)).collect::<Vec<_>>(),
+      vec![(&"google.com".to_string(), 14, 5), (&"reddit.com".to_string(), 1, 1),]
+    );
+
+    let paths = db.get_popular_items("owner/repo", &PopularKind::Path, &by_count).await?;
+    assert_eq!(
+      paths.iter().map(|x| (&x.name, x.count, x.uniques)).collect::<Vec<_>>(),
+      vec![(&"/".to_string(), 7, 4),]
+    );
+
     Ok(())
   }
 }
