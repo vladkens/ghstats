@@ -1,4 +1,8 @@
 FROM --platform=$BUILDPLATFORM rust:alpine AS builder
+# Build the Rust binaries for all supported Linux architectures on the native
+# build platform with cargo-zigbuild. The runtime stage still runs per target
+# platform, so Docker can copy the matching binary into each platform-specific
+# image without compiling Rust under buildx/QEMU emulation.
 RUN apk add --no-cache musl-dev zig && \
   rustup target add x86_64-unknown-linux-musl aarch64-unknown-linux-musl && \
   cargo install cargo-zigbuild --locked
