@@ -2,7 +2,8 @@
 
 <div align="center">
 
-Self-hosted dashboard for tracking GitHub repos traffic history longer than 14 days.
+🤩📈 Self-hosted GitHub traffic analytics with long-term history, SQLite storage,
+and a tiny Docker image.
 
 [<img src="https://badges.ws/github/release/vladkens/ghstats" alt="version" />](https://github.com/vladkens/ghstats/releases)
 [<img src="https://badges.ws/github/license/vladkens/ghstats" alt="license" />](https://github.com/vladkens/ghstats/blob/main/LICENSE)
@@ -14,17 +15,29 @@ Self-hosted dashboard for tracking GitHub repos traffic history longer than 14 d
   <img src="https://github.com/vladkens/ghstats/blob/assets/preview.png?raw=true" alt="preview" />
 </div>
 
-## 🌟 Features
+GitHub only keeps repository traffic data for 14 days. `ghstats` continuously
+pulls that data from the GitHub API and keeps your own history of views, clones,
+stars, forks, issues, and pull requests in a local SQLite database.
 
-- Collect & store traffic metrics for all your repos
-- List of repos and informative dashboard for each
-- No React / Next / Postgres etc, just single and small Docker image (20MB) & SQLite
+Use it for personal projects, open-source portfolios, organization dashboards,
+or public stats pages where GitHub's built-in traffic tab is too short-lived.
 
-## 🚀 Usage
+## Features
+
+- Long-term history for GitHub repository traffic beyond the 14-day GitHub limit
+- Per-repository dashboards for stars, clones, views, referrers, and popular paths
+- Automatic hourly sync for public repos, with optional private repo support
+- Repo filtering by owner, exact name, forks, and archived status
+- JSON API for exposing collected stats to personal sites or other tools
+- Small self-hosted deployment: one Rust binary, one SQLite database, one Docker image
+
+## Quick start
 
 ```sh
 docker run -d --env-file .env -p 8080:8080 -v ./data:/app/data --name ghstats ghcr.io/vladkens/ghstats:latest
 ```
+
+Open http://127.0.0.1:8080 after the container starts.
 
 Note: ghstats Docker images run as a non-root user. If you upgrade an existing
 installation and the container cannot write to SQLite, fix the mounted data
@@ -34,7 +47,7 @@ directory ownership once:
 docker run --rm -u root -v ./data:/app/data ghcr.io/vladkens/ghstats:latest chown -R appuser:appgroup /app/data
 ```
 
-Or Docker Compose:
+Docker Compose:
 
 ```yaml
 services:
@@ -50,6 +63,15 @@ services:
     volumes:
       - ./data:/app/data
 ```
+
+## Why ghstats?
+
+- **Own your history**: keep traffic data for months or years instead of losing it
+  after two weeks.
+- **Keep the setup boring**: no Postgres, no hosted account, no frontend build
+  pipeline in production.
+- **Publish only what you want**: filter repositories, hide forks or archived
+  projects, and expose a read-only dashboard or API.
 
 ### Build locally with Docker Compose
 

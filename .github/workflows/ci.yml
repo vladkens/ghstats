@@ -5,6 +5,10 @@ on:
     branches: [main]
     tags: ["v*"]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.sha }}
+  cancel-in-progress: false
+
 permissions: read-all
 
 jobs:
@@ -29,8 +33,8 @@ jobs:
       - run: git diff --exit-code
       - run: make test
 
-  docker-main:
-    if: ${{ github.ref == 'refs/heads/main' }}
+  docker:
+    if: ${{ github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v') }}
     runs-on: ubuntu-latest
     needs: test
     permissions:
@@ -38,35 +42,9 @@ jobs:
       packages: write
     steps:
       - uses: actions/checkout@v6
-      - uses: docker/setup-qemu-action@v4
-      - uses: docker/setup-buildx-action@v4
-
-      - uses: docker/login-action@v4
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - uses: docker/build-push-action@v7
-        with:
-          push: true
-          platforms: linux/amd64,linux/arm64
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          tags: |
-            ghcr.io/${{ github.repository }}:main
-
-  release:
-    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
-    runs-on: ubuntu-latest
-    needs: test
-    permissions:
-      contents: write
-      packages: write
-    steps:
-      - uses: actions/checkout@v6
 
       - name: Check Cargo.toml version matches tag
+        if: ${{ startsWith(github.ref, 'refs/tags/v') }}
         run: |
           TAG="${{ github.ref_name }}"
           CARGO_VERSION="v$(grep '^version' Cargo.toml | head -1 | sed 's/.*"\(.*\)".*/\1/')"
@@ -84,15 +62,36 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Collect Docker tags
+        id: docker-tags
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/v* ]]; then
+            {
+              echo "tags<<EOF"
+              echo "ghcr.io/${GITHUB_REPOSITORY}:${GITHUB_REF_NAME}"
+              echo "ghcr.io/${GITHUB_REPOSITORY}:latest"
+              echo "EOF"
+            } >> "$GITHUB_OUTPUT"
+          else
+            echo "tags=ghcr.io/${GITHUB_REPOSITORY}:main" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: docker/build-push-action@v7
         with:
           push: true
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
-          tags: |
-            ghcr.io/${{ github.repository }}:${{ github.ref_name }}
-            ghcr.io/${{ github.repository }}:latest
+          tags: ${{ steps.docker-tags.outputs.tags }}
+
+  release:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    needs: docker
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
 
       - name: Extract changelog entry
         run: |
