@@ -3,8 +3,12 @@ mod html;
 
 use std::sync::Arc;
 
+use axum::Router;
+use axum::extract::Request;
 use axum::http::StatusCode;
-use axum::{Router, extract::Request, middleware::Next, response::IntoResponse, routing::get};
+use axum::middleware::Next;
+use axum::response::IntoResponse;
+use axum::routing::get;
 use reqwest::Method;
 use tower_http::cors::{Any, CorsLayer};
 

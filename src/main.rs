@@ -1,6 +1,9 @@
 use std::sync::Arc;
 
-use axum::{Router, extract::State, response::IntoResponse, routing::get};
+use axum::Router;
+use axum::extract::State;
+use axum::response::IntoResponse;
+use axum::routing::get;
 use db_client::RepoFilter;
 use reqwest::StatusCode;
 use state::{AppState, DB_HEALTH_INTERVAL_SECS, DB_NOT_WRITABLE_MESSAGE};
@@ -85,7 +88,8 @@ async fn start_cron(state: Arc<AppState>, cron_schedule: &str) -> Res {
   // >> All of these requests count towards your personal rate limit of 5,000 requests per hour.
 
   // https://docs.github.com/en/repositories/viewing-activity-and-data-for-your-repository/viewing-traffic-to-a-repository
-  // >> Full clones and visitor information update hourly, while referring sites and popular content sections update daily.
+  // >> Full clones and visitor information update hourly, while referring sites and popular content
+  // sections update daily.
 
   let runner = JobScheduler::new().await?;
   runner.add(job).await?;

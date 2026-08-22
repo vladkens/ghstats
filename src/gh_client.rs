@@ -1,10 +1,10 @@
-use std::{time::Duration, vec};
+use std::time::Duration;
+use std::vec;
 
-use reqwest::{
-  RequestBuilder,
-  header::{HeaderMap, HeaderValue},
-};
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
+use reqwest::RequestBuilder;
+use reqwest::header::{HeaderMap, HeaderValue};
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 use crate::types::Res;
 

@@ -1,12 +1,10 @@
 use std::sync::Mutex;
 use std::time::Instant;
 
-use crate::{
-  db_client::{DbClient, RepoFilter, RepoTotals},
-  gh_client::GhClient,
-  helpers::GhsFilter,
-  types::Res,
-};
+use crate::db_client::{DbClient, RepoFilter, RepoTotals};
+use crate::gh_client::GhClient;
+use crate::helpers::GhsFilter;
+use crate::types::Res;
 
 pub const DB_HEALTH_INTERVAL_SECS: u64 = 60 * 60;
 pub const DB_NOT_WRITABLE_MESSAGE: &str = "SQLite database is not writable. ghstats Docker images run as a non-root user, so existing bind-mounted data directories may need an ownership fix. For docker run: docker run --rm -u root -v ./data:/app/data ghcr.io/vladkens/ghstats:latest chown -R appuser:appgroup /app/data. For Docker Compose: docker compose run --rm --user root ghstats chown -R appuser:appgroup /app/data";

@@ -1,12 +1,12 @@
 .PHONY: prepare check test watch build update docker-build backup
 
 prepare:
-	cargo fmt
+	cargo +nightly fmt
 	cargo clippy --fix --locked --allow-dirty -- -D warnings
 	cargo check --release --locked
 
 check:
-	cargo fmt --check
+	cargo +nightly fmt --check
 	cargo clippy --locked -- -D warnings
 	cargo check --release --locked
 

@@ -1,13 +1,12 @@
-use std::{collections::HashMap, sync::Arc};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use axum::extract::Request;
 
-use crate::{
-  db_client::DbClient,
-  gh_client::{GhClient, Repo},
-  state::AppState,
-  types::Res,
-};
+use crate::db_client::DbClient;
+use crate::gh_client::{GhClient, Repo};
+use crate::state::AppState;
+use crate::types::Res;
 
 pub fn truncate_middle(text: &str, max_len: usize) -> String {
   if text.len() <= max_len {
