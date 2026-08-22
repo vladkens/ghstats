@@ -137,6 +137,7 @@ async fn main() -> Res {
 
   let router = Router::new()
     .nest("/api", routes::api_routes())
+    .merge(routes::badge_routes())
     .merge(routes::html_routes())
     .layer(
       TraceLayer::new_for_http()

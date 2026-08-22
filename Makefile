@@ -1,4 +1,4 @@
-.PHONY: prepare check test watch build update docker-build backup
+.PHONY: prepare check test build update docker-build backup
 
 prepare:
 	cargo +nightly fmt
@@ -12,9 +12,6 @@ check:
 
 test:
 	cargo test --locked
-
-watch:
-	watchexec --restart --watch src --watch assets --exts rs,css,js,svg -- cargo run --locked
 
 build:
 	cargo build --release --locked

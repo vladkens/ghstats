@@ -29,6 +29,7 @@ or public stats pages where GitHub's built-in traffic tab is too short-lived.
 - Automatic hourly sync for public repos, with optional private repo support
 - Repo filtering by owner, exact name, forks, and archived status
 - JSON API for exposing collected stats to personal sites or other tools
+- Embeddable SVG badges for repository, portfolio, and service metrics
 - Small self-hosted deployment: one Rust binary, one SQLite database, one Docker image
 
 ## Quick start
@@ -190,12 +191,64 @@ curl -H "x-api-token:1234" http://127.0.0.1:8080/api/repos
       "clones_count": 90,
       "clones_uniques": 45,
       "views_count": 1726,
-      "views_uniques": 659
-    }
+      "views_uniques": 659,
+    },
     // ...
-  ]
+  ],
 }
 ```
+
+### Badge endpoints
+
+`ghstats` can render the collected statistics as SVG badges for GitHub READMEs, personal websites, and dashboards. Badge endpoints are public and use the same `GHS_FILTER` rules as the HTML dashboard.
+
+Repository badges use `/badge/{owner}/{repo}/{metric}.svg`:
+
+| Metric        | Example endpoint                             | Default period  |
+| ------------- | -------------------------------------------- | --------------- |
+| Views         | `/badge/vladkens/ghstats/views.svg`          | Tracked history |
+| Clones        | `/badge/vladkens/ghstats/clones.svg`         | Tracked history |
+| Stars         | `/badge/vladkens/ghstats/stars.svg`          | Current value   |
+| Star growth   | `/badge/vladkens/ghstats/stars-growth.svg`   | 30 days         |
+| Star velocity | `/badge/vladkens/ghstats/stars-velocity.svg` | 30 days         |
+| Traffic peak  | `/badge/vladkens/ghstats/traffic-peak.svg`   | 30 days         |
+
+Omit the owner and repository to aggregate a metric across all repositories allowed by `GHS_FILTER`:
+
+```text
+/badge/views.svg
+/badge/clones.svg
+/badge/stars.svg
+/badge/stars-growth.svg
+/badge/stars-velocity.svg
+/badge/traffic-peak.svg
+/badge/repos.svg
+```
+
+Views and clones accept `period=7d`, `period=30d`, `period=90d`, or `period=tracked`. Star growth, star velocity, and traffic peak accept the same values and default to `30d`.
+
+```text
+/badge/vladkens/ghstats/views.svg?period=30d
+/badge/stars-growth.svg?period=90d
+```
+
+`tracked` means the history retained since `ghstats` started observing a repository, not necessarily the repository's complete lifetime. Star velocity is the average net star change per observed day, and traffic peak is the largest daily view count in the selected period.
+
+Global service badges expose the application health, the latest successful metrics sync, and the age of the earliest retained metric:
+
+```text
+/badge/health.svg
+/badge/updated.svg
+/badge/tracking.svg
+```
+
+Markdown example:
+
+```md
+[![Views](https://ghstats.example.com/badge/vladkens/ghstats/views.svg?period=30d)](https://ghstats.example.com/vladkens/ghstats)
+```
+
+Badge URLs cannot send `GHS_API_TOKEN`. If the instance contains private repository data, protect the instance with a reverse proxy or exclude those repositories with `GHS_FILTER` before publishing badge URLs.
 
 ## 🤝 Contributing
 

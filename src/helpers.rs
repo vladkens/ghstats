@@ -37,6 +37,15 @@ async fn check_hidden_repos(db: &DbClient, repos: &[Repo]) -> Res {
 }
 
 pub async fn update_metrics(state: Arc<AppState>) -> Res {
+  let result = update_metrics_inner(state.clone()).await;
+  match &result {
+    Ok(()) => state.record_sync_success(),
+    Err(error) => state.record_sync_error(error),
+  }
+  result
+}
+
+async fn update_metrics_inner(state: Arc<AppState>) -> Res {
   let stime = std::time::Instant::now();
 
   let date = chrono::Utc::now().to_utc().to_rfc3339();

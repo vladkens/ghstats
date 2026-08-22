@@ -1,4 +1,5 @@
 mod api;
+mod badge;
 mod html;
 
 use std::sync::Arc;
@@ -35,6 +36,12 @@ pub fn api_routes() -> Router<Arc<AppState>> {
     .route("/repos", get(api::api_get_repos))
     .layer(axum::middleware::from_fn(check_api_token))
     .layer(cors)
+}
+
+pub fn badge_routes() -> Router<Arc<AppState>> {
+  Router::new()
+    .route("/badge/{metric}", get(badge::total_badge))
+    .route("/badge/{owner}/{repo}/{metric}", get(badge::repo_badge))
 }
 
 pub fn html_routes() -> Router<Arc<AppState>> {

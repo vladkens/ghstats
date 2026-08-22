@@ -4,11 +4,16 @@ pub type Res<T = ()> = anyhow::Result<T>;
 pub type JsonRes<T> = Result<axum::Json<T>, AppError>;
 pub type HtmlRes = Result<maud::Markup, AppError>;
 
+#[derive(Debug)]
 pub struct AppError(anyhow::Error);
 
 impl AppError {
+  pub fn status(code: axum::http::StatusCode) -> Self {
+    Self(anyhow::anyhow!(code))
+  }
+
   pub fn not_found() -> HtmlRes {
-    Err(Self(anyhow::anyhow!(axum::http::StatusCode::NOT_FOUND)))
+    Err(Self::status(axum::http::StatusCode::NOT_FOUND))
   }
 }
 

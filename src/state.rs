@@ -1,6 +1,8 @@
 use std::sync::Mutex;
 use std::time::Instant;
 
+use chrono::{DateTime, Utc};
+
 use crate::db_client::{DbClient, RepoFilter, RepoTotals};
 use crate::gh_client::GhClient;
 use crate::helpers::GhsFilter;
@@ -20,6 +22,12 @@ pub struct DbHealth {
   pub result: Result<(), String>,
 }
 
+#[derive(Clone, Default)]
+pub struct SyncStatus {
+  pub last_success: Option<DateTime<Utc>>,
+  pub last_error: Option<String>,
+}
+
 impl DbHealth {
   fn new(result: Result<(), String>) -> Self {
     Self { checked_at: Instant::now(), result }
@@ -33,6 +41,7 @@ pub struct AppState {
   pub include_private: bool,
   pub last_release: Mutex<String>,
   db_health: Mutex<DbHealth>,
+  sync_status: Mutex<SyncStatus>,
 }
 
 impl AppState {
@@ -63,7 +72,8 @@ impl AppState {
 
     let last_release = Mutex::new(env!("CARGO_PKG_VERSION").to_string());
     let db_health = Mutex::new(DbHealth::new(Ok(())));
-    Ok(Self { db, gh, filter, include_private, last_release, db_health })
+    let sync_status = Mutex::new(SyncStatus::default());
+    Ok(Self { db, gh, filter, include_private, last_release, db_health, sync_status })
   }
 
   pub fn db_health(&self) -> DbHealth {
@@ -77,6 +87,19 @@ impl AppState {
     }
 
     *self.db_health.lock().unwrap() = DbHealth::new(result);
+  }
+
+  pub fn sync_status(&self) -> SyncStatus {
+    self.sync_status.lock().unwrap().clone()
+  }
+
+  pub fn record_sync_success(&self) {
+    *self.sync_status.lock().unwrap() =
+      SyncStatus { last_success: Some(Utc::now()), last_error: None };
+  }
+
+  pub fn record_sync_error(&self, error: &anyhow::Error) {
+    self.sync_status.lock().unwrap().last_error = Some(error.to_string());
   }
 
   pub async fn get_repos_filtered(&self, qs: &RepoFilter) -> Res<Vec<RepoTotals>> {
@@ -112,5 +135,18 @@ impl AppState {
     owners.sort();
     owners.dedup();
     Ok(owners)
+  }
+
+  #[cfg(test)]
+  pub(crate) fn for_test(db: DbClient, filter: GhsFilter) -> Self {
+    Self {
+      db,
+      gh: GhClient::new("test-token".to_string()).unwrap(),
+      filter,
+      include_private: false,
+      last_release: Mutex::new(env!("CARGO_PKG_VERSION").to_string()),
+      db_health: Mutex::new(DbHealth::new(Ok(()))),
+      sync_status: Mutex::new(SyncStatus::default()),
+    }
   }
 }
