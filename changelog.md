@@ -1,3 +1,14 @@
+## v0.10.0 – 2026-08-26
+
+### Features
+
+- Added embeddable SVG badges for repository, aggregate, and service metrics
+- Added support for rotating GitHub App installation tokens supplied through `GITHUB_TOKEN_FILE`
+
+**Full Changelog**: https://github.com/vladkens/ghstats/compare/v0.9.0...v0.10.0
+
+---
+
 ## v0.9.0 – 2026-06-01
 
 ### Features
