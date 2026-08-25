@@ -46,9 +46,10 @@ pub struct AppState {
 
 impl AppState {
   pub async fn new() -> Res<Self> {
+    let gh_token_file = std::env::var("GITHUB_TOKEN_FILE").unwrap_or_default();
     let gh_token = std::env::var("GITHUB_TOKEN").unwrap_or_default();
-    if gh_token.is_empty() {
-      tracing::error!("missing GITHUB_TOKEN");
+    if gh_token_file.is_empty() && gh_token.is_empty() {
+      tracing::error!("either GITHUB_TOKEN or GITHUB_TOKEN_FILE must be provided");
       std::process::exit(1);
     }
 
@@ -62,7 +63,10 @@ impl AppState {
       anyhow::bail!("{}: {}", DB_NOT_WRITABLE_MESSAGE, details);
     }
 
-    let gh = GhClient::new(gh_token)?;
+    let gh = match gh_token_file.is_empty() {
+      true => GhClient::new(gh_token)?,
+      false => GhClient::from_token_file(gh_token_file)?,
+    };
 
     let filter = std::env::var("GHS_FILTER").unwrap_or_default();
     let filter = GhsFilter::new(&filter);

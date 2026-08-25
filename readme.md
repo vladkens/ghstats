@@ -96,6 +96,19 @@ By default, the local compose setup exposes the app at http://127.0.0.1:8080. Yo
 
 Note: If you want to access private repos too, choose full `repo` scope and set `GHS_INCLUDE_PRIVATE=true` to env.
 
+### Rotating GitHub installation token
+
+Set `GITHUB_TOKEN_FILE` when another process, such as [External Secrets Operator](https://external-secrets.io/latest/api/generator/github/), creates and rotates a short-lived `ghs_` installation token:
+
+```yaml
+environment:
+  GITHUB_TOKEN_FILE: /run/secrets/ghstats/github-token
+volumes:
+  - ./secrets:/run/secrets/ghstats:ro
+```
+
+The file is read before every GitHub API request, including every pagination request, and takes precedence over `GITHUB_TOKEN`. A rotated token therefore takes effect without restarting `ghstats`. Installation tokens use the `/installation/repositories` endpoint automatically. In Kubernetes, mount the Secret as a volume and do not use `subPath`, because `subPath` mounts do not receive Secret updates.
+
 ## How it works?
 
 Every hour `ghstats` loads the list of public repositories and their statistics, and saves the data in SQLite. If at the first startup there is no repositories in the database, synchronization will happen immediately, if `ghstats` is restarted again, synchronization will be performed according to the scheduler. Data is stored per day, re-fetching data for the current day will update existing records in the database.
