@@ -21,9 +21,11 @@ mod utils;
 
 const DEFAULT_METRICS_CRON: &str = "0 59 * * * *";
 
+#[cfg(all(feature = "version-check"))]
 async fn check_new_release(state: Arc<AppState>) -> Res {
   let tag = state.gh.get_latest_release_ver("vladkens/ghstats").await?;
-  let mut last_tag = state.last_release.lock().unwrap();
+  let Some(last_tag_opt) = state.last_release.as_ref() else { return Ok(()); };
+  let mut last_tag = last_tag_opt.lock().unwrap();
   if *last_tag != tag {
     tracing::info!("new release available: {} -> {}", *last_tag, tag);
     *last_tag = tag.clone();
@@ -40,6 +42,7 @@ fn new_metrics_job(state: Arc<AppState>, cron_schedule: &str) -> Res<tokio_cron_
   let job = tokio_cron_scheduler::Job::new_async(cron_schedule, move |_, _| {
     let state = state.clone();
     Box::pin(async move {
+      #[cfg(all(feature = "version-check"))]
       let _ = check_new_release(state.clone()).await;
 
       if let Err(e) = helpers::update_metrics(state.clone()).await {

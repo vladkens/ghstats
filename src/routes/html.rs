@@ -97,8 +97,18 @@ fn get_custom_links() -> Vec<(String, String)> {
 fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
   let (app_name, app_version) = (env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
-  let last_release = state.last_release.lock().unwrap().clone();
-  let is_new_release = last_release != app_version;
+  let last_release: String;
+  let is_new_release: bool;
+  match state.last_release {
+    Some(ref lr) => {
+        last_release = lr.lock().unwrap().clone();
+        is_new_release = last_release != app_version;
+    },
+    _ => {
+        last_release = app_version.to_string();
+        is_new_release = false;
+    }
+  };
 
   let title = match navs.len() {
     0 => app_name,

@@ -39,7 +39,7 @@ pub struct AppState {
   pub gh: GhClient,
   pub filter: GhsFilter,
   pub include_private: bool,
-  pub last_release: Mutex<String>,
+  pub last_release: Option<Mutex<String>>,
   db_health: Mutex<DbHealth>,
   sync_status: Mutex<SyncStatus>,
 }
@@ -74,7 +74,11 @@ impl AppState {
 
     let include_private = env_bool("GHS_INCLUDE_PRIVATE");
 
-    let last_release = Mutex::new(env!("CARGO_PKG_VERSION").to_string());
+    #[cfg(all(feature = "version-check"))]
+    let last_release = Some(Mutex::new(env!("CARGO_PKG_VERSION").to_string()));
+    #[cfg(all(not(feature = "version-check")))]
+    let last_release = None;
+
     let db_health = Mutex::new(DbHealth::new(Ok(())));
     let sync_status = Mutex::new(SyncStatus::default());
     Ok(Self { db, gh, filter, include_private, last_release, db_health, sync_status })
