@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::extract::{OriginalUri, Path, Query, State};
 use axum::http::HeaderMap;
-use maud::{Markup, PreEscaped, html};
+use maud::{Markup, PreEscaped, html, DOCTYPE};
 use thousands::Separable;
 use url::form_urlencoded::Serializer;
 
@@ -60,6 +60,7 @@ fn compact_number(value: i32) -> String {
 fn totals_card(title: &str, unique: i32, total: i32) -> Markup {
   let full_value = format!("{} / {}", unique.separate_with_commas(), total.separate_with_commas());
   html!(
+    (DOCTYPE)
     article class="flex-col" style="padding: 0.75rem;" {
       h6 class="mb-0" { (title) }
       h4 class="mb-0 grow flex-row items-center"
@@ -105,7 +106,7 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
         is_new_release = last_release != app_version;
     },
     _ => {
-        last_release = app_version.to_string();
+        last_release = String::new();
         is_new_release = false;
     }
   };
@@ -124,8 +125,8 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
   html!(
     html {
       head {
-        meta charset="utf-8" {}
-        meta name="viewport" content="width=device-width, initial-scale=1" {}
+        meta charset="utf-8";
+        meta name="viewport" content="width=device-width, initial-scale=1";
         title { (title) }
 
         link rel="icon" type="image/svg+xml" href=(PreEscaped(favicon)) {}
