@@ -466,7 +466,7 @@ impl DbClient {
   }
 
   pub async fn repos_to_sync(&self) -> Res<Vec<RepoItem>> {
-    let qs = "SELECT * FROM repos WHERE stars_synced = FALSE AND hidden = FALSE";
+    let qs = "SELECT * FROM repos WHERE stars_synced = FALSE AND hidden = FALSE ORDER BY id";
     let db = self.db.lock().unwrap();
     let mut stmt = db.prepare(qs)?;
     let items = stmt.query_map([], repo_item_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;

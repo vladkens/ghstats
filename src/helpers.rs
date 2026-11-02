@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::extract::Request;
+use chrono::DateTime;
 
 use crate::db_client::DbClient;
-use crate::gh_client::{GhClient, PullRequest, Repo, error_status};
+use crate::gh_client::{GhClient, PullRequest, Repo, StarsWeek, error_status};
 use crate::state::AppState;
 use crate::types::Res;
 
@@ -105,62 +106,68 @@ async fn update_repo_metrics(db: &DbClient, gh: &GhClient, repo: &Repo, date: &s
   Ok(())
 }
 
-/// Get stars history for a repo
-/// vec![(date_str, acc_stars, new_stars)), ...]
-pub async fn get_stars_history(gh: &GhClient, repo: &str) -> Res<Vec<(String, u32, u32)>> {
-  let stars = gh.get_stars(repo).await?;
+/// Daily stars from weekly history
+/// vec![(date_str, acc_stars, new_stars), ...]
+fn get_stars_history(weeks: &[StarsWeek]) -> Vec<(String, u32, u32)> {
+  let mut dat: BTreeMap<String, u32> = BTreeMap::new();
+  for week in weeks {
+    for (idx, count) in week.days.iter().enumerate() {
+      if *count == 0 {
+        continue;
+      }
 
-  let mut dat: HashMap<String, u32> = HashMap::new();
-  for star in stars {
-    let date = star.starred_at.split("T").next().unwrap().to_owned();
-    let date = format!("{date}T00:00:00Z"); // db stores dates as UTC midnight
-    dat.entry(date).and_modify(|e| *e += 1).or_insert(1);
+      let Some(date) = DateTime::from_timestamp(week.week + idx as i64 * 86400, 0) else {
+        continue;
+      };
+
+      let date = date.format("%Y-%m-%dT00:00:00Z").to_string(); // db stores dates as UTC midnight
+      // a new week can start between page requests, so the same week may come twice
+      dat.insert(date, *count);
+    }
   }
 
-  let mut dat = dat.into_iter().collect::<Vec<_>>();
-  dat.sort_by(|a, b| a.0.cmp(&b.0));
-
-  let mut rs: Vec<(String, u32, u32)> = Vec::with_capacity(dat.len());
-  for i in 0..dat.len() {
-    let (date, new_count) = &dat[i];
-    let acc_count = if i > 0 { rs[i - 1].1 + new_count } else { *new_count };
-    rs.push((date.clone(), acc_count, *new_count));
-  }
-
-  Ok(rs)
+  let mut acc_count = 0;
+  dat
+    .into_iter()
+    .map(|(date, new_count)| {
+      acc_count += new_count;
+      (date, acc_count, new_count)
+    })
+    .collect()
 }
 
 pub async fn sync_stars(db: &DbClient, gh: &GhClient) -> Res {
-  let mut pages_collected = 0;
+  let mut requests_made = 0;
 
   let repos = db.repos_to_sync().await?;
   for repo in repos {
     let stime = std::time::Instant::now();
     // tracing::info!("sync_stars for {}", repo.name);
 
-    let stars = match get_stars_history(gh, &repo.name).await {
-      Ok(stars) => stars,
+    let (weeks, requests) = match gh.get_stars_weeks(&repo.name).await {
+      Ok(rs) => rs,
       Err(e) => {
         tracing::warn!("failed to get stars for {}: {:?}", repo.name, e);
         continue;
       }
     };
 
+    let stars = get_stars_history(&weeks);
     db.insert_stars(repo.id, &stars).await?;
     db.mark_repo_stars_synced(repo.id).await?;
 
     let stars_count = stars.iter().map(|(_, _, c)| c).sum::<u32>();
     tracing::info!(
-      "sync_stars for {} done in {:?}, {stars_count} starts added",
+      "sync_stars for {} done in {:?}, {stars_count} stars added",
       repo.name,
       stime.elapsed(),
     );
 
     // gh api rate limit is 5000 req/h, so this code will do up to 1000 req/h
     // to not block other possible user pipelines
-    pages_collected += stars_count.div_ceil(100);
-    if pages_collected > 1000 {
-      tracing::info!("sync_stars: {} pages collected, will continue next hour", pages_collected);
+    requests_made += requests;
+    if requests_made > 1000 {
+      tracing::info!("sync_stars: {} requests made, will continue next hour", requests_made);
       break;
     }
   }
@@ -275,10 +282,11 @@ impl GhsFilter {
 
 #[cfg(test)]
 mod tests {
+  use std::collections::HashMap;
   use std::sync::Mutex;
   use std::time::{SystemTime, UNIX_EPOCH};
 
-  use axum::extract::{Path, State};
+  use axum::extract::{Path, Query, State};
   use axum::http::StatusCode;
   use axum::response::{IntoResponse, Response};
   use axum::routing::get;
@@ -447,6 +455,7 @@ mod tests {
   #[derive(Clone, Default)]
   struct MockGh {
     pulls_calls: Arc<Mutex<Vec<String>>>,
+    history_calls: Arc<Mutex<Vec<String>>>,
   }
 
   async fn pulls(
@@ -477,16 +486,42 @@ mod tests {
     Json(json!([]))
   }
 
-  async fn stargazers(Path((_owner, repo)): Path<(String, String)>) -> Response {
-    match repo.as_str() {
-      "stars-403" => StatusCode::FORBIDDEN.into_response(),
-      _ => Json(json!([
-        { "starred_at": "2024-01-01T10:00:00Z" },
-        { "starred_at": "2024-01-01T12:00:00Z" },
-        { "starred_at": "2024-01-02T08:00:00Z" },
-      ]))
-      .into_response(),
+  const WEEK0: i64 = 1704585600; // Sun 2024-01-07
+  const WEEK: i64 = 7 * 86400;
+
+  fn stars_week(n: i64, days: [u32; 7]) -> Value {
+    json!({ "week": WEEK0 + n * WEEK, "total": days.iter().sum::<u32>(), "days": days })
+  }
+
+  async fn stars_history(
+    State(gh): State<MockGh>,
+    Path((owner, repo)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
+  ) -> Response {
+    let (per_page, page) = (&query["per_page"], &query["page"]);
+    gh.history_calls
+      .lock()
+      .unwrap()
+      .push(format!("{owner}/{repo}?per_page={per_page}&page={page}"));
+    if repo == "stars-403" {
+      return StatusCode::FORBIDDEN.into_response();
     }
+
+    // full page of 30 weeks newest to oldest, then a short page with the creation week
+    let weeks = match page.as_str() {
+      "1" => (1..=30)
+        .rev()
+        .map(|n| match n {
+          30 => stars_week(n, [0, 2, 0, 0, 0, 0, 0]),
+          1 => stars_week(n, [1, 0, 0, 0, 0, 0, 0]),
+          _ => stars_week(n, [0; 7]),
+        })
+        .collect(),
+      "2" => vec![stars_week(0, [0, 0, 0, 0, 0, 0, 3])],
+      _ => vec![],
+    };
+
+    Json(Value::Array(weeks)).into_response()
   }
 
   async fn mock_server(gh: MockGh) -> Res<(String, tokio::task::JoinHandle<()>)> {
@@ -496,7 +531,7 @@ mod tests {
       .route("/repos/{owner}/{repo}/traffic/clones", get(clones))
       .route("/repos/{owner}/{repo}/traffic/popular/referrers", get(empty_list))
       .route("/repos/{owner}/{repo}/traffic/popular/paths", get(empty_list))
-      .route("/repos/{owner}/{repo}/stargazers", get(stargazers))
+      .route("/repos/{owner}/{repo}/stargazers/history", get(stars_history))
       .with_state(gh);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
@@ -582,9 +617,34 @@ mod tests {
     Ok(())
   }
 
+  #[test]
+  fn stars_history_from_weeks() {
+    let weeks = vec![
+      // newest page first, weeks within a page newest to oldest
+      StarsWeek { week: WEEK0 + 2 * WEEK, days: vec![0; 7] },
+      StarsWeek { week: WEEK0 + WEEK, days: vec![2, 0, 0, 0, 0, 0, 1] },
+      StarsWeek { week: WEEK0, days: vec![0, 0, 0, 0, 0, 0, 4] },
+    ];
+
+    assert_eq!(
+      get_stars_history(&weeks),
+      vec![
+        ("2024-01-13T00:00:00Z".to_string(), 4, 4),
+        ("2024-01-14T00:00:00Z".to_string(), 6, 2),
+        ("2024-01-20T00:00:00Z".to_string(), 7, 1),
+      ]
+    );
+    assert!(get_stars_history(&weeks[..1]).is_empty());
+
+    let mut repeated = weeks.clone();
+    repeated.insert(2, StarsWeek { week: WEEK0 + WEEK, days: vec![2, 0, 0, 0, 0, 0, 1] });
+    assert_eq!(get_stars_history(&repeated), get_stars_history(&weeks));
+  }
+
   #[tokio::test]
   async fn failed_stars_history_does_not_stop_other_repos() -> Res {
-    let (base_url, server) = mock_server(MockGh::default()).await?;
+    let mock = MockGh::default();
+    let (base_url, server) = mock_server(mock.clone()).await?;
     let gh = GhClient::for_test(base_url)?;
     let db = test_db("stars-403").await?;
     let failing = sample_repo("owner/stars-403", None);
@@ -594,6 +654,15 @@ mod tests {
 
     sync_stars(&db, &gh).await?;
 
+    assert_eq!(
+      *mock.history_calls.lock().unwrap(),
+      vec![
+        "owner/stars-403?per_page=30&page=1".to_string(),
+        "owner/stars-ok?per_page=30&page=1".to_string(),
+        "owner/stars-ok?per_page=30&page=2".to_string(),
+      ]
+    );
+
     let unsynced = db.repos_to_sync().await?;
     assert_eq!(
       unsynced.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
@@ -602,7 +671,10 @@ mod tests {
 
     let stars = db.get_stars("owner/stars-ok").await?;
     let stars = stars.iter().map(|s| (s.date.as_str(), s.stars)).collect::<Vec<_>>();
-    assert_eq!(stars, vec![("2024-01-01T00:00:00Z", 2), ("2024-01-02T00:00:00Z", 3)]);
+    assert_eq!(
+      stars,
+      vec![("2024-01-13T00:00:00Z", 3), ("2024-01-14T00:00:00Z", 4), ("2024-08-05T00:00:00Z", 6)]
+    );
     assert!(db.get_stars("owner/stars-403").await?.is_empty());
 
     server.abort();
