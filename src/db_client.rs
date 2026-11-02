@@ -113,6 +113,8 @@ fn migrate_v4(db: &Connection) -> Res {
     published_at TEXT DEFAULT NULL,
     created_at TEXT DEFAULT NULL,
     download_count INTEGER NOT NULL DEFAULT 0,
+    -- in the day's last fetch; a removed asset keeps its row for the deltas
+    current BOOLEAN NOT NULL DEFAULT TRUE,
     PRIMARY KEY (repo_id, asset_id, date)
   );";
   queries.push(qs);
@@ -121,7 +123,7 @@ fn migrate_v4(db: &Connection) -> Res {
     ON repo_release_assets (repo_id, date);";
   queries.push(qs);
 
-  // date of the last successful releases fetch, its snapshot is the current set of assets
+  // date of the last successful releases fetch, its current rows are the repo's assets
   let qs = "ALTER TABLE repos ADD COLUMN releases_synced_at TEXT DEFAULT NULL;";
   queries.push(qs);
 
@@ -455,7 +457,8 @@ fn downloads_totals_query(cond: &str, key: &str, order_by: &str) -> String {
   {cte}
   SELECT c.*, r.name AS repo_name, SUM(c.download_count) AS total, COALESCE(p.period, 0) AS period
   FROM repos r
-  CROSS JOIN repo_release_assets c ON c.repo_id = r.id AND c.date = r.releases_synced_at
+  CROSS JOIN repo_release_assets c
+    ON c.repo_id = r.id AND c.date = r.releases_synced_at AND c.current = TRUE
   LEFT JOIN (SELECT {key}, SUM(delta) AS period FROM deltas GROUP BY {key}) p ON p.{key} = c.{key}
   WHERE r.hidden = FALSE AND {cond}
   GROUP BY c.{key}
@@ -665,7 +668,8 @@ impl DbClient {
     {cte}
     SELECT c.asset_name, SUM(c.download_count) AS total, COALESCE(SUM(p.period), 0) AS period
     FROM repos r
-    CROSS JOIN repo_release_assets c ON c.repo_id = r.id AND c.date = r.releases_synced_at
+    CROSS JOIN repo_release_assets c
+      ON c.repo_id = r.id AND c.date = r.releases_synced_at AND c.current = TRUE
     LEFT JOIN (
       SELECT asset_id, SUM(delta) AS period FROM deltas GROUP BY asset_id
     ) p ON p.asset_id = c.asset_id
@@ -861,7 +865,8 @@ impl DbClient {
       asset_name = excluded.asset_name,
       published_at = excluded.published_at,
       created_at = excluded.created_at,
-      download_count = MAX(t.download_count, excluded.download_count);
+      download_count = MAX(t.download_count, excluded.download_count),
+      current = TRUE;
     ";
 
     // one transaction, so the current snapshot of a repo is never partial
@@ -886,11 +891,12 @@ impl DbClient {
       }
     }
 
-    // today's row keeps only the last fetch: deleted or replaced assets drop out of the totals
-    let ids = releases.iter().flat_map(|x| &x.assets).map(|x| x.id.to_string()).collect::<Vec<_>>();
+    // assets missing from this fetch leave the totals, their rows keep the deltas
+    let ids = releases.iter().flat_map(|x| &x.assets).map(|x| (x.id as i64).to_string());
     let qs = format!(
-      "DELETE FROM repo_release_assets WHERE repo_id = $1 AND date = $2 AND asset_id NOT IN ({});",
-      ids.join(",")
+      "UPDATE repo_release_assets SET current = FALSE
+      WHERE repo_id = $1 AND date = $2 AND asset_id NOT IN ({});",
+      ids.collect::<Vec<_>>().join(",")
     );
     tx.execute(&qs, params![repo.id as i64, date])?;
 
@@ -1346,10 +1352,12 @@ mod tests {
 
     let daily = db.get_downloads_daily("owner/repo").await?;
     let daily = daily.iter().map(|x| (x.date.as_str(), x.downloads)).collect::<Vec<_>>();
-    assert_eq!(daily, vec![(d3.as_str(), 4)]);
+    // b's and the old c's deltas from the morning stay in the history
+    assert_eq!(daily, vec![(d3.as_str(), 10)]);
 
+    // totals only list the last fetch, period deltas still include b and the old c
     let rels = db.get_release_downloads("owner/repo", 0).await?;
-    assert_eq!(rels.iter().map(|x| (x.total, x.period)).collect::<Vec<_>>(), vec![(14, 4)]);
+    assert_eq!(rels.iter().map(|x| (x.total, x.period)).collect::<Vec<_>>(), vec![(14, 10)]);
 
     let assets = db.get_asset_downloads("owner/repo", 0).await?;
     let assets = assets.iter().map(|x| (x.name.as_str(), x.total, x.period)).collect::<Vec<_>>();
@@ -1358,15 +1366,18 @@ mod tests {
     let repos = db.get_repos_downloads(0).await?;
     assert_eq!(
       repos.iter().map(|x| (x.id, x.total, x.period)).collect::<Vec<_>>(),
-      vec![(1, 14, 4)]
+      vec![(1, 14, 10)]
     );
 
-    // an empty fetch later the same day: nothing is current
+    // an empty fetch later the same day: nothing is current, the history stays
     db.insert_release_assets(&repo, &d3, &[]).await?;
     assert!(db.get_repos_downloads(0).await?.is_empty());
     assert!(db.get_release_downloads("owner/repo", 0).await?.is_empty());
     assert!(db.get_asset_downloads("owner/repo", 0).await?.is_empty());
-    assert!(db.get_downloads_daily("owner/repo").await?.is_empty());
+
+    let daily = db.get_downloads_daily("owner/repo").await?;
+    let daily = daily.iter().map(|x| (x.date.as_str(), x.downloads)).collect::<Vec<_>>();
+    assert_eq!(daily, vec![(d3.as_str(), 10)]);
 
     Ok(())
   }
