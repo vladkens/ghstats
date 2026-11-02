@@ -207,7 +207,6 @@ pub struct RepoPopularItem {
   pub uniques: i64,
 }
 
-/// Totals for a period ending today, plus the comparison windows from `Period::windows`
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct RepoPeriod {
   pub name: String,
@@ -219,27 +218,20 @@ pub struct RepoPeriod {
   pub cmp_clones: i64,
   pub prev_views: i64,
   pub prev_clones: i64,
-  /// collected days of the compared and previous windows: from the first traffic day, all of the
-  /// backfill, then days with a row
   pub cmp_days: i64,
   pub prev_days: i64,
-  /// stars of the latest row (as the repos list shows them) and the last real (non-zero) value
-  /// before the period
   pub stars: i64,
   pub stars_start: i64,
   pub stars_synced: bool,
 }
 
 impl RepoPeriod {
-  /// `None` when stars before the period are unknown: no real value then and the stargazer
-  /// history isn't synced yet
   pub fn stars_gain(&self) -> Option<i64> {
     (self.stars_synced || self.stars_start > 0).then_some(self.stars - self.stars_start)
   }
 }
 
-/// Daily traffic from the first day with traffic to `today`; `None` is a day without a row, except
-/// in the first `BACKFILL_DAYS` up to the last row, where a missing row is a day without traffic.
+/// `None` is a day without a row; in the backfill a missing row is a day without traffic
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct RepoDaily {
   pub start: Option<String>,
@@ -343,7 +335,7 @@ impl std::fmt::Display for PopularSort {
   }
 }
 
-/// Days ending today (inclusive); `-1` is all time.
+/// Days ending today; -1 is all time
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Period(pub i32);
 
@@ -389,7 +381,6 @@ impl Period {
     }
   }
 
-  /// Window starts for the period ending today; `None` for all time
   pub fn windows(&self, today: NaiveDate) -> Option<Windows> {
     let days = Days::new(self.days()? as u64);
     let start = today.checked_sub_days(Days::new(self.0 as u64 - 1))?;
@@ -418,12 +409,10 @@ impl<'de> Deserialize<'de> for Period {
   }
 }
 
-/// GitHub's traffic for today and yesterday is still incomplete, so changes compare two equal
-/// windows that end this many days before today.
+/// GitHub's last 2 days of traffic are incomplete, so compared windows end before them
 pub const CMP_LAG: u64 = 2;
 
-/// On the first sync GitHub returns the last 14 days of traffic, only days that had any, so a
-/// missing row in the first days after the first traffic day means no traffic, not an outage.
+/// The first sync gets 14 days of traffic, only days that had any: a missing row there means 0
 pub const BACKFILL_DAYS: u64 = 15;
 
 /// Shown period `[start, today]`, compared `[cmp_start, cmp_end)` vs `[prev_start, cmp_start)`
@@ -750,9 +739,6 @@ impl DbClient {
     Ok(items)
   }
 
-  /// Rows with a real stars value; unlike `get_stars`, days left at zero (such as GitHub's traffic
-  /// backfill after an outage) are skipped instead of forward-filled.
-  /// The first day with traffic over all visible repos
   pub async fn get_first_traffic(&self) -> Res<Option<NaiveDate>> {
     let qs = "
     SELECT MIN(substr(rs.date, 1, 10)) FROM repo_stats rs
@@ -765,6 +751,7 @@ impl DbClient {
     Ok(day.and_then(|x| x.parse().ok()))
   }
 
+  /// Unlike `get_stars`, rows without stars are skipped, not forward-filled
   pub async fn get_star_rows(&self, repo: &str) -> Res<Vec<RepoStars>> {
     let qs = "
     SELECT date, stars FROM repo_stats rs
@@ -780,7 +767,6 @@ impl DbClient {
     Ok(items)
   }
 
-  /// Period totals for one repo (`Some(name)`) or all of them, for the period ending `today`
   pub async fn get_periods(
     &self,
     repo: Option<&str>,
@@ -792,10 +778,7 @@ impl DbClient {
       None => ["0000"; 4].map(String::from),
     };
 
-    // ?1 start, ?2 cmp_start, ?3 cmp_end (exclusive), ?4 prev_start, ?5 repo or all, ?6 backfill
-    // days; current stars from the latest row like TOTAL_QUERY, stars before the period from
-    // non-zero rows only; collected days: every day of the backfill [first, full) (cut at the last
-    // row), then days with a row
+    // ?N, not $N: SQLite numbers $N params by first appearance
     let qs = "
     WITH ft AS (
       SELECT repo_id, first, MIN(date(first, '+' || ?6 || ' day'), date(last, '+1 day')) AS full
@@ -1590,7 +1573,7 @@ mod tests {
     let repo = sample_repo(1, "owner/repo");
     db.insert_repo(&repo).await?;
 
-    // stars history before traffic starts, then traffic on days 1, 2, 4 and 6 (3 and 5 missing)
+    // traffic on Jan 10, 11, 13 and 15
     db.insert_stars(1, &[("2024-01-01T00:00:00Z".to_string(), 3, 3)]).await?;
     let views = [(10, 20, 10), (11, 30, 12), (13, 40, 50), (15, 5, 1)];
     db.insert_views(
@@ -1614,17 +1597,15 @@ mod tests {
     assert_eq!(dat.start.as_deref(), Some("2024-01-10"));
     assert_eq!(
       dat.days.iter().map(|x| x.map(|v| v[2])).collect::<Vec<_>>(),
-      vec![Some(20), Some(30), Some(0), Some(40), Some(0), Some(5), None],
-      "missing days in the backfill are days without traffic, up to the last row"
+      vec![Some(20), Some(30), Some(0), Some(40), Some(0), Some(5), None]
     );
 
-    // 3d: shown 14..16; compared 12..14 vs 9..11 (9 is before traffic starts); all in the backfill
+    // 3d: shown 14..16, compared 12..14 vs 9..11
     let rp = db.get_periods(Some("owner/repo"), Period(3), today).await?.remove(0);
     assert_eq!((rp.views, rp.views_uniques), (5, 1));
     assert_eq!((rp.cmp_views, rp.cmp_days, rp.prev_views, rp.prev_days), (40, 3, 50, 2));
     assert_eq!((rp.stars, rp.stars_start, rp.stars_gain()), (8, 3, Some(5)));
 
-    // real stars only: the traffic rows stay out, unlike get_stars' forward fill
     let stars = db.get_star_rows("owner/repo").await?;
     assert_eq!(
       stars.iter().map(|x| (&x.date[..10], x.stars)).collect::<Vec<_>>(),

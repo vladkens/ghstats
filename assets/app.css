@@ -9,7 +9,6 @@
   --muted: #646b79;
   --accent: #0172ad;
   --accent-ink: #ffffff;
-  /* traffic: total pink, unique lavender drawn inside it; stars blue (the old ghstats palette) */
   --traffic: #7c6ff0;
   --traffic-tint: rgba(255, 99, 132, 0.35);
   --rowbar: rgba(124, 111, 240, 0.07);
@@ -62,7 +61,6 @@ body {
 }
 @media (min-width: 1024px) { body { font-size: 16px; } }
 a { color: var(--accent); text-decoration: none; }
-/* one rule for every link: no underline until hover or keyboard focus */
 a:hover, a:focus-visible { text-decoration: underline; text-underline-offset: 3px; }
 :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 2px; }
 h1, h2 { margin: 0; color: var(--head); text-wrap: balance; }
@@ -84,7 +82,6 @@ h1, h2 { margin: 0; color: var(--head); text-wrap: balance; }
 .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1em; }
 #popular_tables { align-items: start; }
 
-/* period control: plain links, the server sets aria-current */
 .seg { display: inline-flex; gap: 2px; }
 .seg a { padding: 0.15em 0.6em; border-radius: var(--r); font: 0.85em/1.5 var(--font-mono); color: var(--muted); text-decoration: none; }
 .seg a:hover { color: var(--head); background: var(--line); }
@@ -110,7 +107,6 @@ h1, h2 { margin: 0; color: var(--head); text-wrap: balance; }
 .periodbar .range { font-size: 0.9em; color: var(--muted); }
 .periodbar .seg { margin-left: auto; }
 
-/* repo cards: title and legend, then the big number with its details, then the chart */
 .card-t { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
 .card-t h2 { margin: 0; font-size: 1em; font-weight: 600; color: var(--muted); }
 .card-v { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; margin: 0.1em 0 0.6em; font-variant-numeric: tabular-nums; }
@@ -131,7 +127,6 @@ h1, h2 { margin: 0; color: var(--head); text-wrap: balance; }
 .chart { position: relative; height: 230px; }
 .chart.tall { height: 260px; }
 
-/* tables: normal-case headers, a fill behind the whole row shows its share */
 .tscroll { overflow-x: auto; }
 table.data { width: 100%; border-collapse: collapse; table-layout: fixed; font-variant-numeric: tabular-nums; }
 .data th, .data td { padding: 0.5em 0.75em; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
@@ -142,8 +137,7 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; font-v
 .data th button { all: unset; cursor: pointer; }
 .data th button:hover { color: var(--accent); }
 .data th button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-/* a fixed slot for the sort arrow on every sortable header, so nothing shifts when it moves; it
-   sits on the outer side of the text, so header text stays aligned with its column */
+/* a fixed arrow slot on every sortable header, outside the text, so nothing shifts */
 .data th > button::before, .data th:first-child > button::after { content: "↓"; display: inline-block; width: 1em; text-align: center; visibility: hidden; }
 .data th > button::before { margin-right: 0.15em; }
 .data th:first-child > button::after { margin-left: 0.15em; }
@@ -158,7 +152,6 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; font-v
 .show-all:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* index */
-/* the toolbar and the column headers stay at the top while scrolling (on phones only the headers) */
 .toolbar {
   position: sticky; top: env(safe-area-inset-top, 0px); z-index: 6; height: 3.25em;
   display: flex; flex-wrap: wrap; align-items: center; gap: 0.6em 1em; background: var(--bg);
@@ -174,13 +167,7 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; font-v
   background: var(--card) var(--chevron) no-repeat right 0.6em center / 10px 6px;
 }
 .toolbar .seg { margin-left: auto; }
-/* one row height at every period: values centered, the sub-line hangs under the number in the
-   bottom padding without moving it */
-/* All: one line per row, centered; other periods: two lines in every row (value, then change or
-   gain, an empty line when there is none), all values on line 1 */
-/* every cell centered; a value with a second line (change, gain) is centered as a block */
 .idx td { vertical-align: middle; }
-/* the index table sits on the page: its outer columns line up with the toolbar */
 .data.idx th:first-child, .data.idx td:first-child { padding-left: 0; }
 .data.idx th:last-child, .data.idx td:last-child { padding-right: 0; }
 .idx .per { display: inline-block; width: 0.8em; height: 0.8em; vertical-align: -0.05em; color: var(--muted); cursor: help; }

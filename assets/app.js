@@ -122,7 +122,6 @@
     return g.createPattern(c, 'repeat');
   };
 
-  // colors and the hatch pattern for the plugins, read once per render (and on theme change)
   let theme = {};
   const readTheme = () => ({
     font: css('--font-ui'),
@@ -132,7 +131,6 @@
     hatch: hatch(css('--gap-ink')),
   });
 
-  // overlays: outages (hatched) and the selected period on the stars chart (wash)
   const bandsPlugin = {
     id: 'bands',
     beforeDatasetsDraw(chart, _args, o) {
@@ -238,7 +236,7 @@
 
   let charts = [];
 
-  // unique is drawn inside total (overlapping bars), not stacked on top of it
+  // grouped: false draws unique inside total instead of next to it
   const trafficChart = (id, D, ti, ui) => {
     const el = document.getElementById(id);
     if (!el) return;
@@ -305,7 +303,6 @@
     return out;
   };
 
-  // stars come from real rows only (get_star_rows): the line breaks across outages
   const starsPoints = D => {
     const gaps = D.gaps.map(([a, b]) => [parse(a), parse(b)]);
     const pts = [];
@@ -314,7 +311,7 @@
       const last = pts.at(-1);
       const gap = last && gaps.find(([a, b]) => x >= b && last.x <= a);
       if (gap) {
-        // hold the last value to the gap start, so a lone point before it still draws a line
+        // so a lone point before a gap still draws a line
         if (last.x < gap[0]) pts.push({ x: gap[0], y: last.y });
         pts.push({ x: gap[0] + DAY, y: null });
       }
@@ -322,7 +319,7 @@
       pts.push({ x, y: s });
     }
 
-    // carry a fresh value to today; a stale one ends the line, the server sends the gap after it
+    // a stale value ends the line; the server sends the gap after it
     const today = parse(D.today);
     const last = pts.at(-1);
     if (last && last.x < today && today - last.x <= 3 * DAY) pts.push({ x: today, y: last.y });
@@ -411,12 +408,12 @@
     else render();
   };
 
-  // charts read colors from CSS tokens: redraw when the theme changes
+  // charts read colors from CSS: redraw on theme change
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
 
   // MARK: Tables
 
-  // "Show all" reveals the rows past the first ten, and keeps them open across htmx sort swaps
+  // tables opened with "Show all" stay open across htmx sort swaps
   const expanded = new Set();
 
   const showAll = (card, focus) => {
@@ -426,7 +423,6 @@
     });
     card.querySelector('[data-show-all]')?.remove();
 
-    // the button is gone: keep the keyboard on the first revealed row
     if (focus && rows.length) {
       rows[0].tabIndex = -1;
       rows[0].focus();

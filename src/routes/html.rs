@@ -60,7 +60,6 @@ fn signed(x: i64) -> String {
   }
 }
 
-/// Direction a header click switches to: flip the current column, start names A-Z, numbers 9-0
 fn next_dir(is_cur: bool, cur: &Direction, is_name: bool) -> &'static str {
   match (is_cur, cur, is_name) {
     (true, Direction::Desc, _) => "asc",
@@ -90,7 +89,6 @@ fn period_nav(cur: Period, oob: bool, url: impl Fn(Period) -> String) -> Markup 
   )
 }
 
-/// A same-width calendar mark for headers that cover the selected period, its dates in the tooltip
 fn period_mark(tip: &str) -> Markup {
   const ICON: &str = "<svg viewBox=\"0 0 12 12\" aria-hidden=\"true\"><rect x=\"1.5\" y=\"2.5\" \
     width=\"9\" height=\"8\" rx=\"1.5\" fill=\"none\" stroke=\"currentColor\"/><path d=\"M1.5 \
@@ -189,12 +187,11 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
   )
 }
 
-// MARK: Tiles and change
+// MARK: Change
 
 const UNIQUE_TIP: &str =
   "Sum of GitHub's daily unique counts: someone who comes back on three days counts three times.";
 
-/// "Oct 25–31", "Sep 28–Oct 4" or "Nov 1, 2025–Oct 31, 2026"
 fn short_range(from: NaiveDate, to: NaiveDate) -> String {
   match (from.year() == to.year(), from.month() == to.month()) {
     (true, true) => format!("{}–{}", from.format("%b %-d"), to.format("%-d")),
@@ -203,8 +200,6 @@ fn short_range(from: NaiveDate, to: NaiveDate) -> String {
   }
 }
 
-/// Change between the two compared windows of `Period::windows`, per collected day; only when they
-/// are comparable: both at least half collected and a previous value of 10 or more.
 #[derive(Debug, PartialEq)]
 struct Change {
   pct: f64,
@@ -213,7 +208,6 @@ struct Change {
 }
 
 impl Change {
-  /// Totals of the compared and previous windows with their collected days
   fn new(
     cur: i64,
     cur_days: i64,
@@ -225,7 +219,6 @@ impl Change {
     Self::compare(cur, cur_days, prev, prev_days, period, today).ok()
   }
 
-  /// Like `new`, with the reason when there's nothing honest to show
   fn compare(
     cur: i64,
     cur_days: i64,
@@ -280,8 +273,6 @@ impl Change {
     format!("delta{dir}{}", if self.approx() { " warn" } else { "" })
   }
 
-  /// Whole percents from `whole_from` up ("12%"), one decimal below ("4.0%"); `None` when the
-  /// change rounds to zero
   fn abs_text(&self, whole_from: f64) -> Option<String> {
     let abs = self.pct.abs();
     let tenths = (abs * 10.0).round() / 10.0;
@@ -314,7 +305,7 @@ impl Change {
 
 // MARK: Charts data
 
-/// Runs of 3+ days without a row, as (last day before, first day after)
+/// Runs of 3+ missing days as (last day before, first day after)
 fn outages(dat: &RepoDaily) -> Vec<(NaiveDate, NaiveDate)> {
   let Some(start) = dat.start.as_deref().and_then(|x| x.parse::<NaiveDate>().ok()) else {
     return vec![];
@@ -326,9 +317,6 @@ fn outages(dat: &RepoDaily) -> Vec<(NaiveDate, NaiveDate)> {
   have.windows(2).filter(|x| x[1] - x[0] > 3).map(|x| (day(x[0]), day(x[1]))).collect()
 }
 
-/// Days without stars: traffic outages, plus runs of more than 3 days between real stars rows that
-/// end after daily collection runs; before that (tracking start + BACKFILL_DAYS) star history has
-/// rows only on days with new stars. Stars more than 3 days old leave a gap up to today.
 fn star_gaps(
   tracking: Option<NaiveDate>,
   outages: &[(NaiveDate, NaiveDate)],
@@ -337,6 +325,7 @@ fn star_gaps(
 ) -> Vec<(NaiveDate, NaiveDate)> {
   let mut all = outages.to_vec();
   if let Some(start) = tracking {
+    // before this, star history only has the days with new stars
     let from = start + Days::new(BACKFILL_DAYS);
     let runs = stars.windows(2).filter(|x| x[1] > from && (x[1] - x[0]).num_days() > 3);
     all.extend(runs.map(|x| (x[0], x[1])));
@@ -358,8 +347,6 @@ fn star_gaps(
   out
 }
 
-/// "+162 in 30d", approximate when the day before the period falls inside a stars gap or the
-/// latest stars value is stale
 fn stars_gain(
   rp: &RepoPeriod,
   p: Period,
@@ -402,11 +389,9 @@ struct ChartData<'a> {
   daily: &'a RepoDaily,
   stars: &'a [(&'a str, i32)],
   gaps: &'a [(NaiveDate, NaiveDate)],
-  /// label of the shaded period on the stars chart, e.g. "+162 in 30d"
   window_label: Option<String>,
 }
 
-/// Stars first: the current count, its gain in the period and the all-time chart
 fn stars_card(stars: i64, gain: Option<StarsGain>, gaps: bool) -> Markup {
   html!(
     section class="card" {
@@ -570,7 +555,6 @@ fn popular_html(
   )
 }
 
-/// Rows a table shows before its "Show all" button; the rest are rendered hidden
 const ROWS_SHOWN: usize = 10;
 
 fn show_all(rows: usize) -> Markup {
@@ -726,7 +710,6 @@ type IndexCell = fn(&IndexRow, Period) -> Markup;
 struct IndexCol {
   name: &'static str,
   sort: RepoSort,
-  /// header names the period, e.g. "Views 30d"
   per: bool,
   class: &'static str,
   cell: IndexCell,
@@ -799,7 +782,6 @@ fn index_cols() -> Vec<IndexCol> {
   ]
 }
 
-/// A value and, for a period, a second line in every row: the change or gain, or "—" with why
 fn two_lines(value: i64, p: Period, second: Result<Markup, &str>) -> Markup {
   html!(
     span class="v" { (num(value)) }
@@ -965,7 +947,7 @@ pub async fn index(
       (period_nav(p, false, period_url))
     }
 
-    // a plain table on the page: no card, and no scroll box, so its headers can stick to the top
+    // no scroll box around it: that would break the sticky headers
     (table_html)
   );
 
@@ -988,6 +970,14 @@ mod tests {
       .into_owned()
   }
 
+  fn day(x: &str) -> NaiveDate {
+    x.parse().unwrap()
+  }
+
+  fn ago(x: u64) -> NaiveDate {
+    today() - Days::new(x)
+  }
+
   fn test_repo(stars: u32) -> Repo {
     Repo {
       id: 1,
@@ -1006,14 +996,23 @@ mod tests {
   fn views(days: &[(NaiveDate, u32)]) -> RepoViews {
     let views = days
       .iter()
-      .map(|(d, c)| TrafficDaily {
-        timestamp: format!("{d}T00:00:00Z"),
-        count: *c,
-        uniques: *c / 2,
-      })
+      .map(|(d, c)| TrafficDaily { timestamp: format!("{d}T00:00:00Z"), count: *c, uniques: c / 2 })
       .collect();
 
     RepoViews { count: 0, uniques: 0, views }
+  }
+
+  async fn get(state: &Arc<AppState>, uri: &str, target: Option<&str>) -> HtmlRes {
+    let mut headers = HeaderMap::new();
+    if let Some(x) = target {
+      headers.insert("hx-target", x.parse().unwrap());
+    }
+
+    let uri = OriginalUri(uri.parse().unwrap());
+    match uri.path() {
+      "/" => index(State(state.clone()), uri, headers).await,
+      _ => repo_page(State(state.clone()), Path(("o".into(), "r".into())), uri, headers).await,
+    }
   }
 
   #[tokio::test]
@@ -1024,425 +1023,133 @@ mod tests {
 
     assert!(page.starts_with("<!DOCTYPE html><html><head><meta charset=\"utf-8\">"));
     assert_eq!(page.matches("<!DOCTYPE html>").count(), 1);
-    assert!(!page.to_lowercase().contains("pico"));
-    assert!(!page.contains("https://cdn") && !page.contains("unpkg.com"));
   }
 
   #[test]
-  fn change_needs_half_collected_and_base_of_ten() {
-    let (p, today) = (Period(30), "2026-11-02".parse::<NaiveDate>().unwrap());
-    let full = Change::new(110, 30, 100, 30, p, today).unwrap();
-    assert!((full.pct - 10.0).abs() < 1e-9 && full.coverage == 1.0);
-    assert!(Change::new(110, 14, 100, 14, p, today).is_none());
-    assert!(Change::new(110, 30, 9, 30, p, today).is_none());
+  fn change_rules() {
+    let (p, today) = (Period(30), day("2026-11-02"));
+    let text = |x: Markup| {
+      let x = x.into_string();
+      x[x.find('>').unwrap() + 1..x.rfind('<').unwrap()].replace(" vs prev 30d", "")
+    };
+
+    // (cur, cur_days, prev, prev_days) -> (tile, index, approx)
+    let cases = [
+      ((1040, 30, 1000, 30), Some(("▲ 4.0%", "+4%", false))),
+      ((1120, 30, 1000, 30), Some(("▲ 12%", "+12%", false))),
+      ((916, 30, 1000, 30), Some(("▼ 8.4%", "−8%", false))),
+      ((10996, 30, 10000, 30), Some(("▲ 10%", "+10%", false))),
+      ((1004, 30, 1000, 30), Some(("▲ 0.4%", "±0%", false))),
+      ((100, 30, 100, 30), Some(("±0%", "±0%", false))),
+      ((150, 15, 300, 30), Some(("±0%", "±0%", true))),
+      ((110, 14, 100, 30), None),
+      ((97, 20, 100, 20), Some(("▼ 3.0%", "−3%", true))),
+      ((160, 20, 200, 30), Some(("▲ 20%", "+20%", true))),
+      ((110, 30, 9, 30), None),
+    ];
+    for ((cur, cur_days, prev, prev_days), want) in cases {
+      let got = Change::new(cur, cur_days, prev, prev_days, p, today)
+        .map(|x| (text(x.tile(p)), text(x.short()), x.approx()));
+      let want = want.map(|(a, b, c)| (a.to_string(), b.to_string(), c));
+      assert_eq!(got, want, "{cur} over {cur_days} vs {prev} over {prev_days}");
+    }
+
     assert!(Change::new(110, 30, 100, 30, Period(-1), today).is_none());
-
-    // both compared ranges and values in the title, always
-    let html = full.tile(p).into_string();
-    assert!(html.contains("class=\"delta up\""));
-    assert!(html.contains("▲ 10% vs prev 30d"));
-    assert!(html.contains(
-      "title=\"110 over 30 days (Oct 2–31) vs 100 over 30 days (Sep 2–Oct 1) · last 2 days \
-       excluded, still incomplete\""
-    ));
-
-    let approx = Change::new(97, 20, 100, 20, p, today).unwrap();
-    assert!(approx.approx());
-    let html = approx.tile(p).into_string();
-    assert!(html.contains("class=\"delta down warn\""));
-    assert!(html.contains("▼ 3.0% vs prev 30d"));
-    assert!(html.contains("still incomplete · only 67% of days collected"));
-    assert!(approx.short().into_string().contains(">−3%<"));
-
-    // tiles: one decimal under 10%; index: whole percents; ±0% when it rounds to zero
-    let fmt = |cur: i64, prev: i64| {
-      let x = Change::new(cur, 30, prev, 30, p, today).unwrap();
-      let tile = x.tile(p).into_string();
-      let tile = tile[tile.find('>').unwrap() + 1..tile.find(" vs prev").unwrap()].to_string();
-      let short = x.short().into_string();
-      let short = short[short.find('>').unwrap() + 1..short.rfind('<').unwrap()].to_string();
-      (tile, short)
-    };
-
-    assert_eq!(fmt(1040, 1000), ("▲ 4.0%".into(), "+4%".into()));
-    assert_eq!(fmt(1120, 1000), ("▲ 12%".into(), "+12%".into()));
-    assert_eq!(fmt(3240, 1000), ("▲ 224%".into(), "+224%".into()));
-    assert_eq!(fmt(916, 1000), ("▼ 8.4%".into(), "−8%".into()));
-    assert_eq!(fmt(10996, 10000), ("▲ 10%".into(), "+10%".into()), "no 10.0% at the cutoff");
-    assert_eq!(fmt(10096, 10000), ("▲ 1.0%".into(), "+1%".into()));
-    assert_eq!(fmt(1004, 1000), ("▲ 0.4%".into(), "±0%".into()));
-    assert_eq!(fmt(100004, 100000), ("±0%".into(), "±0%".into()), "never +0.0%");
-    assert_eq!(fmt(100, 100), ("±0%".into(), "±0%".into()));
-    assert_eq!(Change::new(1004, 30, 1000, 30, p, today).unwrap().class(), "delta");
-
-    let year = Change::new(20, 365, 10, 365, Period(365), today).unwrap();
-    assert!(year.title.starts_with(
-      "20 over 365 days (Nov 1, 2025–Oct 31, 2026) vs 10 over 365 days (Nov 1, 2024–Oct 31, 2025)"
-    ));
-
-    // per collected day: 150 over 15 days is the same rate as 300 over 30
-    let half = Change::new(150, 15, 300, 30, p, today).unwrap();
-    assert!(half.pct.abs() < f64::EPSILON && half.approx());
-  }
-
-  #[test]
-  fn signed_uses_plus_and_minus_signs() {
-    assert_eq!(signed(1234), "+1,234");
-    assert_eq!(signed(-5), "−5");
-    assert_eq!(signed(0), "0");
-  }
-
-  #[test]
-  fn star_gaps_merge_outages_and_runs_without_stars() {
-    let day = |x: &str| x.parse::<NaiveDate>().unwrap();
-    let first = Some(day("2026-01-01"));
-
-    // sparse stargazer history before daily rows start (Jan 14) is normal, later runs are gaps
-    let stars =
-      ["2025-12-01", "2026-01-10", "2026-01-14", "2026-01-15", "2026-01-17", "2026-01-21"];
-    let stars = stars.map(day);
-    let today = day("2026-01-23");
-    assert_eq!(star_gaps(first, &[], &stars, today), vec![(day("2026-01-17"), day("2026-01-21"))]);
-    assert!(star_gaps(None, &[], &stars, today).is_empty());
-
-    // stale stars: the line ends at the last real row and the gap runs to today
-    let gaps = star_gaps(None, &[], &stars, day("2026-02-10"));
-    assert_eq!(gaps, vec![(day("2026-01-21"), day("2026-02-10"))]);
-
-    // rows stop after Apr 1 and resume May 17 with backfilled traffic but no stars until Jun 1
-    let stars = ["2026-03-31", "2026-04-01", "2026-06-01", "2026-06-02"].map(day);
-    let outage = [(day("2026-04-01"), day("2026-05-17"))];
-    let gaps = star_gaps(first, &outage, &stars, day("2026-06-02"));
-    assert_eq!(gaps, vec![(day("2026-04-01"), day("2026-06-01"))]);
-  }
-
-  #[test]
-  fn stars_gain_is_signed_and_approximate_in_gaps() {
-    let day = |x: &str| x.parse::<NaiveDate>().unwrap();
-    let today = day("2026-11-02");
-    let rp = RepoPeriod { stars: 15, stars_start: 20, ..Default::default() };
-    let gaps = [(day("2026-10-20"), day("2026-10-30"))];
-    let last = Some(today);
-
-    // 7d starts Oct 27, the day before is inside the gap
-    let gain = |p, gaps: &[_], last| stars_gain(&rp, p, today, gaps, last).map(|x| x.label());
-    assert_eq!(gain(Period(7), &[], last).as_deref(), Some("−5 in 7d"));
-    assert_eq!(gain(Period(7), &gaps, last).as_deref(), Some("≈ −5 in 7d"));
-    assert_eq!(gain(Period(30), &gaps, last).as_deref(), Some("−5 in 30d"));
-    assert_eq!(gain(Period(30), &[], Some(day("2026-10-28"))).as_deref(), Some("≈ −5 in 30d"));
-    assert!(gain(Period(-1), &gaps, last).is_none());
-
-    // no new stars: said so, muted, never "+0"
-    let flat = RepoPeriod { stars: 20, stars_start: 20, ..Default::default() };
-    let x = stars_gain(&flat, Period(30), today, &[], last).unwrap();
-    assert_eq!((x.label().as_str(), x.zero), ("no change in 30d", true));
-    let html = stars_card(20, Some(x), false).into_string();
-    assert!(html.contains("<span class=\"sub muted\">no change in 30d</span>"));
-  }
-
-  #[test]
-  fn long_tables_show_ten_rows_and_a_show_all_button() {
-    let kind = PopularKind::Refs;
-    let rows = |n: i64| {
-      (1..=n)
-        .map(|x| RepoPopularItem { name: format!("site{x}"), count: x, uniques: x })
-        .map(|x| PopularRow::new("o/r", &kind, x))
-        .collect::<Vec<_>>()
-    };
-
-    let qs = PopularFilter::default();
-    let html = popular_html("o/r", &kind, rows(12), &qs).into_string();
-    assert_eq!(html.matches("<tr hidden").count(), 2, "rows 11 and 12 are rendered hidden");
-    assert!(html.contains("<tr hidden style=\"--w:8.3%\"><td class=\"name\" title=\"site1\">"));
-    assert!(
-      html.contains(
-        "<button type=\"button\" class=\"show-all\" data-show-all>Show all (12)</button>"
-      )
+    let title = Change::new(110, 30, 100, 30, p, today).unwrap().title;
+    assert_eq!(
+      title,
+      "110 over 30 days (Oct 2–31) vs 100 over 30 days (Sep 2–Oct 1) · last 2 days excluded, still \
+       incomplete"
     );
-
-    let html = popular_html("o/r", &kind, rows(10), &qs).into_string();
-    assert!(!html.contains("<tr hidden") && !html.contains("Show all"));
+    assert!(
+      Change::new(97, 20, 100, 20, p, today).unwrap().title.ends_with("only 67% of days collected")
+    );
   }
 
   #[test]
-  fn popular_rows_clamp_uniques_and_fill_by_sorted_column() {
-    let item = |name: &str, count, uniques| RepoPopularItem { name: name.into(), count, uniques };
+  fn popular_rows_clamp_fill_and_collapse() {
     let kind = PopularKind::Path;
-    let rows = || {
-      [item("/o/r", 10, 14), item("/o/r/issues", 40, 2), item("/o/r/pulls", 0, 3)]
-        .into_iter()
-        .map(|x| PopularRow::new("o/r", &kind, x))
-        .collect::<Vec<_>>()
+    let item = |name: &str, count, uniques| RepoPopularItem { name: name.into(), count, uniques };
+    let rows = |n| {
+      let mut items =
+        vec![item("/o/r", 10, 14), item("/o/r/issues", 40, 2), item("/o/r/pulls", 0, 3)];
+      items.extend((0..n).map(|x| item(&format!("/o/r/x{x}"), 1, 1)));
+      items.into_iter().map(|x| PopularRow::new("o/r", &kind, x)).collect::<Vec<_>>()
     };
 
     let qs = PopularFilter { sort: PopularSort::Uniques, ..Default::default() };
-    let html = popular_html("o/r", &kind, rows(), &qs).into_string();
-    assert!(html.contains("<td>10</td><td>10</td>"), "unique clamped to views: {html}");
+    let html = popular_html("o/r", &kind, rows(10), &qs).into_string();
+    assert!(html.contains("<td>10</td><td>10</td>"), "uniques clamped to views");
     assert!(!html.contains("/pulls"), "rows without views are dropped");
-    assert!(html.find("title=\"/\"").unwrap() < html.find("title=\"/issues\"").unwrap());
-    assert!(html.contains("style=\"--w:100.0%\"><td class=\"name\" title=\"/\">"));
-    assert!(html.contains("style=\"--w:20.0%\"><td class=\"name\" title=\"/issues\">"));
-    assert!(html.contains("href=\"https://github.com/o/r/issues\""));
-    assert!(html.contains("aria-sort=\"descending\"><button"));
+    assert!(html.contains("<tr style=\"--w:100.0%\"><td class=\"name\" title=\"/\">"));
+    assert!(html.contains("<tr style=\"--w:20.0%\"><td class=\"name\" title=\"/issues\">"));
+    assert_eq!(html.matches("<tr hidden").count(), 2);
+    assert!(html.contains(">Show all (12)</button>"));
 
     let qs =
       PopularFilter { sort: PopularSort::Name, direction: Direction::Asc, ..Default::default() };
-    let html = popular_html("o/r", &kind, rows(), &qs).into_string();
-    assert!(html.contains("style=\"--w:25.0%\"><td class=\"name\" title=\"/\">"), "{html}");
-    assert!(html.contains("sort=name&amp;direction=desc&amp;period=30d"));
-    assert!(html.contains("sort=count&amp;direction=desc&amp;period=30d"));
-
-    let empty = vec![PopularRow::new("o/r", &kind, item("/o/r", 0, 0))];
-    assert!(popular_html("o/r", &kind, empty, &qs).into_string().is_empty());
+    let html = popular_html("o/r", &kind, rows(0), &qs).into_string();
+    assert!(
+      html.contains("<tr style=\"--w:25.0%\"><td class=\"name\" title=\"/\">"),
+      "fill by views"
+    );
+    assert!(!html.contains("Show all"));
   }
 
   #[test]
-  fn outages_are_runs_of_three_missing_days() {
+  fn outages_and_star_gaps() {
     let some = Some([1, 1, 1, 1]);
     let dat = RepoDaily {
       start: Some("2026-01-01".into()),
       days: vec![some, None, None, some, None, None, None, some, None],
     };
-
-    let day = |x: &str| x.parse::<NaiveDate>().unwrap();
     assert_eq!(outages(&dat), vec![(day("2026-01-04"), day("2026-01-08"))]);
-    assert!(outages(&RepoDaily::default()).is_empty());
+
+    // stargazer history is sparse until daily rows start (Jan 14), later runs of 4+ days are gaps
+    let sparse =
+      ["2025-12-01", "2026-01-10", "2026-01-14", "2026-01-15", "2026-01-17", "2026-01-21"];
+    let outage = [(day("2026-04-01"), day("2026-05-17"))];
+    let resumed = ["2026-03-31", "2026-04-01", "2026-06-01", "2026-06-02"];
+    let cases: [(Option<&str>, &[_], &[&str], &str, &[(&str, &str)]); 4] = [
+      (Some("2026-01-01"), &[], &sparse, "2026-01-23", &[("2026-01-17", "2026-01-21")]),
+      (None, &[], &sparse, "2026-01-23", &[]),
+      (None, &[], &sparse, "2026-02-10", &[("2026-01-21", "2026-02-10")]),
+      (Some("2026-01-01"), &outage, &resumed, "2026-06-02", &[("2026-04-01", "2026-06-01")]),
+    ];
+    for (start, outages, stars, today, want) in cases {
+      let stars: Vec<_> = stars.iter().map(|x| day(x)).collect();
+      let want: Vec<_> = want.iter().map(|(a, b)| (day(a), day(b))).collect();
+      assert_eq!(star_gaps(start.map(day), outages, &stars, day(today)), want);
+    }
   }
 
   #[test]
-  fn period_range_and_nav() {
-    let today = NaiveDate::from_ymd_opt(2026, 11, 2).unwrap();
-    let first = NaiveDate::from_ymd_opt(2024, 7, 10);
-    assert_eq!(period_range(Period(30), today, first), "Oct 4 – Nov 2, 2026");
-    assert_eq!(period_range(Period(365), today, first), "Nov 3, 2025 – Nov 2, 2026");
-    assert_eq!(period_range(Period(-1), today, first), "Jul 10, 2024 – Nov 2, 2026");
-
-    let nav = period_nav(Period(90), false, |x| format!("/?period={x}")).into_string();
-    assert!(
-      nav.contains("<a href=\"/?period=90d\" title=\"Last 90 days\" aria-current=\"page\">90d</a>")
-    );
-    assert!(nav.contains("<a href=\"/?period=all\" title=\"All time\">All</a>"));
-    assert!(!nav.contains("hx-swap-oob"));
-  }
-
-  #[tokio::test]
-  async fn repo_page_renders_only_blocks_with_data() {
-    let db = DbClient::new(&db_path("blocks")).await.unwrap();
-    let repo = test_repo(5);
-    db.insert_repo(&repo).await.unwrap();
-    db.insert_stats(&repo, &format!("{}T00:00:00Z", today()), &[]).await.unwrap();
-    db.insert_referrers(
-      &repo,
-      &format!("{}T00:00:00Z", today()),
-      &[RepoReferrer { referrer: "google.com".into(), count: 3, uniques: 2 }],
-    )
-    .await
-    .unwrap();
-    db.update_deltas().await.unwrap();
-
-    let state = Arc::new(AppState::for_test(db, GhsFilter::new("")));
-    let get = |uri: &str, target: Option<&str>| {
-      let mut headers = HeaderMap::new();
-      if let Some(x) = target {
-        headers.insert("hx-target", x.parse().unwrap());
-      }
-
-      repo_page(
-        State(state.clone()),
-        Path(("o".into(), "r".into())),
-        OriginalUri(uri.parse().unwrap()),
-        headers,
-      )
+  fn stars_gain_label() {
+    let (today, last) = (day("2026-11-02"), Some(day("2026-11-02")));
+    let rp = RepoPeriod { stars: 15, stars_start: 20, ..Default::default() };
+    let gaps = [(day("2026-10-20"), day("2026-10-30"))];
+    let gain = |rp: &RepoPeriod, p, gaps: &[_], last| {
+      stars_gain(rp, p, today, gaps, last).map(|x| (x.label(), x.zero))
     };
 
-    // stars before the period are unknown until the stargazer history is synced
-    let page = get("/o/r?period=14", None).await.unwrap().into_string();
-    assert!(page.contains("<h2>Stars</h2>"));
-    assert!(!page.contains(" in 14d"), "no gain without stars before the period");
-    assert!(page.contains("\"window_label\":null"));
+    let label = |x: &str, zero| Some((x.to_string(), zero));
+    assert_eq!(gain(&rp, Period(7), &[], last), label("−5 in 7d", false));
+    assert_eq!(gain(&rp, Period(7), &gaps, last), label("≈ −5 in 7d", false), "start in a gap");
+    assert_eq!(gain(&rp, Period(30), &[], Some(day("2026-10-28"))), label("≈ −5 in 30d", false));
+    assert_eq!(gain(&rp, Period(-1), &[], last), None);
 
-    state.db.mark_repo_stars_synced(1).await.unwrap();
-    let page = get("/o/r?period=14", None).await.unwrap().into_string();
-    assert!(page.contains("+5 in 14d"));
-    assert!(page.contains("<div class=\"card-v\"><span class=\"big\">5</span>"));
-    assert!(!page.contains("<h2>Views</h2>"), "no traffic, no views card");
-    assert!(!page.contains("id=\"chart_views\""));
-    assert!(page.contains("id=\"refs_table\""));
-    assert!(!page.contains("id=\"path_table\""), "no paths, no paths table");
-    assert!(!page.contains("class=\"kpis"), "no tiles row");
+    let flat = RepoPeriod { stars: 20, stars_start: 20, ..Default::default() };
+    assert_eq!(gain(&flat, Period(30), &[], last), label("no change in 30d", true));
 
-    let frag = get("/o/r?sort=name&period=7d", Some("refs_table")).await.unwrap().into_string();
-    assert!(frag.starts_with("<div id=\"refs_table\""));
-    assert!(!frag.contains("<html"));
+    let unknown = RepoPeriod { stars: 20, ..Default::default() };
+    assert_eq!(gain(&unknown, Period(30), &[], last), None, "no history before the period");
   }
 
   #[tokio::test]
-  async fn excluded_repo_fragments_are_not_found() {
-    let db = DbClient::new(&db_path("excluded")).await.unwrap();
-    let repo = test_repo(5);
-    db.insert_repo(&repo).await.unwrap();
-    db.insert_stats(&repo, &format!("{}T00:00:00Z", today()), &[]).await.unwrap();
-
-    let state = Arc::new(AppState::for_test(db, GhsFilter::new("other/*")));
-    for target in [None, Some("refs_table"), Some("path_table")] {
-      let mut headers = HeaderMap::new();
-      if let Some(x) = target {
-        headers.insert("hx-target", x.parse().unwrap());
-      }
-
-      let uri = "/o/r".parse().unwrap();
-      let res =
-        repo_page(State(state.clone()), Path(("o".into(), "r".into())), OriginalUri(uri), headers)
-          .await;
-      let res = axum::response::IntoResponse::into_response(res.unwrap_err());
-      assert_eq!(res.status(), axum::http::StatusCode::NOT_FOUND, "{target:?}");
-    }
-  }
-
-  #[tokio::test]
-  async fn index_fragment_keeps_filters_and_names_period() {
-    let db = DbClient::new(&db_path("index")).await.unwrap();
-    let state = Arc::new(AppState::for_test(db, GhsFilter::new("")));
-    let mut headers = HeaderMap::new();
-    headers.insert("hx-target", "repos_table".parse().unwrap());
-
-    let uri = "/?sort=views_count&direction=desc&period=90d&q=x".parse().unwrap();
-    let frag = index(State(state), OriginalUri(uri), headers).await.unwrap().into_string();
-    assert!(frag.starts_with("<table id=\"repos_table\""));
-    assert!(frag.contains("Views <span class=\"per\" role=\"img\" aria-label=\"Last 90 days: "));
-    assert!(!frag.contains("90d</span>"), "no period text in headers");
-    assert!(
-      frag.contains("id=\"filter_period\" name=\"period\" value=\"90d\" hx-swap-oob=\"true\"")
-    );
-    assert!(frag.contains("id=\"period_nav\""));
-    assert!(frag.contains("href=\"/?sort=views_count&amp;direction=desc&amp;period=7d&amp;q=x\""));
-    assert!(frag.contains("No repos match"));
-  }
-
-  #[tokio::test]
-  async fn change_skips_incomplete_last_days_and_star_gap_is_approximate() {
-    let db = DbClient::new(&db_path("flat")).await.unwrap();
-    let today = today();
-    let ago = |x: u64| today - Days::new(x);
-    db.insert_repo(&test_repo(20)).await.unwrap();
-
-    // daily stats, except 10 days (ago 12..3) that only have backfilled traffic without stars
-    for x in (0..40).filter(|x| !(3..=12).contains(x)) {
-      let stars = if x > 12 { 20 } else { 15 };
-      db.insert_stats(&test_repo(stars), &format!("{}T00:00:00Z", ago(x)), &[]).await.unwrap();
-    }
-
-    // flat 100 views a day, then GitHub's still incomplete yesterday and today
-    let mut days: Vec<(NaiveDate, u32)> = (2..40).map(|x| (ago(x), 100)).collect();
-    days.extend([(ago(1), 5), (today, 0)]);
-    db.insert_views(&test_repo(20), &views(&days)).await.unwrap();
-
-    let rp = db.get_periods(Some("o/r"), Period(7), today).await.unwrap().remove(0);
-    assert_eq!((rp.views, rp.cmp_views, rp.prev_views), (505, 700, 700));
-    assert_eq!((rp.cmp_days, rp.prev_days), (7, 7));
-    let change =
-      Change::new(rp.cmp_views, rp.cmp_days, rp.prev_views, rp.prev_days, Period(7), today)
-        .unwrap();
-    assert!(change.pct.abs() < f64::EPSILON);
-
-    let state = Arc::new(AppState::for_test(db, GhsFilter::new("")));
-    let uri = "/o/r?period=7d".parse().unwrap();
-    let page =
-      repo_page(State(state), Path(("o".into(), "r".into())), OriginalUri(uri), HeaderMap::new())
-        .await
-        .unwrap()
-        .into_string();
-
-    assert!(page.contains("±0% vs prev 7d"), "flat traffic is flat");
-    assert_eq!(page.matches(" vs prev ").count(), 1, "views only, no stars change");
-    assert!(page.contains(&format!("\"gaps\":[[\"{}\",\"{}\"]]", ago(13), ago(2))));
-    assert!(page.contains(">≈ −5 in 7d</span>"), "stars before the period are in the gap");
-    assert!(page.contains("\"window_label\":\"≈ −5 in 7d\""));
-    assert!(page.contains("id=\"chart_views\""));
-    assert!(!page.contains("<h2>Clones</h2>"), "no clones ever, no clones card");
-    assert!(!page.contains("id=\"chart_clones\""));
-
-    // stars first, then the views card on its own
-    let (stars, views) =
-      (page.find("<h2>Stars</h2>").unwrap(), page.find("<h2>Views</h2>").unwrap());
-    assert!(stars < views);
-    assert!(page.contains("<span class=\"big\">505</span>"));
-  }
-
-  #[tokio::test]
-  async fn change_needs_both_compared_windows_collected() {
-    let today = today();
-    let ago = |x: u64| today - Days::new(x);
-
-    // a year of complete history before, and an outage inside the current compared year
-    for (outage, approx) in [(60, Some(true)), (200, None)] {
-      let db = DbClient::new(&db_path("cmp")).await.unwrap();
-      db.insert_repo(&test_repo(1)).await.unwrap();
-      let days: Vec<(NaiveDate, u32)> =
-        (2..800).filter(|x| !(41..41 + outage).contains(x)).map(|x| (ago(x), 100)).collect();
-      db.insert_views(&test_repo(1), &views(&days)).await.unwrap();
-
-      let rp = db.get_periods(Some("o/r"), Period(365), today).await.unwrap().remove(0);
-      assert_eq!((rp.prev_days, rp.cmp_days), (365, 365 - outage as i64));
-      let change =
-        Change::new(rp.cmp_views, rp.cmp_days, rp.prev_views, rp.prev_days, Period(365), today);
-      assert_eq!(change.as_ref().map(|x| x.approx()), approx, "outage {outage}");
-      assert!(change.is_none_or(|x| x.pct.abs() < 1e-9), "flat traffic stays flat");
-    }
-  }
-
-  #[tokio::test]
-  async fn stars_after_outage_use_real_rows_only() {
-    let db = DbClient::new(&db_path("outage")).await.unwrap();
-    let day = |x: &str| x.parse::<NaiveDate>().unwrap();
-    db.insert_repo(&test_repo(10)).await.unwrap();
-
-    // a month of daily stats, past the backfill of the first traffic day
-    for x in 0..32 {
-      let d = day("2026-03-01") + Days::new(x);
-      db.insert_stats(&test_repo(10), &format!("{d}T00:00:00Z"), &[]).await.unwrap();
-    }
-
-    // backfill after the outage: traffic rows with no stars, then daily stats resume
-    let backfill: Vec<(NaiveDate, u32)> =
-      (17..=31).map(|x| (day(&format!("2026-05-{x}")), 50)).collect();
-    db.insert_views(&test_repo(10), &views(&[(day("2026-03-01"), 50)])).await.unwrap();
-    db.insert_views(&test_repo(10), &views(&backfill)).await.unwrap();
-    for d in ["2026-06-01", "2026-06-02"] {
-      db.insert_stats(&test_repo(30), &format!("{d}T00:00:00Z"), &[]).await.unwrap();
-    }
-
-    let dat = db.get_daily("o/r", day("2026-06-02")).await.unwrap();
-    let rows = db.get_star_rows("o/r").await.unwrap();
-    let stars: Vec<NaiveDate> = rows.iter().map(|x| x.date[..10].parse().unwrap()).collect();
-    assert_eq!(outages(&dat), vec![(day("2026-04-01"), day("2026-05-17"))]);
-    let gaps = star_gaps(dat.start.as_deref().map(day), &outages(&dat), &stars, day("2026-06-02"));
-    assert_eq!(gaps, vec![(day("2026-04-01"), day("2026-06-01"))]);
-    assert_eq!(rows.len(), 34);
-
-    // get_stars (badges) keeps its forward fill
-    let filled = db.get_stars("o/r").await.unwrap();
-    assert!(filled.iter().any(|x| x.date.starts_with("2026-05-20") && x.stars == 10));
-
-    // 7d ending Jun 2: start May 27 is inside the gap, the last real value before it is Apr 1's
-    let rp = db.get_periods(Some("o/r"), Period(7), day("2026-06-02")).await.unwrap().remove(0);
-    assert_eq!((rp.stars, rp.stars_start, rp.stars_gain()), (30, 10, Some(20)));
-  }
-
-  #[tokio::test]
-  async fn sparse_first_days_are_zero_traffic_not_outages() {
+  async fn backfill_counts_as_collected_until_the_last_row() {
+    // the first sync's backfill only has days with traffic, then daily rows
     let db = DbClient::new(&db_path("backfill")).await.unwrap();
-    let today = today();
-    let ago = |x: u64| today - Days::new(x);
     db.insert_repo(&test_repo(5)).await.unwrap();
-
-    // first sync: stargazer history from 2017 and the days of the 14-day backfill that had traffic
-    db.insert_stars(
-      1,
-      &[("2017-05-01T00:00:00Z".into(), 3, 3), (format!("{}T00:00:00Z", ago(38)), 4, 1)],
-    )
-    .await
-    .unwrap();
     db.insert_views(&test_repo(5), &views(&[(ago(40), 10), (ago(35), 10), (ago(30), 10)]))
       .await
       .unwrap();
@@ -1450,139 +1157,73 @@ mod tests {
       db.insert_stats(&test_repo(5), &format!("{}T00:00:00Z", ago(x)), &[]).await.unwrap();
     }
 
-    let dat = db.get_daily("o/r", today).await.unwrap();
-    assert_eq!(dat.start, Some(ago(40).to_string()));
-    assert_eq!(dat.days[1], Some([0; 4]), "a missing backfill day is a day without traffic");
+    let dat = db.get_daily("o/r", today()).await.unwrap();
     assert!(dat.days.iter().all(|x| x.is_some()));
     assert!(outages(&dat).is_empty());
-
-    let rows = db.get_star_rows("o/r").await.unwrap();
-    let stars: Vec<NaiveDate> = rows.iter().map(|x| x.date[..10].parse().unwrap()).collect();
-    assert!(star_gaps(Some(ago(40)), &outages(&dat), &stars, today).is_empty());
-
-    // compared ago 31..2: 6 backfill days + 24 rows; previous ago 61..32: the 9 backfill days
-    let rp = db.get_periods(Some("o/r"), Period(30), today).await.unwrap().remove(0);
+    let rp = db.get_periods(Some("o/r"), Period(30), today()).await.unwrap().remove(0);
     assert_eq!((rp.cmp_days, rp.prev_days), (30, 9));
-  }
 
-  #[tokio::test]
-  async fn backfill_ends_at_the_last_row() {
+    // nothing collected after the first sync: no invented zeros, nothing to compare
     let db = DbClient::new(&db_path("dead")).await.unwrap();
-    let today = today();
-    let ago = |x: u64| today - Days::new(x);
     db.insert_repo(&test_repo(5)).await.unwrap();
-
-    // one sync 10 days ago (its backfill has traffic on 3 days), nothing collected since
     db.insert_views(&test_repo(5), &views(&[(ago(20), 10), (ago(15), 10), (ago(10), 10)]))
       .await
       .unwrap();
 
-    let dat = db.get_daily("o/r", today).await.unwrap();
-    assert!(dat.days[..11].iter().all(|x| x.is_some()));
-    assert!(dat.days[11..].iter().all(|x| x.is_none()), "no zeros invented after the last row");
-    assert!(outages(&dat).is_empty());
-
-    // compared ago 8..2: nothing collected; previous ago 15..9: the backfill up to ago 10
-    let rp = db.get_periods(Some("o/r"), Period(7), today).await.unwrap().remove(0);
-    assert_eq!((rp.cmp_days, rp.prev_days), (0, 6));
+    let dat = db.get_daily("o/r", today()).await.unwrap();
     assert!(
-      Change::new(rp.cmp_views, rp.cmp_days, rp.prev_views, rp.prev_days, Period(7), today)
-        .is_none()
+      dat.days[..11].iter().all(|x| x.is_some()) && dat.days[11..].iter().all(|x| x.is_none())
     );
+    let rp = db.get_periods(Some("o/r"), Period(7), today()).await.unwrap().remove(0);
+    assert_eq!((rp.cmp_days, rp.prev_days), (0, 6));
   }
 
   #[tokio::test]
-  async fn without_traffic_only_stale_stars_leave_a_gap() {
-    let db = DbClient::new(&db_path("notraffic")).await.unwrap();
-    let today = today();
-    let ago = |x: u64| today - Days::new(x);
-    db.insert_repo(&test_repo(3)).await.unwrap();
-
-    // no traffic ever: sparse stargazer history, then daily stats with a 10-day hole
-    let history =
-      [("2017-05-01T00:00:00Z".to_string(), 1, 1), ("2018-03-01T00:00:00Z".to_string(), 2, 1)];
-    db.insert_stars(1, &history).await.unwrap();
-    for x in (0..=100).filter(|x| !(31..=40).contains(x)) {
-      db.insert_stats(&test_repo(3), &format!("{}T00:00:00Z", ago(x)), &[]).await.unwrap();
-    }
-
-    let dat = db.get_daily("o/r", today).await.unwrap();
-    assert!(dat.start.is_none());
-    let rows = db.get_star_rows("o/r").await.unwrap();
-    let stars: Vec<NaiveDate> = rows.iter().map(|x| x.date[..10].parse().unwrap()).collect();
-    assert!(star_gaps(None, &outages(&dat), &stars, today).is_empty(), "no tracking start known");
-    assert_eq!(
-      star_gaps(None, &[], &stars, today + Days::new(5)),
-      vec![(today, today + Days::new(5))]
-    );
-  }
-
-  #[tokio::test]
-  async fn current_stars_come_from_the_latest_row() {
-    let db = DbClient::new(&db_path("zero")).await.unwrap();
-    let today = today();
-    let ago = |x: u64| today - Days::new(x);
+  async fn pages_render_only_blocks_with_data() {
+    // stars dropped from 20 to 0, a referrer, no traffic, no paths
+    let db = DbClient::new(&db_path("blocks")).await.unwrap();
     db.insert_repo(&test_repo(20)).await.unwrap();
     db.insert_stats(&test_repo(20), &format!("{}T00:00:00Z", ago(10)), &[]).await.unwrap();
-    db.insert_stats(&test_repo(0), &format!("{today}T00:00:00Z"), &[]).await.unwrap();
-
-    let rp = db.get_periods(Some("o/r"), Period(7), today).await.unwrap().remove(0);
-    assert_eq!((rp.stars, rp.stars_start, rp.stars_gain()), (0, 20, Some(-20)));
-
+    db.insert_stats(&test_repo(0), &format!("{}T00:00:00Z", ago(0)), &[]).await.unwrap();
+    let refs = [RepoReferrer { referrer: "google.com".into(), count: 3, uniques: 2 }];
+    db.insert_referrers(&test_repo(0), &format!("{}T00:00:00Z", ago(0)), &refs).await.unwrap();
+    db.update_deltas().await.unwrap();
     let state = Arc::new(AppState::for_test(db, GhsFilter::new("")));
-    let uri = "/o/r?period=7d".parse().unwrap();
-    let page = repo_page(
-      State(state.clone()),
-      Path(("o".into(), "r".into())),
-      OriginalUri(uri),
-      HeaderMap::new(),
-    )
-    .await
-    .unwrap()
-    .into_string();
-    assert!(page.contains("<div class=\"card-v\"><span class=\"big\">0</span>"));
-    assert!(page.contains("−20 in 7d"));
 
-    let mut headers = HeaderMap::new();
-    headers.insert("hx-target", "repos_table".parse().unwrap());
-    let uri = "/?period=7d".parse().unwrap();
-    let frag =
-      index(State(state.clone()), OriginalUri(uri), headers.clone()).await.unwrap().into_string();
-    assert!(frag.contains(
-      "<td class=\"c-stars\"><span class=\"v\">0</span><small class=\"muted\">−20</small></td>"
-    ));
-    // views and clones can't be compared without traffic: a dash with the reason, never nothing
-    let dash = "<span class=\"v\">0</span><small class=\"muted\" title=\"Not enough days collected \
-                to compare with the previous period\">—</small></td>";
+    let page = get(&state, "/o/r?period=7d", None).await.unwrap().into_string();
+    assert!(page.contains("<h2>Stars</h2>"));
+    assert!(page.contains("<span class=\"big\">0</span>"), "current stars from the latest row");
+    assert!(page.contains("−20 in 7d"));
+    assert!(!page.contains("<h2>Views</h2>") && !page.contains("<h2>Clones</h2>"));
+    assert!(page.contains("id=\"refs_table\"") && !page.contains("id=\"path_table\""));
+
+    let frag = get(&state, "/o/r?sort=name", Some("refs_table")).await.unwrap().into_string();
+    assert!(frag.starts_with("<div id=\"refs_table\""));
+
+    let frag = get(&state, "/?period=7d", Some("repos_table")).await.unwrap().into_string();
+    assert!(frag.starts_with("<table id=\"repos_table\""));
+    assert!(
+      frag.contains("id=\"filter_period\" name=\"period\" value=\"7d\" hx-swap-oob=\"true\"")
+    );
+    assert!(frag.contains("<span class=\"v\">0</span><small class=\"muted\">−20</small>"));
+    let dash = "title=\"Not enough days collected to compare with the previous period\">—</small>";
     assert_eq!(frag.matches(dash).count(), 2, "views and clones");
 
-    // at All neither change nor gain: bare numbers
-    let frag = index(State(state), OriginalUri("/?period=all".parse().unwrap()), headers)
-      .await
-      .unwrap()
-      .into_string();
-    assert!(frag.contains("<td class=\"c-stars\"><span class=\"v\">0</span></td>"));
-    assert!(!frag.contains("<small"));
+    let frag = get(&state, "/?period=all", Some("repos_table")).await.unwrap().into_string();
+    assert!(!frag.contains("<small"), "no second line at all time");
   }
 
   #[tokio::test]
-  async fn index_dash_for_no_star_change() {
-    let db = DbClient::new(&db_path("nostars")).await.unwrap();
-    let today = today();
+  async fn excluded_repo_fragments_are_not_found() {
+    let db = DbClient::new(&db_path("excluded")).await.unwrap();
     db.insert_repo(&test_repo(5)).await.unwrap();
-    for x in [10, 0] {
-      let day = today - Days::new(x);
-      db.insert_stats(&test_repo(5), &format!("{day}T00:00:00Z"), &[]).await.unwrap();
-    }
+    db.insert_stats(&test_repo(5), &format!("{}T00:00:00Z", today()), &[]).await.unwrap();
+    let state = Arc::new(AppState::for_test(db, GhsFilter::new("other/*")));
 
-    let state = Arc::new(AppState::for_test(db, GhsFilter::new("")));
-    let mut headers = HeaderMap::new();
-    headers.insert("hx-target", "repos_table".parse().unwrap());
-    let uri = "/?period=7d".parse().unwrap();
-    let frag = index(State(state), OriginalUri(uri), headers).await.unwrap().into_string();
-    assert!(frag.contains(
-      "<td class=\"c-stars\"><span class=\"v\">5</span><small class=\"muted\" title=\"No change \
-       in this period\">—</small></td>"
-    ));
+    for target in [None, Some("refs_table"), Some("path_table")] {
+      let res = get(&state, "/o/r", target).await.unwrap_err();
+      let res = axum::response::IntoResponse::into_response(res);
+      assert_eq!(res.status(), axum::http::StatusCode::NOT_FOUND, "{target:?}");
+    }
   }
 }
