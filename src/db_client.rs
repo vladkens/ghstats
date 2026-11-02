@@ -1405,6 +1405,21 @@ impl DbClient {
       }
     }
 
+    // a pre-release promoted later keeps its whole history in the period and chart
+    let ids = |pre: bool| {
+      let ids = releases.iter().filter(|x| x.prerelease == pre).map(|x| (x.id as i64).to_string());
+      ids.collect::<Vec<_>>().join(",")
+    };
+
+    let qs = format!(
+      "UPDATE repo_release_assets SET prerelease = NOT prerelease
+      WHERE repo_id = $1 AND ((prerelease AND release_id IN ({}))
+        OR (NOT prerelease AND release_id IN ({})));",
+      ids(false),
+      ids(true)
+    );
+    tx.execute(&qs, params![repo.id as i64])?;
+
     // assets missing from this fetch leave the totals, their rows keep the deltas
     let ids = releases.iter().flat_map(|x| &x.assets).map(|x| (x.id as i64).to_string());
     let qs = format!(
@@ -1984,6 +1999,29 @@ mod tests {
     let daily = db.get_downloads_daily("owner/repo").await?;
     let daily = daily.iter().map(|x| (x.date.as_str(), x.downloads)).collect::<Vec<_>>();
     assert_eq!(daily, vec![(d3.as_str(), 10)]);
+
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn promoted_prerelease_keeps_its_history() -> Res {
+    let db = test_db("downloads-promoted").await?;
+    let repo = sample_repo(1, "owner/repo");
+    db.insert_repo(&repo).await?;
+
+    let (d4, d3) = (days_ago(4), days_ago(3));
+    let rel = |count| release(1, "v1.0", &d4.replace("T00", "T01"), &[(10, "a", count)]);
+    let mut pre = rel(10);
+    pre.prerelease = true;
+    db.insert_release_assets(&repo, &d4, &[pre]).await?;
+    db.insert_release_assets(&repo, &d3, &[rel(15)]).await?;
+
+    let rels = db.get_release_downloads("owner/repo", 5).await?;
+    assert_eq!(rels.iter().map(|x| (x.total, x.period)).collect::<Vec<_>>(), vec![(15, 15)]);
+
+    let daily = db.get_release_downloads_daily("owner/repo").await?;
+    let days = |n: i64| days_ago(n)[..10].to_string();
+    assert_eq!(daily, vec![(days(4), 1, 10), (days(3), 1, 5)]);
 
     Ok(())
   }

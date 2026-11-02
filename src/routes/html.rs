@@ -814,7 +814,9 @@ fn releases_table(
   });
 
   let max = rows.iter().filter_map(|x| val(x)).max().unwrap_or(1).max(1);
+
   let total = if qs.period.days().is_some() { "Total" } else { "Downloads" };
+
   let mut cols = vec![
     (html!("Releases"), ReleaseSort::Tag, ""),
     (html!("Published"), ReleaseSort::Published, "opt2"),
@@ -1440,7 +1442,9 @@ pub async fn index(
     (RepoSort::Downloads, false) => (RepoSort::Views, Direction::Desc),
     x => (x.0, qs.direction),
   };
+
   sort_index(&mut rows, &sort, &dir);
+
   let first = state.db.get_first_traffic().await?;
   let period_tip = format!("{}: {}", p.title(), period_range(p, today, first));
   let cur_q = qs.q.clone().unwrap_or_default();
