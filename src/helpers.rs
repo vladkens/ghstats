@@ -40,6 +40,10 @@ async fn update_metrics_inner(state: Arc<AppState>) -> Res {
   let date = chrono::Utc::now().to_utc().to_rfc3339();
   let date = date.split("T").next().unwrap().to_owned() + "T00:00:00Z";
 
+  // after downtime the star history is fetched again, so the gap gets the stars
+  let yesterday = (chrono::Utc::now() - chrono::Duration::days(1)).date_naive();
+  let was_down = state.db.get_last_stats_date().await?.is_some_and(|x| x < yesterday);
+
   let repos = state.gh.get_repos(state.include_private).await?;
   check_hidden_repos(&state.db, &repos).await?;
 
@@ -57,6 +61,10 @@ async fn update_metrics_inner(state: Arc<AppState>) -> Res {
 
   tracing::info!("update_metrics took {:?} for {} repos", stime.elapsed(), repos.len());
   state.db.update_deltas().await?;
+  if was_down {
+    state.db.mark_repos_stars_unsynced().await?;
+  }
+
   sync_stars(&state.db, &state.gh).await?;
 
   Ok(())
@@ -605,6 +613,7 @@ mod tests {
       fork: false,
       archived: false,
       has_pull_requests,
+      ..Default::default()
     }
   }
 

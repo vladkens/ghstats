@@ -12,10 +12,11 @@ use url::form_urlencoded::Serializer;
 use crate::AppState;
 use crate::db_client::{
   BACKFILL_DAYS, CMP_LAG, DbClient, Direction, Period, PopularFilter, PopularKind, PopularSort,
-  RepoDaily, RepoFilter, RepoPeriod, RepoPopularItem, RepoSort, RepoTotals,
+  ReleaseDownloads, RepoDaily, RepoFilter, RepoMeta, RepoPeriod, RepoPopularItem, RepoSort,
+  RepoTotals,
 };
 use crate::routes::assets::vendor_url;
-use crate::types::{AppError, HtmlRes};
+use crate::types::{AppError, HtmlRes, Res};
 
 // MARK: Helpers
 
@@ -390,38 +391,163 @@ struct ChartData<'a> {
   stars: &'a [(&'a str, i32)],
   gaps: &'a [(NaiveDate, NaiveDate)],
   window_label: Option<String>,
+  downloads: Option<&'a DownloadsSeries>,
 }
 
-fn stars_card(stars: i64, gain: Option<StarsGain>, gaps: bool) -> Markup {
+fn day_title(x: NaiveDate) -> String {
+  x.format("%b %-d, %Y").to_string()
+}
+
+fn ago(x: NaiveDate, today: NaiveDate) -> String {
+  let (n, unit) = match (today - x).num_days() {
+    x if x < 1 => return "today".to_string(),
+    x if x < 30 => (x, "day"),
+    x if x < 365 => ((x as f64 / 30.4).round() as i64, "month"),
+    x => (x / 365, "year"),
+  };
+
+  format!("{n} {unit}{} ago", if n == 1 { "" } else { "s" })
+}
+
+// https://github.com/github-linguist/linguist/blob/main/lib/linguist/languages.yml
+fn lang_color(lang: &str) -> &'static str {
+  match lang {
+    "Rust" => "#dea584",
+    "Python" => "#3572a5",
+    "JavaScript" => "#f1e05a",
+    "TypeScript" => "#3178c6",
+    "Go" => "#00add8",
+    "Java" => "#b07219",
+    "Kotlin" => "#a97bff",
+    "Swift" => "#f05138",
+    "C" => "#555555",
+    "C++" => "#f34b7d",
+    "C#" => "#178600",
+    "Ruby" => "#701516",
+    "PHP" => "#4f5d95",
+    "Shell" => "#89e051",
+    "HTML" => "#e34c26",
+    "CSS" => "#563d7c",
+    "Vue" => "#41b883",
+    "Svelte" => "#ff3e00",
+    "Dart" => "#00b4ab",
+    "Elixir" => "#6e4a7e",
+    "Haskell" => "#5e5086",
+    "Lua" => "#000080",
+    "Zig" => "#ec915c",
+    "Nix" => "#7e7eff",
+    "Dockerfile" => "#384d54",
+    "Jupyter Notebook" => "#da5b0b",
+    "Objective-C" => "#438eff",
+    _ => "#9aa4b2",
+  }
+}
+
+const TOPICS_SHOWN: usize = 6;
+
+fn info_card(totals: &RepoTotals, meta: &RepoMeta, today: NaiveDate) -> Markup {
+  let date = |x: &Option<String>| x.as_deref().and_then(|x| x.get(..10)?.parse::<NaiveDate>().ok());
+  let (created, pushed) = (date(&meta.created_at), date(&meta.pushed_at));
+  let homepage =
+    meta.homepage.as_deref().filter(|x| x.starts_with("https://") || x.starts_with("http://"));
+  let more = meta.topics.get(TOPICS_SHOWN..).unwrap_or_default();
+
   html!(
-    section class="card" {
+    section class="card info" {
+      div {
+        h1 {
+          a href=(format!("https://github.com/{}", totals.name)) title="Open on GitHub" {
+            (totals.name) span class="ext" aria-hidden="true" { "↗" }
+          }
+        }
+        @if let Some(desc) = totals.description.as_deref().filter(|x| !x.is_empty()) {
+          p class="desc" title=(desc) { (desc) }
+        }
+      }
+
+      @if meta.language.is_some() || meta.license.is_some() || created.is_some() || pushed.is_some() {
+        div class="facts" {
+          @if let Some(x) = &meta.language {
+            span class="lang" { i class="dot" style=(format!("background:{}", lang_color(x))) {} (x) }
+          }
+          @if let Some(x) = &meta.license { span { (x) } }
+          @if let Some(x) = created { span title=(day_title(x)) { "created " (ago(x, today)) } }
+          @if let Some(x) = pushed { span title=(day_title(x)) { "last push " (ago(x, today)) } }
+        }
+      }
+
+      @if !meta.topics.is_empty() {
+        div class="topics" {
+          @for x in meta.topics.iter().take(TOPICS_SHOWN) { span class="topic" { (x) } }
+          @if !more.is_empty() {
+            span class="topic more" title=(more.join(", ")) { "+" (more.len()) }
+          }
+        }
+      }
+
+      @if let Some(x) = homepage {
+        div class="facts" {
+          a href=(x) { (x.trim_start_matches("https://").trim_start_matches("http://")) }
+        }
+      }
+
+      div class="repo-stats" {
+        @for (n, one, many) in [
+          (totals.forks, "fork", "forks"),
+          (totals.issues, "open issue", "open issues"),
+          (totals.prs, "open PR", "open PRs"),
+        ] {
+          span { b { (num(n as i64)) } " " (if n == 1 { one } else { many }) }
+        }
+      }
+    }
+  )
+}
+
+fn stars_chart_card(gaps: bool) -> Markup {
+  html!(
+    section class="card stars-card" {
       div class="card-t" {
         h2 { "Stars" }
         @if gaps {
           div class="legend" { span { i class="sw hatch" {} "No data" } }
         }
       }
-      div class="card-v" {
-        span class="big" { (num(stars)) }
-        @if let Some(x) = gain {
-          span class=(if x.zero { "sub muted" } else { "sub" }) title=[x.approx.then_some(STARS_APPROX)] {
-            (x.label())
-          }
-        }
-      }
-      div class="chart tall" { canvas id="chart_stars" role="img" aria-label="Stars over time" {} }
+      div class="chart" { canvas id="chart_stars" role="img" aria-label="Stars over time" {} }
     }
   )
 }
 
-fn traffic_card(
+fn tile(title: &str, value: i64, sub: Markup, change: Option<Markup>) -> Markup {
+  html!(
+    div class="card kpi" {
+      h2 { (title) }
+      div class="value" { (num(value)) }
+      div class="sub" { (sub) }
+      div class="change" { @if let Some(x) = change { (x) } }
+    }
+  )
+}
+
+fn traffic_tile(
   title: &str,
-  canvas_id: &str,
   total: i64,
   uniques: i64,
   change: Option<Change>,
   p: Period,
 ) -> Markup {
+  let sub = html!(abbr title=(UNIQUE_TIP) { (num(uniques.min(total))) " unique" });
+  tile(title, total, sub, change.map(|x| x.tile(p)))
+}
+
+fn stars_tile(stars: i64, gain: Option<StarsGain>) -> Markup {
+  let sub = html!(@if let Some(x) = gain {
+    span class=[x.zero.then_some("muted")] title=[x.approx.then_some(STARS_APPROX)] { (x.label()) }
+  });
+  tile("Stars", stars, sub, None)
+}
+
+fn traffic_card(title: &str, canvas_id: &str) -> Markup {
   html!(
     section class="card" {
       div class="card-t" {
@@ -432,14 +558,165 @@ fn traffic_card(
           span class="gap-key" hidden { i class="sw hatch" {} "No data" }
         }
       }
-      div class="card-v" {
-        span class="big" { (num(total)) }
-        span class="sub" { abbr title=(UNIQUE_TIP) { (num(uniques.min(total))) " unique" } }
-        @if let Some(x) = change { (x.tile(p)) }
-      }
       div class="chart" {
         canvas id=(canvas_id) role="img" aria-label=(format!("{title}: total and unique")) {}
       }
+    }
+  )
+}
+
+// MARK: Downloads
+
+/// Days with downloads by release: the top ones of the period, then the rest together
+#[derive(Debug, Serialize)]
+struct DownloadsSeries {
+  start: String,
+  days: Vec<Option<Vec<i64>>>,
+  labels: Vec<String>,
+}
+
+struct Downloads {
+  total: i64,
+  /// in the period, when any of its days were collected
+  period: Option<i64>,
+  change: Option<Change>,
+  releases: Vec<ReleaseDownloads>,
+  series: Option<DownloadsSeries>,
+}
+
+const RELEASES_STACKED: usize = 3;
+
+fn downloads(
+  mut releases: Vec<ReleaseDownloads>,
+  daily: &[(String, i64, i64)],
+  p: Period,
+  today: NaiveDate,
+) -> Option<Downloads> {
+  if releases.is_empty() {
+    return None;
+  }
+
+  let total = releases.iter().map(|x| x.total).sum();
+  let key =
+    |x: &ReleaseDownloads| if p.days().is_some() { (x.period, x.total) } else { (x.total, 0) };
+  releases.sort_by_key(|x| std::cmp::Reverse(key(x)));
+
+  let mut per_day: Vec<(NaiveDate, i64, i64)> =
+    daily.iter().filter_map(|(d, id, n)| Some((d.parse().ok()?, *id, *n))).collect();
+  per_day.sort();
+
+  let sum = |from: NaiveDate, to: NaiveDate| {
+    let days: Vec<_> = per_day.iter().filter(|x| x.0 >= from && x.0 < to).collect();
+    let mut dates: Vec<_> = days.iter().map(|x| x.0).collect();
+    dates.dedup();
+    (days.iter().map(|x| x.2).sum::<i64>(), dates.len() as i64)
+  };
+
+  let (period, change) = match p.windows(today) {
+    Some(w) => {
+      let (cur, cur_days) = sum(w.start, today + Days::new(1));
+      let (cmp, cmp_days) = sum(w.cmp_start, w.cmp_end);
+      let (prev, prev_days) = sum(w.prev_start, w.cmp_start);
+      ((cur_days > 0).then_some(cur), Change::new(cmp, cmp_days, prev, prev_days, p, today))
+    }
+    None => (None, None),
+  };
+
+  let top: Vec<i64> =
+    releases.iter().filter(|x| key(x).0 > 0).take(RELEASES_STACKED).map(|x| x.release_id).collect();
+  let series = per_day.first().map(|first| {
+    let start = first.0;
+    let len = (today - start).num_days().max(0) as usize + 1;
+    let mut days: Vec<Option<Vec<i64>>> = vec![None; len];
+    for (d, id, n) in &per_day {
+      let Some(x) = days.get_mut((*d - start).num_days() as usize) else { continue };
+      let row = x.get_or_insert_with(|| vec![0; top.len() + 1]);
+      let idx = top.iter().position(|x| x == id).unwrap_or(top.len());
+      row[idx] += n;
+    }
+
+    let rest = releases.len() - top.len();
+    let mut labels: Vec<String> = top
+      .iter()
+      .filter_map(|id| releases.iter().find(|x| x.release_id == *id).map(|x| x.tag.clone()))
+      .collect();
+    labels.push(match rest {
+      1 => "1 other release".to_string(),
+      x => format!("{x} other releases"),
+    });
+
+    DownloadsSeries { start: start.to_string(), days, labels }
+  });
+
+  Some(Downloads { total, period, change, releases, series })
+}
+
+fn downloads_tile(dl: &Downloads, p: Period) -> Markup {
+  match dl.period {
+    Some(x) => {
+      let sub = html!((num(dl.total)) " all time");
+      tile("Downloads", x, sub, dl.change.as_ref().map(|x| x.tile(p)))
+    }
+    None => tile("Downloads", dl.total, html!(span class="muted" { "all time" }), None),
+  }
+}
+
+fn downloads_card(series: &DownloadsSeries) -> Markup {
+  html!(
+    section class="card" {
+      div class="card-t" {
+        h2 { "Downloads" }
+        div class="legend" {
+          @for (idx, x) in series.labels.iter().enumerate() {
+            span { i class=(format!("sw s{}", idx + 1)) {} (x) }
+          }
+          span class="gap-key" hidden { i class="sw hatch" {} "No data" }
+        }
+      }
+      div class="chart" { canvas id="chart_downloads" role="img" aria-label="Downloads by release" {} }
+    }
+  )
+}
+
+fn releases_table(dl: &Downloads, p: Period, today: NaiveDate, period_tip: &str) -> Markup {
+  let has_period = p.days().is_some();
+  let val = |x: &ReleaseDownloads| if has_period { x.period } else { x.total };
+  let max = dl.releases.iter().map(val).max().unwrap_or(1).max(1);
+  let published = |x: &ReleaseDownloads| {
+    let day = x.published_at.as_deref()?.get(..10)?.parse::<NaiveDate>().ok()?;
+    let fmt = if day.year() == today.year() { "%b %-d" } else { "%b %-d, %Y" };
+    Some(day.format(fmt).to_string())
+  };
+
+  html!(
+    div id="releases_table" class="card flush" {
+      table class="data" {
+        colgroup {
+          col; col class="n2 opt2";
+          @if has_period { col class="n2"; }
+          col class="n2";
+        }
+        thead {
+          tr {
+            th scope="col" { "Releases" }
+            th scope="col" class="opt2" { "Published" }
+            @if has_period { th scope="col" { "Downloads " (period_mark(period_tip)) } }
+            th scope="col" { "All time" }
+          }
+        }
+        tbody {
+          @for (idx, x) in dl.releases.iter().enumerate() {
+            tr hidden[idx >= ROWS_SHOWN] style=(format!("--w:{:.1}%", val(x) as f64 / max as f64 * 100.0)) {
+              td class="name mono" title=(x.tag) { (x.tag) }
+              td class="opt2" { (published(x).unwrap_or_default()) }
+              @if has_period { td { (num(x.period)) } }
+              td { (num(x.total)) }
+            }
+          }
+        }
+      }
+
+      (show_all(dl.releases.len()))
     }
   )
 }
@@ -630,24 +907,48 @@ pub async fn repo_page(
   let has_clones = daily.days.iter().flatten().any(|x| x[0] > 0);
   let first = daily.start.as_deref().and_then(|x| x.parse::<NaiveDate>().ok());
   let star_days: Vec<NaiveDate> = stars.iter().filter_map(|x| x.0.parse().ok()).collect();
-  let gaps = star_gaps(first, &outages(&daily), &star_days, today);
+  // a synced star history has every day, so only traffic-less days after it are unknown
+  let gaps = match rp.stars_synced {
+    true => star_gaps(None, &[], &star_days, today),
+    false => star_gaps(first, &outages(&daily), &star_days, today),
+  };
 
   let gain = stars_gain(&rp, p, today, &gaps, star_days.last().copied());
   let views = Change::new(rp.cmp_views, rp.cmp_days, rp.prev_views, rp.prev_days, p, today);
   let clones = Change::new(rp.cmp_clones, rp.cmp_days, rp.prev_clones, rp.prev_days, p, today);
 
-  // Downloads will be one more card like these
-  let mut charts = vec![];
+  let since = p.days().map(|x| x as i32 - 1).unwrap_or(0);
+  let releases = db.get_release_downloads(&repo, since).await?;
+  let dl_daily = db.get_release_downloads_daily(&repo).await?;
+  let dl = downloads(releases, &dl_daily, p, today);
+  let meta = db.get_repo_meta(&repo).await?;
+
+  let mut tiles = vec![];
   if has_views {
-    charts.push(traffic_card("Views", "chart_views", rp.views, rp.views_uniques, views, p));
+    tiles.push(traffic_tile("Views", rp.views, rp.views_uniques, views, p));
   }
 
   if has_clones {
-    charts.push(traffic_card("Clones", "chart_clones", rp.clones, rp.clones_uniques, clones, p));
+    tiles.push(traffic_tile("Clones", rp.clones, rp.clones_uniques, clones, p));
   }
 
-  let window_label = gain.as_ref().filter(|_| !stars.is_empty()).map(|x| x.label());
+  if !stars.is_empty() || rp.stars > 0 {
+    tiles.push(stars_tile(rp.stars, gain.clone()));
+  }
 
+  if let Some(x) = &dl {
+    tiles.push(downloads_tile(x, p));
+  }
+
+  let charts: Vec<Markup> =
+    [(has_views, "Views", "chart_views"), (has_clones, "Clones", "chart_clones")]
+      .into_iter()
+      .filter(|x| x.0)
+      .map(|x| traffic_card(x.1, x.2))
+      .collect();
+
+  let window_label = gain.as_ref().filter(|_| !stars.is_empty()).map(|x| x.label());
+  let series = dl.as_ref().and_then(|x| x.series.as_ref());
   let data = ChartData {
     today: today.to_string(),
     period: p.0,
@@ -655,6 +956,7 @@ pub async fn repo_page(
     stars: &stars,
     gaps: &gaps,
     window_label,
+    downloads: series,
   };
 
   let period_url =
@@ -662,30 +964,31 @@ pub async fn repo_page(
 
   let html = html!(
     div class="stack" {
-      div class="repo-head" {
-        h1 {
-          a href=(format!("https://github.com/{}", repo)) title="Open on GitHub" {
-            (totals.name) span class="ext" aria-hidden="true" { "↗" }
-          }
-        }
-        @if let Some(desc) = totals.description.as_deref().filter(|x| !x.is_empty()) {
-          p { (desc) }
-        }
-      }
-
       div class="periodbar" {
         span class="range" { (period_range(p, today, first)) }
         (period_nav(p, false, period_url))
       }
 
-      @if !stars.is_empty() {
-        (stars_card(rp.stars, gain.clone(), !gaps.is_empty()))
+      div class=[(!stars.is_empty()).then_some("row1")] {
+        (info_card(&totals, &meta, today))
+        @if !stars.is_empty() { (stars_chart_card(!gaps.is_empty())) }
+      }
+
+      @if !tiles.is_empty() {
+        div class=(format!("kpis c{}", tiles.len())) {
+          @for x in &tiles { (x) }
+        }
       }
 
       @if !charts.is_empty() {
         div class=[(charts.len() > 1).then_some("grid2")] {
           @for x in &charts { (x) }
         }
+      }
+
+      @if let Some(x) = series { (downloads_card(x)) }
+      @if let Some(x) = &dl {
+        (releases_table(x, p, today, &format!("{}: {}", p.title(), period_range(p, today, first))))
       }
 
       (repo_popular_tables(db, &repo, &qs).await?)
@@ -703,19 +1006,25 @@ struct IndexRow<'a> {
   repo: &'a RepoTotals,
   per: RepoPeriod,
   today: NaiveDate,
+  dl: Option<IndexDownloads>,
+}
+
+struct IndexDownloads {
+  value: i64,
+  change: Result<Change, &'static str>,
 }
 
 type IndexCell = fn(&IndexRow, Period) -> Markup;
 
 struct IndexCol {
   name: &'static str,
-  sort: RepoSort,
+  sort: Option<RepoSort>,
   per: bool,
   class: &'static str,
   cell: IndexCell,
 }
 
-fn index_cols() -> Vec<IndexCol> {
+fn index_cols(downloads: bool) -> Vec<IndexCol> {
   let name: IndexCell = |x, _| {
     let (owner, name) = x.repo.name.split_once('/').unwrap_or(("", &x.repo.name));
     html!(a href=(format!("/{}", x.repo.name)) title=(x.repo.name) {
@@ -737,6 +1046,14 @@ fn index_cols() -> Vec<IndexCol> {
     two_lines(per.clones, p, change.map(|x| x.short()))
   };
 
+  let dl: IndexCell = |x, p| match &x.dl {
+    Some(dl) => two_lines(dl.value, p, dl.change.as_ref().map(|x| x.short()).map_err(|x| *x)),
+    None => html!(
+      span class="v muted" { "—" }
+      @if p.days().is_some() { small class="muted" title="No release assets" { "—" } }
+    ),
+  };
+
   let stars: IndexCell = |x, p| {
     let gain = match x.per.stars_gain() {
       None => Err("No star history before this period"),
@@ -747,39 +1064,54 @@ fn index_cols() -> Vec<IndexCol> {
     two_lines(x.per.stars, p, gain)
   };
 
-  vec![
-    IndexCol { name: "Name", sort: RepoSort::Name, per: false, class: "c-name", cell: name },
-    IndexCol { name: "Views", sort: RepoSort::Views, per: true, class: "c-views", cell: views },
+  let cols = vec![
+    IndexCol { name: "Name", sort: Some(RepoSort::Name), per: false, class: "c-name", cell: name },
+    IndexCol {
+      name: "Views",
+      sort: Some(RepoSort::Views),
+      per: true,
+      class: "c-views",
+      cell: views,
+    },
     IndexCol {
       name: "Clones",
-      sort: RepoSort::Clones,
+      sort: Some(RepoSort::Clones),
       per: true,
       class: "c-clones opt2",
       cell: clones,
     },
-    IndexCol { name: "Stars", sort: RepoSort::Stars, per: false, class: "c-stars", cell: stars },
+    IndexCol { name: "Downloads", sort: None, per: true, class: "c-dl opt2", cell: dl },
+    IndexCol {
+      name: "Stars",
+      sort: Some(RepoSort::Stars),
+      per: false,
+      class: "c-stars",
+      cell: stars,
+    },
     IndexCol {
       name: "Forks",
-      sort: RepoSort::Forks,
+      sort: Some(RepoSort::Forks),
       per: false,
       class: "c-forks opt",
       cell: |x, _| html!((num(x.repo.forks as i64))),
     },
     IndexCol {
       name: "Issues",
-      sort: RepoSort::Issues,
+      sort: Some(RepoSort::Issues),
       per: false,
       class: "c-issues opt",
       cell: |x, _| html!((num(x.repo.issues as i64))),
     },
     IndexCol {
       name: "PRs",
-      sort: RepoSort::Prs,
+      sort: Some(RepoSort::Prs),
       per: false,
       class: "c-prs opt",
       cell: |x, _| html!((num(x.repo.prs as i64))),
     },
-  ]
+  ];
+
+  cols.into_iter().filter(|x| downloads || !x.class.starts_with("c-dl")).collect()
 }
 
 fn two_lines(value: i64, p: Period, second: Result<Markup, &str>) -> Markup {
@@ -792,6 +1124,51 @@ fn two_lines(value: i64, p: Period, second: Result<Markup, &str>) -> Markup {
       }
     }
   )
+}
+
+/// Release downloads of the visible repos that have release assets
+async fn index_downloads(
+  db: &DbClient,
+  repos: &[RepoTotals],
+  p: Period,
+  today: NaiveDate,
+) -> Res<HashMap<i64, IndexDownloads>> {
+  let ids: Vec<i64> = repos.iter().map(|x| x.id).collect();
+  let totals: Vec<(i64, i64)> = db
+    .get_repos_downloads(0)
+    .await?
+    .into_iter()
+    .filter(|x| ids.contains(&x.id))
+    .map(|x| (x.id, x.total))
+    .collect();
+
+  let Some(w) = p.windows(today) else {
+    let none = || Err("No previous period for all time");
+    return Ok(
+      totals.into_iter().map(|(id, x)| (id, IndexDownloads { value: x, change: none() })).collect(),
+    );
+  };
+
+  let daily = db.get_repos_downloads_daily(&w.prev_start.to_string()).await?;
+  let out = totals
+    .into_iter()
+    .map(|(id, _)| {
+      let days: Vec<(NaiveDate, i64)> =
+        daily.iter().filter(|x| x.0 == id).filter_map(|x| Some((x.1.parse().ok()?, x.2))).collect();
+      let sum = |from: NaiveDate, to: NaiveDate| {
+        let xs: Vec<_> = days.iter().filter(|x| x.0 >= from && x.0 < to).collect();
+        (xs.iter().map(|x| x.1).sum::<i64>(), xs.len() as i64)
+      };
+
+      let (cmp, cmp_days) = sum(w.cmp_start, w.cmp_end);
+      let (prev, prev_days) = sum(w.prev_start, w.cmp_start);
+      let value = sum(w.start, today + Days::new(1)).0;
+      let change = Change::compare(cmp, cmp_days, prev, prev_days, p, today);
+      (id, IndexDownloads { value, change })
+    })
+    .collect();
+
+  Ok(out)
 }
 
 fn sort_index(rows: &mut [IndexRow], sort: &RepoSort, dir: &Direction) {
@@ -843,13 +1220,17 @@ pub async fn index(
 
   let mut pers: HashMap<String, RepoPeriod> =
     state.db.get_periods(None, p, today).await?.into_iter().map(|x| (x.name.clone(), x)).collect();
+  let mut dls = index_downloads(&state.db, &repos, p, today).await?;
   let mut rows: Vec<IndexRow> = repos
     .iter()
-    .map(|x| IndexRow { repo: x, per: pers.remove(&x.name).unwrap_or_default(), today })
+    .map(|x| {
+      let per = pers.remove(&x.name).unwrap_or_default();
+      IndexRow { repo: x, per, today, dl: dls.remove(&x.id) }
+    })
     .collect();
   sort_index(&mut rows, &qs.sort, &qs.direction);
 
-  let cols = index_cols();
+  let cols = index_cols(rows.iter().any(|x| x.dl.is_some()));
   let first = state.db.get_first_traffic().await?;
   let period_tip = format!("{}: {}", p.title(), period_range(p, today, first));
   let cur_q = qs.q.clone().unwrap_or_default();
@@ -858,6 +1239,21 @@ pub async fn index(
   let sort_url = |col: &RepoSort| {
     let dir = next_dir(qs.sort == *col, &qs.direction, *col == RepoSort::Name);
     index_url(&qs, col, dir, p)
+  };
+
+  let head = |col: &IndexCol| {
+    let name = html!((col.name) @if col.per { " " (period_mark(&period_tip)) });
+    match &col.sort {
+      Some(sort) => html!(
+        button type="button"
+          hx-get=(sort_url(sort))
+          hx-target="#repos_table"
+          hx-swap="outerHTML"
+          hx-replace-url="true"
+        { (name) }
+      ),
+      None => name,
+    }
   };
 
   let period_url = |x: Period| index_url(&qs, &qs.sort, &qs.direction.to_string(), x);
@@ -870,16 +1266,8 @@ pub async fn index(
       thead {
         tr {
           @for col in &cols {
-            th scope="col" class=(col.class) aria-sort=[aria_sort(qs.sort == col.sort, &qs.direction)] {
-              button type="button"
-                hx-get=(sort_url(&col.sort))
-                hx-target="#repos_table"
-                hx-swap="outerHTML"
-                hx-replace-url="true"
-              {
-                (col.name)
-                @if col.per { " " (period_mark(&period_tip)) }
-              }
+            th scope="col" class=(col.class) aria-sort=[aria_sort(col.sort.as_ref() == Some(&qs.sort), &qs.direction)] {
+              (head(col))
             }
           }
         }
@@ -990,6 +1378,7 @@ mod tests {
       fork: false,
       archived: false,
       has_pull_requests: None,
+      ..Default::default()
     }
   }
 
@@ -1191,10 +1580,10 @@ mod tests {
     let state = Arc::new(AppState::for_test(db, GhsFilter::new("")));
 
     let page = get(&state, "/o/r?period=7d", None).await.unwrap().into_string();
-    assert!(page.contains("<h2>Stars</h2>"));
-    assert!(page.contains("<span class=\"big\">0</span>"), "current stars from the latest row");
+    assert!(page.contains("<h2>Stars</h2><div class=\"value\">0</div>"), "stars of the latest row");
     assert!(page.contains("−20 in 7d"));
     assert!(!page.contains("<h2>Views</h2>") && !page.contains("<h2>Clones</h2>"));
+    assert!(!page.contains("<h2>Downloads</h2>") && !page.contains("id=\"releases_table\""));
     assert!(page.contains("id=\"refs_table\"") && !page.contains("id=\"path_table\""));
 
     let frag = get(&state, "/o/r?sort=name", Some("refs_table")).await.unwrap().into_string();
@@ -1225,5 +1614,73 @@ mod tests {
       let res = axum::response::IntoResponse::into_response(res);
       assert_eq!(res.status(), axum::http::StatusCode::NOT_FOUND, "{target:?}");
     }
+  }
+
+  #[tokio::test]
+  async fn traffic_flag_keeps_star_rows_out_of_traffic() {
+    // traffic until 20 days ago, then an outage the star history fills with traffic-less rows
+    let db = DbClient::new(&db_path("flag")).await.unwrap();
+    db.insert_repo(&test_repo(5)).await.unwrap();
+    for x in (0..60).filter(|x| !(10..=20).contains(x)) {
+      db.insert_stats(&test_repo(5), &format!("{}T00:00:00Z", ago(x)), &[]).await.unwrap();
+    }
+
+    db.insert_views(&test_repo(5), &views(&[(ago(59), 10)])).await.unwrap();
+    let history: Vec<_> =
+      [30].into_iter().chain(10..=20).map(|x| (format!("{}T00:00:00Z", ago(x)), 5, 0)).collect();
+    db.insert_stars(1, &history).await.unwrap();
+
+    let dat = db.get_daily("o/r", today()).await.unwrap();
+    assert_eq!(outages(&dat), vec![(ago(21), ago(9))], "star rows aren't traffic");
+    assert!(dat.days[59 - 30].is_some(), "a star row doesn't unmark a traffic day");
+
+    let rp = db.get_periods(Some("o/r"), Period(30), today()).await.unwrap().remove(0);
+    assert_eq!(rp.cmp_days, 30 - 11);
+  }
+
+  #[tokio::test]
+  async fn downloads_render_only_with_release_assets() {
+    use crate::gh_client::{Release, ReleaseAsset};
+
+    let path = db_path("downloads");
+    let db = DbClient::new(&path).await.unwrap();
+    let other = |stars| Repo { id: 2, full_name: "o/b".into(), ..test_repo(stars) };
+    for repo in [test_repo(5), other(5)] {
+      db.insert_repo(&repo).await.unwrap();
+      db.insert_stats(&repo, &format!("{}T00:00:00Z", ago(0)), &[]).await.unwrap();
+    }
+
+    let release = |count| Release {
+      id: 7,
+      tag_name: "v1.0.0".into(),
+      draft: false,
+      published_at: Some(format!("{}T10:00:00Z", ago(40))),
+      assets: vec![ReleaseAsset {
+        id: 70,
+        name: "app.tar.gz".into(),
+        download_count: count,
+        created_at: None,
+      }],
+    };
+    for (x, count) in [(3, 100), (2, 120), (1, 150)] {
+      db.insert_release_assets(&test_repo(5), &format!("{}T00:00:00Z", ago(x)), &[release(count)])
+        .await
+        .unwrap();
+    }
+
+    let state = Arc::new(AppState::for_test(db, GhsFilter::new("")));
+    let page = get(&state, "/o/r?period=7d", None).await.unwrap().into_string();
+    assert!(page.contains("<h2>Downloads</h2><div class=\"value\">50</div>"));
+    assert!(page.contains("id=\"chart_downloads\"") && page.contains("id=\"releases_table\""));
+
+    let frag = get(&state, "/?period=7d", Some("repos_table")).await.unwrap().into_string();
+    assert!(frag.contains("<span class=\"v\">50</span>"));
+    assert!(frag.contains("title=\"No release assets\""), "o/b has none");
+
+    // the column follows the visible repos only
+    let db = DbClient::new(&path).await.unwrap();
+    let state = Arc::new(AppState::for_test(db, GhsFilter::new("o/b")));
+    let frag = get(&state, "/?period=7d", Some("repos_table")).await.unwrap().into_string();
+    assert!(!frag.contains("Downloads"));
   }
 }

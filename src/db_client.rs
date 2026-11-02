@@ -136,7 +136,33 @@ fn migrate_v4(db: &Connection) -> Res {
   Ok(())
 }
 
-const MIGRATIONS: &[fn(&Connection) -> Res] = &[migrate_v1, migrate_v2, migrate_v3, migrate_v4];
+fn migrate_v5(db: &Connection) -> Res {
+  let queries = vec![
+    "ALTER TABLE repos ADD COLUMN language TEXT DEFAULT NULL;",
+    "ALTER TABLE repos ADD COLUMN license TEXT DEFAULT NULL;",
+    "ALTER TABLE repos ADD COLUMN topics TEXT DEFAULT NULL;",
+    "ALTER TABLE repos ADD COLUMN created_at TEXT DEFAULT NULL;",
+    "ALTER TABLE repos ADD COLUMN pushed_at TEXT DEFAULT NULL;",
+    "ALTER TABLE repos ADD COLUMN homepage TEXT DEFAULT NULL;",
+    // star history rows are written with FALSE: those days have no traffic data
+    "ALTER TABLE repo_stats ADD COLUMN traffic BOOLEAN NOT NULL DEFAULT TRUE;",
+    "UPDATE repo_stats SET traffic = FALSE WHERE clones_count = 0 AND views_count = 0 AND date < (
+      SELECT MIN(x.date) FROM repo_stats x
+      WHERE x.repo_id = repo_stats.repo_id AND (x.clones_count > 0 OR x.views_count > 0)
+    );",
+    // re-run the star history once so gaps from past outages fill
+    "UPDATE repos SET stars_synced = FALSE;",
+  ];
+
+  for qs in queries {
+    db.execute(qs, [])?;
+  }
+
+  Ok(())
+}
+
+const MIGRATIONS: &[fn(&Connection) -> Res] =
+  &[migrate_v1, migrate_v2, migrate_v3, migrate_v4, migrate_v5];
 
 fn migrate(db: &Connection) -> Res {
   let version: i32 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -237,6 +263,16 @@ pub struct RepoDaily {
   pub start: Option<String>,
   /// [clones_count, clones_uniques, views_count, views_uniques]
   pub days: Vec<Option<[i64; 4]>>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RepoMeta {
+  pub language: Option<String>,
+  pub license: Option<String>,
+  pub topics: Vec<String>,
+  pub created_at: Option<String>,
+  pub pushed_at: Option<String>,
+  pub homepage: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -522,6 +558,18 @@ fn repo_period_from_row(row: &Row<'_>) -> rusqlite::Result<RepoPeriod> {
   })
 }
 
+fn repo_meta_from_row(row: &Row<'_>) -> rusqlite::Result<RepoMeta> {
+  let topics: Option<String> = row.get("topics")?;
+  Ok(RepoMeta {
+    language: row.get("language")?,
+    license: row.get("license")?,
+    topics: topics.and_then(|x| serde_json::from_str(&x).ok()).unwrap_or_default(),
+    created_at: row.get("created_at")?,
+    pushed_at: row.get("pushed_at")?,
+    homepage: row.get("homepage")?,
+  })
+}
+
 fn repo_item_from_row(row: &Row<'_>) -> rusqlite::Result<RepoItem> {
   Ok(RepoItem {
     id: row.get("id")?,
@@ -767,6 +815,20 @@ impl DbClient {
     Ok(items)
   }
 
+  pub async fn get_repo_meta(&self, repo: &str) -> Res<RepoMeta> {
+    let qs = "SELECT * FROM repos WHERE hidden = FALSE AND name = $1;";
+    let db = self.db.lock().unwrap();
+    let item = db.query_row(qs, params![repo], repo_meta_from_row).optional()?;
+    Ok(item.unwrap_or_default())
+  }
+
+  pub async fn get_last_stats_date(&self) -> Res<Option<NaiveDate>> {
+    let qs = "SELECT MAX(substr(date, 1, 10)) FROM repo_stats WHERE traffic;";
+    let db = self.db.lock().unwrap();
+    let day: Option<String> = db.query_row(qs, [], |row| row.get(0))?;
+    Ok(day.and_then(|x| x.parse().ok()))
+  }
+
   pub async fn get_periods(
     &self,
     repo: Option<&str>,
@@ -783,7 +845,7 @@ impl DbClient {
     WITH ft AS (
       SELECT repo_id, first, MIN(date(first, '+' || ?6 || ' day'), date(last, '+1 day')) AS full
       FROM (
-        SELECT repo_id, MAX(substr(date, 1, 10)) AS last,
+        SELECT repo_id, MAX(IIF(traffic, substr(date, 1, 10), NULL)) AS last,
           MIN(IIF(clones_count > 0 OR views_count > 0, substr(date, 1, 10), NULL)) AS first
         FROM repo_stats
         WHERE ?5 IS NULL OR repo_id IN (SELECT id FROM repos WHERE name = ?5)
@@ -800,10 +862,10 @@ impl DbClient {
       SUM(IIF(rs.date >= ?2 AND rs.date < ?3, rs.clones_count, 0)) AS cmp_clones,
       SUM(IIF(rs.date >= ?4 AND rs.date < ?2, rs.views_count, 0)) AS prev_views,
       SUM(IIF(rs.date >= ?4 AND rs.date < ?2, rs.clones_count, 0)) AS prev_clones,
-      SUM(IIF(rs.date >= ?2 AND rs.date < ?3 AND rs.date >= ft.full, 1, 0)) + CAST(COALESCE(MAX(0,
+      SUM(IIF(rs.date >= ?2 AND rs.date < ?3 AND rs.date >= ft.full AND rs.traffic, 1, 0)) + CAST(COALESCE(MAX(0,
         MIN(julianday(?3), julianday(ft.full)) - MAX(julianday(?2), julianday(ft.first))
       ), 0) AS INTEGER) AS cmp_days,
-      SUM(IIF(rs.date >= ?4 AND rs.date < ?2 AND rs.date >= ft.full, 1, 0)) + CAST(COALESCE(MAX(0,
+      SUM(IIF(rs.date >= ?4 AND rs.date < ?2 AND rs.date >= ft.full AND rs.traffic, 1, 0)) + CAST(COALESCE(MAX(0,
         MIN(julianday(?2), julianday(ft.full)) - MAX(julianday(?4), julianday(ft.first))
       ), 0) AS INTEGER) AS prev_days,
       COALESCE((
@@ -838,7 +900,7 @@ impl DbClient {
       rs.clones_count, rs.clones_uniques, rs.views_count, rs.views_uniques
     FROM repo_stats rs
     INNER JOIN repos r ON r.id = rs.repo_id
-    WHERE r.hidden = FALSE AND r.name = $1 AND rs.date >= (
+    WHERE r.hidden = FALSE AND r.name = $1 AND rs.traffic AND rs.date >= (
       SELECT MIN(date) FROM repo_stats
       WHERE repo_id = r.id AND (clones_count > 0 OR views_count > 0)
     )
@@ -935,6 +997,47 @@ impl DbClient {
     Ok(items)
   }
 
+  /// (day, release_id, downloads) for one repo
+  pub async fn get_release_downloads_daily(&self, repo: &str) -> Res<Vec<(String, i64, i64)>> {
+    #[rustfmt::skip]
+    let qs = format!("
+    {cte}
+    SELECT substr(date, 1, 10) AS day, release_id, SUM(delta) AS downloads FROM deltas
+    WHERE delta IS NOT NULL
+    GROUP BY day, release_id
+    ORDER BY day ASC;
+    ", cte = downloads_cte("r.name = :repo"));
+
+    let db = self.db.lock().unwrap();
+    let mut stmt = db.prepare(&qs)?;
+    let items = stmt
+      .query_map(named_params! { ":repo": repo, ":since": "" }, |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+      })?
+      .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(items)
+  }
+
+  /// (repo_id, day, downloads) for all repos since `since`
+  pub async fn get_repos_downloads_daily(&self, since: &str) -> Res<Vec<(i64, String, i64)>> {
+    #[rustfmt::skip]
+    let qs = format!("
+    {cte}
+    SELECT repo_id, substr(date, 1, 10) AS day, SUM(delta) AS downloads FROM deltas
+    WHERE delta IS NOT NULL
+    GROUP BY repo_id, day;
+    ", cte = downloads_cte("1=1"));
+
+    let db = self.db.lock().unwrap();
+    let mut stmt = db.prepare(&qs)?;
+    let items = stmt
+      .query_map(named_params! { ":since": since }, |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+      })?
+      .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(items)
+  }
+
   pub async fn get_release_downloads(&self, repo: &str, period: i32) -> Res<Vec<ReleaseDownloads>> {
     let qs = downloads_totals_query("r.name = :repo", "release_id", "published_at DESC");
     let db = self.db.lock().unwrap();
@@ -999,20 +1102,45 @@ impl DbClient {
 
   pub async fn insert_repo(&self, repo: &Repo) -> Res {
     let qs = "
-    INSERT INTO repos (id, name, description, archived, fork)
-    VALUES ($1, $2, $3, $4, $5)
+    INSERT INTO repos (
+      id, name, description, archived, fork,
+      language, license, topics, created_at, pushed_at, homepage
+    )
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       description = excluded.description,
       archived = excluded.archived,
       fork = excluded.fork,
+      language = excluded.language,
+      license = excluded.license,
+      topics = excluded.topics,
+      created_at = excluded.created_at,
+      pushed_at = excluded.pushed_at,
+      homepage = excluded.homepage,
       hidden = FALSE; -- reset hidden flag if repo was hidden and appeared again
     ";
 
+    let license =
+      repo.license.as_ref().and_then(|x| x.spdx_id.clone()).filter(|x| x != "NOASSERTION");
+    let topics = serde_json::to_string(&repo.topics)?;
+    let homepage = repo.homepage.as_ref().filter(|x| !x.is_empty());
     let db = self.db.lock().unwrap();
     db.execute(
       qs,
-      params![repo.id as i64, &repo.full_name, &repo.description, repo.archived, repo.fork],
+      params![
+        repo.id as i64,
+        &repo.full_name,
+        &repo.description,
+        repo.archived,
+        repo.fork,
+        &repo.language,
+        license,
+        topics,
+        &repo.created_at,
+        &repo.pushed_at,
+        homepage,
+      ],
     )?;
 
     Ok(())
@@ -1027,7 +1155,8 @@ impl DbClient {
       forks = MAX(t.forks, excluded.forks),
       watchers = MAX(t.watchers, excluded.watchers),
       issues = MAX(t.issues, excluded.issues),
-      prs = MAX(t.prs, excluded.prs);
+      prs = MAX(t.prs, excluded.prs),
+      traffic = TRUE;
     ";
 
     let db = self.db.lock().unwrap();
@@ -1048,17 +1177,23 @@ impl DbClient {
   }
 
   pub async fn insert_stars(&self, repo_id: i64, stars: &[(String, u32, u32)]) -> Res {
+    // the new history replaces the old one: counts drop when people unstar, mixing makes dips
+    let clear = "DELETE FROM repo_stats WHERE repo_id = $1 AND traffic = FALSE;";
     let qs = "
-    INSERT INTO repo_stats AS t (repo_id, date, stars)
-    VALUES ((SELECT id FROM repos WHERE id = $1), $2, $3)
+    INSERT INTO repo_stats AS t (repo_id, date, stars, traffic)
+    VALUES ((SELECT id FROM repos WHERE id = $1), $2, $3, FALSE)
     ON CONFLICT(repo_id, date) DO UPDATE SET
       stars = MAX(t.stars, excluded.stars);
     ";
 
-    let db = self.db.lock().unwrap();
+    let mut db = self.db.lock().unwrap();
+    let tx = db.transaction()?;
+    tx.execute(clear, params![repo_id])?;
     for (date, acc_count, _) in stars {
-      db.execute(qs, params![repo_id, date, *acc_count as i32])?;
+      tx.execute(qs, params![repo_id, date, *acc_count as i32])?;
     }
+
+    tx.commit()?;
 
     Ok(())
   }
@@ -1069,7 +1204,8 @@ impl DbClient {
     VALUES ($1, $2, $3, $4)
     ON CONFLICT(repo_id, date) DO UPDATE SET
       clones_count = MAX(t.clones_count, excluded.clones_count),
-      clones_uniques = MAX(t.clones_uniques, excluded.clones_uniques);
+      clones_uniques = MAX(t.clones_uniques, excluded.clones_uniques),
+      traffic = TRUE;
     ";
 
     let db = self.db.lock().unwrap();
@@ -1089,7 +1225,8 @@ impl DbClient {
     VALUES ($1, $2, $3, $4)
     ON CONFLICT(repo_id, date) DO UPDATE SET
       views_count = MAX(t.views_count, excluded.views_count),
-      views_uniques = MAX(t.views_uniques, excluded.views_uniques);
+      views_uniques = MAX(t.views_uniques, excluded.views_uniques),
+      traffic = TRUE;
     ";
 
     let db = self.db.lock().unwrap();
@@ -1236,6 +1373,13 @@ impl DbClient {
     Ok(())
   }
 
+  pub async fn mark_repos_stars_unsynced(&self) -> Res {
+    let qs = "UPDATE repos SET stars_synced = FALSE;";
+    let db = self.db.lock().unwrap();
+    db.execute(qs, [])?;
+    Ok(())
+  }
+
   pub async fn mark_repo_stars_synced(&self, repo_id: i64) -> Res {
     let qs = "UPDATE repos SET stars_synced = TRUE WHERE id = $1;";
     let db = self.db.lock().unwrap();
@@ -1278,6 +1422,7 @@ mod tests {
       fork: false,
       archived: false,
       has_pull_requests: None,
+      ..Default::default()
     }
   }
 
@@ -1296,7 +1441,7 @@ mod tests {
 
     let conn = db.db.lock().unwrap();
     let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
 
     let mut stmt = conn.prepare(
       "
@@ -1574,7 +1719,8 @@ mod tests {
     db.insert_repo(&repo).await?;
 
     // traffic on Jan 10, 11, 13 and 15
-    db.insert_stars(1, &[("2024-01-01T00:00:00Z".to_string(), 3, 3)]).await?;
+    let history = [("2024-01-01T00:00:00Z", 3, 3), ("2024-01-14T00:00:00Z", 8, 5)];
+    db.insert_stars(1, &history.map(|(d, a, n)| (d.to_string(), a, n))).await?;
     let views = [(10, 20, 10), (11, 30, 12), (13, 40, 50), (15, 5, 1)];
     db.insert_views(
       &repo,
@@ -1588,7 +1734,6 @@ mod tests {
       },
     )
     .await?;
-    db.insert_stars(1, &[("2024-01-14T00:00:00Z".to_string(), 8, 5)]).await?;
     let synced = Repo { stargazers_count: 8, ..sample_repo(1, "owner/repo") };
     db.insert_stats(&synced, "2024-01-15T00:00:00Z", &[]).await?;
 
@@ -1889,7 +2034,43 @@ mod tests {
 
     conn.execute("ALTER TABLE repo_stats DROP COLUMN prs", [])?;
     DbClient::new(&path).await?;
-    assert_eq!(user_version(&conn)?, 4);
+    assert_eq!(user_version(&conn)?, 5);
+
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn v5_keeps_old_rows_as_traffic_and_stores_repo_metadata() -> Res {
+    let path = db_at_version("migration-v5", 4)?;
+    let conn = Connection::open(&path)?;
+    conn.execute("UPDATE repos SET stars_synced = TRUE", [])?;
+    conn
+      .execute("INSERT INTO repo_stats (repo_id, date) VALUES (1, '2026-01-01T00:00:00Z')", [])?;
+
+    let db = DbClient::new(&path).await?;
+    let (synced, traffic): (bool, bool) = conn.query_row(
+      "SELECT stars_synced, traffic FROM repos r JOIN repo_stats rs ON rs.repo_id = r.id",
+      [],
+      |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!((synced, traffic), (false, true), "star history re-runs, old rows count as traffic");
+
+    let repo: Repo = serde_json::from_value(serde_json::json!({
+      "id": 1, "full_name": "owner/repo", "description": null, "stargazers_count": 1,
+      "forks_count": 0, "watchers_count": 0, "open_issues_count": 0, "fork": false, "archived": false,
+      "language": "Rust", "license": { "spdx_id": "MIT" }, "topics": ["cli", "tui"],
+      "created_at": "2024-06-16T08:34:34Z", "pushed_at": "2026-10-31T00:43:58Z", "homepage": ""
+    }))?;
+    db.insert_repo(&repo).await?;
+    let meta = RepoMeta {
+      language: Some("Rust".into()),
+      license: Some("MIT".into()),
+      topics: vec!["cli".into(), "tui".into()],
+      created_at: Some("2024-06-16T08:34:34Z".into()),
+      pushed_at: Some("2026-10-31T00:43:58Z".into()),
+      homepage: None,
+    };
+    assert_eq!(db.get_repo_meta("owner/repo").await?, meta);
 
     Ok(())
   }

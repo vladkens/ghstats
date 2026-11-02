@@ -16,9 +16,9 @@
 
   // MARK: Buckets
 
-  // daily rows: [clones, clones_uniques, views, views_uniques] or null for a day without data
-  const periodRange = (D, period) => {
-    const len = D.daily.days.length;
+  // a series is { start, days }: one array of values per day, or null for a day without data
+  const periodRange = (series, period) => {
+    const len = series.days.length;
     return { i0: period > 0 ? Math.max(0, len - period) : 0, i1: len - 1 };
   };
 
@@ -38,9 +38,10 @@
     return new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate();
   };
 
-  const buckets = D => {
-    const start = parse(D.daily.start);
-    const { i0, i1 } = periodRange(D, D.period);
+  const buckets = (series, period) => {
+    const start = parse(series.start);
+    const width = series.days.find(x => x)?.length ?? 0;
+    const { i0, i1 } = periodRange(series, period);
     const kind = bucketKind(i1 - i0 + 1);
     const list = [];
     const map = new Map();
@@ -50,17 +51,17 @@
       const key = bucketKey(t, kind);
       let b = map.get(key);
       if (!b) {
-        b = { key, from: t, to: t, days: 0, have: 0, s: [0, 0, 0, 0] };
+        b = { key, from: t, to: t, days: 0, have: 0, s: new Array(width).fill(0) };
         map.set(key, b);
         list.push(b);
       }
 
       b.to = t;
       b.days++;
-      const v = D.daily.days[i];
+      const v = series.days[i];
       if (v) {
         b.have++;
-        for (let j = 0; j < 4; j++) b.s[j] += v[j];
+        for (let j = 0; j < width; j++) b.s[j] += v[j];
       }
     }
 
@@ -241,7 +242,7 @@
     const el = document.getElementById(id);
     if (!el) return;
 
-    const { kind, list } = buckets(D);
+    const { kind, list } = buckets(D.daily, D.period);
     const today = parse(D.today);
     const o = baseOpts();
     o.plugins.bands = { category: true, gaps: gapRanges(list) };
@@ -271,6 +272,47 @@
             { ...bar, label: 'Unique', data: data(ui), backgroundColor: css('--traffic'), order: 0 },
             { ...bar, label: 'Total', data: data(ti), backgroundColor: css('--traffic-tint'), order: 1 },
           ],
+        },
+        options: o,
+        plugins: [bandsPlugin, crosshair],
+      }),
+    );
+
+    const key = el.closest('section')?.querySelector('.gap-key');
+    if (key) key.hidden = !list.some(b => b.gap);
+  };
+
+  // stacked by release: the top ones of the period, then the rest together
+  const downloadsChart = (id, D) => {
+    const el = document.getElementById(id);
+    if (!el || !D.downloads) return;
+
+    const { kind, list } = buckets(D.downloads, D.period);
+    const today = parse(D.today);
+    const o = baseOpts();
+    o.scales.x.stacked = true;
+    o.scales.y.stacked = true;
+    o.plugins.bands = { category: true, gaps: gapRanges(list) };
+    o.plugins.tooltip.filter = it => it.raw > 0;
+    o.plugins.tooltip.callbacks = {
+      title: it => bucketTitle(list[it[0].dataIndex], kind, today),
+      label: it => ` ${it.dataset.label}: ${n(it.raw)}`,
+      footer: it => [`Total: ${n(it.reduce((s, x) => s + x.raw, 0))}`, ...bucketNotes(list[it[0].dataIndex], kind, today)],
+    };
+
+    charts.push(
+      new Chart(el, {
+        type: 'bar',
+        data: {
+          labels: list.map(b => bucketLabel(b, kind)),
+          datasets: D.downloads.labels.map((label, i) => ({
+            label,
+            data: list.map(b => (b.gap ? null : b.s[i])),
+            backgroundColor: css(`--s${i + 1}`),
+            maxBarThickness: 24,
+            categoryPercentage: 0.86,
+            barPercentage: 0.92,
+          })),
         },
         options: o,
         plugins: [bandsPlugin, crosshair],
@@ -400,6 +442,7 @@
     }
 
     starsChart('chart_stars', current);
+    downloadsChart('chart_downloads', current);
   };
 
   window.renderRepo = data => {
