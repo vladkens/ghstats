@@ -1,7 +1,8 @@
 use std::sync::Mutex;
 
+use chrono::{Days, NaiveDate};
 use rusqlite::{Connection, OptionalExtension, Row, params};
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_variant::to_variant_name;
 
 use crate::gh_client::{PullRequest, Repo, RepoClones, RepoPopularPath, RepoReferrer, RepoViews};
@@ -161,6 +162,42 @@ pub struct RepoPopularItem {
   pub uniques: i64,
 }
 
+/// Totals for a period ending today, plus the comparison windows from `Period::windows`
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct RepoPeriod {
+  pub name: String,
+  pub views: i64,
+  pub views_uniques: i64,
+  pub clones: i64,
+  pub clones_uniques: i64,
+  pub cmp_views: i64,
+  pub cmp_clones: i64,
+  pub prev_views: i64,
+  pub prev_clones: i64,
+  /// collected days of the compared and previous windows: from the first traffic day, all of the
+  /// backfill, then days with a row
+  pub cmp_days: i64,
+  pub prev_days: i64,
+  /// latest stars and stars before the period, from real (non-zero) rows only
+  pub stars: i64,
+  pub stars_start: i64,
+}
+
+impl RepoPeriod {
+  pub fn stars_gain(&self) -> i64 {
+    self.stars - self.stars_start
+  }
+}
+
+/// Daily traffic from the first day with traffic to `today`; `None` is a day without a row, except
+/// in the first `BACKFILL_DAYS`, where a missing row is a day without traffic.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct RepoDaily {
+  pub start: Option<String>,
+  /// [clones_count, clones_uniques, views_count, views_uniques]
+  pub days: Vec<Option<[i64; 4]>>,
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RepoItem {
   pub id: i64,
@@ -216,14 +253,106 @@ impl std::fmt::Display for RepoSort {
 #[serde(rename_all = "snake_case")]
 pub enum PopularSort {
   Name,
-  Count,
   #[default]
+  Count,
   Uniques,
 }
 
 impl std::fmt::Display for PopularSort {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     write!(f, "{}", to_variant_name(self).unwrap())
+  }
+}
+
+/// Days ending today (inclusive); `-1` is all time.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Period(pub i32);
+
+impl Default for Period {
+  fn default() -> Self {
+    Self(30)
+  }
+}
+
+impl Period {
+  pub const ALL: [Period; 5] = [Period(7), Period(30), Period(90), Period(365), Period(-1)];
+
+  // old links used plain days: 7, 14, 30, 90 and -1
+  pub fn parse(val: &str) -> Self {
+    match val.trim().to_lowercase().as_str() {
+      "7d" | "7" => Self(7),
+      "14d" | "14" => Self(14),
+      "30d" | "30" => Self(30),
+      "90d" | "90" => Self(90),
+      "1y" | "365d" | "365" => Self(365),
+      "all" | "-1" => Self(-1),
+      _ => Self::default(),
+    }
+  }
+
+  pub fn days(&self) -> Option<i64> {
+    (self.0 > 0).then_some(self.0 as i64)
+  }
+
+  pub fn label(&self) -> String {
+    match self.0 {
+      365 => "1y".to_string(),
+      x if x > 0 => format!("{x}d"),
+      _ => "All".to_string(),
+    }
+  }
+
+  pub fn title(&self) -> String {
+    match self.0 {
+      365 => "Last 12 months".to_string(),
+      x if x > 0 => format!("Last {x} days"),
+      _ => "All time".to_string(),
+    }
+  }
+
+  /// Window starts for the period ending today; `None` for all time
+  pub fn windows(&self, today: NaiveDate) -> Option<Windows> {
+    let days = Days::new(self.days()? as u64);
+    let start = today.checked_sub_days(Days::new(self.0 as u64 - 1))?;
+    let cmp_end = today.checked_sub_days(Days::new(CMP_LAG - 1))?;
+    let cmp_start = cmp_end.checked_sub_days(days)?;
+    let prev_start = cmp_start.checked_sub_days(days)?;
+    Some(Windows { start, cmp_start, cmp_end, prev_start })
+  }
+}
+
+/// GitHub's traffic for today and yesterday is still incomplete, so changes compare two equal
+/// windows that end this many days before today.
+pub const CMP_LAG: u64 = 2;
+
+/// On the first sync GitHub returns the last 14 days of traffic, only days that had any, so a
+/// missing row in the first days after the first traffic day means no traffic, not an outage.
+pub const BACKFILL_DAYS: u64 = 15;
+
+/// Shown period `[start, today]`, compared `[cmp_start, cmp_end)` vs `[prev_start, cmp_start)`
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Windows {
+  pub start: NaiveDate,
+  pub cmp_start: NaiveDate,
+  pub cmp_end: NaiveDate,
+  pub prev_start: NaiveDate,
+}
+
+impl std::fmt::Display for Period {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}", self.label().to_lowercase())
+  }
+}
+
+impl Serialize for Period {
+  fn serialize<S: Serializer>(&self, ser: S) -> Result<S::Ok, S::Error> {
+    ser.serialize_str(&self.to_string())
+  }
+}
+
+impl<'de> Deserialize<'de> for Period {
+  fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
+    Ok(Self::parse(&String::deserialize(de)?))
   }
 }
 
@@ -234,6 +363,7 @@ pub struct RepoFilter {
   pub direction: Direction,
   pub q: Option<String>,
   pub owner: Option<String>,
+  pub period: Period,
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
@@ -241,7 +371,7 @@ pub struct RepoFilter {
 pub struct PopularFilter {
   pub sort: PopularSort,
   pub direction: Direction,
-  pub period: i32,
+  pub period: Period,
 }
 
 // MARK: DbClient
@@ -302,6 +432,24 @@ fn repo_popular_item_from_row(row: &Row<'_>) -> rusqlite::Result<RepoPopularItem
     name: row.get("name")?,
     count: row.get("count")?,
     uniques: row.get("uniques")?,
+  })
+}
+
+fn repo_period_from_row(row: &Row<'_>) -> rusqlite::Result<RepoPeriod> {
+  Ok(RepoPeriod {
+    name: row.get("name")?,
+    views: row.get("views")?,
+    views_uniques: row.get("views_uniques")?,
+    clones: row.get("clones")?,
+    clones_uniques: row.get("clones_uniques")?,
+    cmp_views: row.get("cmp_views")?,
+    cmp_clones: row.get("cmp_clones")?,
+    prev_views: row.get("prev_views")?,
+    prev_clones: row.get("prev_clones")?,
+    cmp_days: row.get("cmp_days")?,
+    prev_days: row.get("prev_days")?,
+    stars: row.get("stars")?,
+    stars_start: row.get("stars_start")?,
   })
 }
 
@@ -429,6 +577,129 @@ impl DbClient {
     Ok(items)
   }
 
+  /// Period totals for one repo (`Some(name)`) or all of them, for the period ending `today`
+  pub async fn get_periods(
+    &self,
+    repo: Option<&str>,
+    period: Period,
+    today: NaiveDate,
+  ) -> Res<Vec<RepoPeriod>> {
+    let dates = match period.windows(today) {
+      Some(x) => [x.start, x.cmp_start, x.cmp_end, x.prev_start].map(|x| x.to_string()),
+      None => ["0000".to_string(), "0000".to_string(), "0000".to_string(), "0000".to_string()],
+    };
+
+    // $1 start, $2 cmp_start, $3 cmp_end (exclusive), $4 prev_start; stars from non-zero rows only;
+    // collected days: every day of the backfill [first, full), then days with a row
+    let qs = "
+    WITH ft AS (
+      SELECT repo_id, MIN(substr(date, 1, 10)) AS first,
+        date(MIN(substr(date, 1, 10)), '+15 day') AS full
+      FROM repo_stats
+      WHERE clones_count > 0 OR views_count > 0
+      GROUP BY repo_id
+    )
+    SELECT
+      r.name,
+      SUM(IIF(rs.date >= $1, rs.views_count, 0)) AS views,
+      SUM(IIF(rs.date >= $1, rs.views_uniques, 0)) AS views_uniques,
+      SUM(IIF(rs.date >= $1, rs.clones_count, 0)) AS clones,
+      SUM(IIF(rs.date >= $1, rs.clones_uniques, 0)) AS clones_uniques,
+      SUM(IIF(rs.date >= $2 AND rs.date < $3, rs.views_count, 0)) AS cmp_views,
+      SUM(IIF(rs.date >= $2 AND rs.date < $3, rs.clones_count, 0)) AS cmp_clones,
+      SUM(IIF(rs.date >= $4 AND rs.date < $2, rs.views_count, 0)) AS prev_views,
+      SUM(IIF(rs.date >= $4 AND rs.date < $2, rs.clones_count, 0)) AS prev_clones,
+      SUM(IIF(rs.date >= $2 AND rs.date < $3 AND rs.date >= ft.full, 1, 0)) + CAST(COALESCE(MAX(0,
+        MIN(julianday($3), julianday(ft.full)) - MAX(julianday($2), julianday(ft.first))
+      ), 0) AS INTEGER) AS cmp_days,
+      SUM(IIF(rs.date >= $4 AND rs.date < $2 AND rs.date >= ft.full, 1, 0)) + CAST(COALESCE(MAX(0,
+        MIN(julianday($2), julianday(ft.full)) - MAX(julianday($4), julianday(ft.first))
+      ), 0) AS INTEGER) AS prev_days,
+      COALESCE((
+        SELECT x.stars FROM repo_stats x WHERE x.repo_id = r.id AND x.stars > 0
+        ORDER BY x.date DESC LIMIT 1
+      ), 0) AS stars,
+      COALESCE((
+        SELECT x.stars FROM repo_stats x WHERE x.repo_id = r.id AND x.stars > 0 AND x.date < $1
+        ORDER BY x.date DESC LIMIT 1
+      ), 0) AS stars_start
+    FROM repos r
+    INNER JOIN repo_stats rs ON rs.repo_id = r.id
+    LEFT JOIN ft ON ft.repo_id = r.id
+    WHERE r.hidden = FALSE AND ($5 IS NULL OR r.name = $5)
+    GROUP BY r.id;
+    ";
+
+    let [start, cmp_start, cmp_end, prev_start] = dates;
+    let db = self.db.lock().unwrap();
+    let mut stmt = db.prepare(qs)?;
+    let items = stmt
+      .query_map(params![start, cmp_start, cmp_end, prev_start, repo], repo_period_from_row)?
+      .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(items)
+  }
+
+  /// Rows with a real stars value; unlike `get_stars`, days left at zero (such as GitHub's traffic
+  /// backfill after an outage) are skipped instead of forward-filled.
+  pub async fn get_star_rows(&self, repo: &str) -> Res<Vec<RepoStars>> {
+    let qs = "
+    SELECT date, stars FROM repo_stats rs
+    INNER JOIN repos r ON r.id = rs.repo_id
+    WHERE r.hidden = FALSE AND r.name = $1 AND rs.stars > 0
+    ORDER BY rs.date ASC;
+    ";
+
+    let db = self.db.lock().unwrap();
+    let mut stmt = db.prepare(qs)?;
+    let items =
+      stmt.query_map(params![repo], repo_stars_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(items)
+  }
+
+  pub async fn get_daily(&self, repo: &str, today: NaiveDate) -> Res<RepoDaily> {
+    let qs = "
+    SELECT substr(rs.date, 1, 10) AS day,
+      rs.clones_count, rs.clones_uniques, rs.views_count, rs.views_uniques
+    FROM repo_stats rs
+    INNER JOIN repos r ON r.id = rs.repo_id
+    WHERE r.hidden = FALSE AND r.name = $1 AND rs.date >= (
+      SELECT MIN(date) FROM repo_stats
+      WHERE repo_id = r.id AND (clones_count > 0 OR views_count > 0)
+    )
+    ORDER BY rs.date ASC;
+    ";
+
+    let rows = {
+      let db = self.db.lock().unwrap();
+      let mut stmt = db.prepare(qs)?;
+      stmt
+        .query_map(params![repo], |row| {
+          let day: String = row.get(0)?;
+          Ok((day, [row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?]))
+        })?
+        .collect::<rusqlite::Result<Vec<(String, [i64; 4])>>>()?
+    };
+
+    let Some(start) = rows.first().and_then(|x| x.0.parse::<NaiveDate>().ok()) else {
+      return Ok(RepoDaily::default());
+    };
+
+    let len = (today - start).num_days().max(0) as usize + 1;
+    let mut days = vec![None; len];
+    for x in days.iter_mut().take(BACKFILL_DAYS as usize) {
+      *x = Some([0; 4]);
+    }
+
+    for (day, vals) in rows {
+      let Ok(day) = day.parse::<NaiveDate>() else { continue };
+      if let Some(x) = days.get_mut((day - start).num_days() as usize) {
+        *x = Some(vals);
+      }
+    }
+
+    Ok(RepoDaily { start: Some(start.to_string()), days })
+  }
+
   pub async fn get_popular_items(
     &self,
     repo: &str,
@@ -440,9 +711,9 @@ impl DbClient {
       PopularKind::Path => ("repo_popular_paths", "path"),
     };
 
-    let time_where = match filter.period {
-      x if x > 0 => format!("date >= date('now', '-{} day')", x),
-      _ => "1=1".to_string(),
+    let time_where = match filter.period.days() {
+      Some(x) => format!("date >= date('now', '-{} day')", x - 1),
+      None => "1=1".to_string(),
     };
 
     let order_by = format!("{} {}", filter.sort, filter.direction);
@@ -946,7 +1217,7 @@ mod tests {
     db.update_deltas().await?;
 
     let by_count =
-      PopularFilter { sort: PopularSort::Count, direction: Direction::Desc, period: 0 };
+      PopularFilter { sort: PopularSort::Count, direction: Direction::Desc, period: Period(-1) };
     let refs = db.get_popular_items("owner/repo", &PopularKind::Refs, &by_count).await?;
     assert_eq!(
       refs.iter().map(|x| (&x.name, x.count, x.uniques)).collect::<Vec<_>>(),
@@ -959,6 +1230,90 @@ mod tests {
       vec![(&"/".to_string(), 7, 4),]
     );
 
+    Ok(())
+  }
+
+  #[test]
+  fn period_parses_new_and_legacy_values() {
+    let cases = [
+      ("7d", 7),
+      ("7", 7),
+      ("14", 14),
+      ("30d", 30),
+      ("90", 90),
+      ("1y", 365),
+      ("All", -1),
+      ("-1", -1),
+      ("", 30),
+      ("0", 30),
+      ("junk", 30),
+    ];
+    for (val, days) in cases {
+      assert_eq!(Period::parse(val), Period(days), "{val}");
+    }
+
+    assert_eq!(Period::ALL.map(|x| x.to_string()), ["7d", "30d", "90d", "1y", "all"]);
+
+    let day = |x: &str| x.parse::<NaiveDate>().unwrap();
+    let win = Period(30).windows(day("2026-11-02")).unwrap();
+    assert_eq!(win.start, day("2026-10-04"));
+    assert_eq!((win.cmp_start, win.cmp_end), (day("2026-10-02"), day("2026-11-01")));
+    assert_eq!(win.prev_start, day("2026-09-02"));
+    assert!(Period(-1).windows(day("2026-11-02")).is_none());
+  }
+
+  #[tokio::test]
+  async fn periods_and_daily_series_are_gap_aware() -> Res {
+    let db = test_db("periods").await?;
+    let repo = sample_repo(1, "owner/repo");
+    db.insert_repo(&repo).await?;
+
+    // stars history before traffic starts, then traffic on days 1, 2, 4 and 6 (3 and 5 missing)
+    db.insert_stars(1, &[("2024-01-01T00:00:00Z".to_string(), 3, 3)]).await?;
+    let views = [(10, 20, 10), (11, 30, 12), (13, 40, 50), (15, 5, 1)];
+    db.insert_views(
+      &repo,
+      &RepoViews {
+        count: 0,
+        uniques: 0,
+        views: views
+          .iter()
+          .map(|(d, c, u)| daily(&format!("2024-01-{d}T00:00:00Z"), *c, *u))
+          .collect(),
+      },
+    )
+    .await?;
+    db.insert_stars(1, &[("2024-01-14T00:00:00Z".to_string(), 8, 5)]).await?;
+
+    let today = NaiveDate::from_ymd_opt(2024, 1, 16).unwrap();
+    let dat = db.get_daily("owner/repo", today).await?;
+    assert_eq!(dat.start.as_deref(), Some("2024-01-10"));
+    assert_eq!(
+      dat.days.iter().map(|x| x.map(|v| v[2])).collect::<Vec<_>>(),
+      vec![Some(20), Some(30), Some(0), Some(40), Some(0), Some(5), Some(0)],
+      "missing days in the backfill are days without traffic"
+    );
+
+    // 3d: shown 14..16; compared 12..14 vs 9..11 (9 is before traffic starts); all in the backfill
+    let rp = db.get_periods(Some("owner/repo"), Period(3), today).await?.remove(0);
+    assert_eq!((rp.views, rp.views_uniques), (5, 1));
+    assert_eq!((rp.cmp_views, rp.cmp_days, rp.prev_views, rp.prev_days), (40, 3, 50, 2));
+    assert_eq!((rp.stars, rp.stars_start, rp.stars_gain()), (8, 3, 5));
+
+    // real stars only: the traffic rows stay out, unlike get_stars' forward fill
+    let stars = db.get_star_rows("owner/repo").await?;
+    assert_eq!(
+      stars.iter().map(|x| (&x.date[..10], x.stars)).collect::<Vec<_>>(),
+      vec![("2024-01-01", 3), ("2024-01-14", 8)]
+    );
+    let filled = db.get_stars("owner/repo").await?;
+    assert!(filled.iter().any(|x| x.date.starts_with("2024-01-15") && x.stars == 8));
+
+    let all = db.get_periods(None, Period(-1), today).await?;
+    assert_eq!(all.len(), 1);
+    assert_eq!((all[0].views, all[0].prev_views, all[0].prev_days), (95, 0, 0));
+
+    assert!(db.get_daily("owner/missing", today).await?.days.is_empty());
     Ok(())
   }
 }
