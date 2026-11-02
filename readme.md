@@ -65,6 +65,8 @@ services:
       - ./data:/app/data
 ```
 
+The database is stored in `/app/data/ghstats.db` (`DB_PATH` changes it).
+
 ## Why ghstats?
 
 - **Own your history**: keep traffic data for months or years instead of losing it
