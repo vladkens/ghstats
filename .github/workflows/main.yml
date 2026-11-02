@@ -20,14 +20,18 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: rustup toolchain install stable --profile minimal --component clippy
+      # After stable, before nightly: the cache key includes every installed toolchain, and nightly changes daily.
       - uses: Swatinem/rust-cache@v2
       - run: rustup toolchain install nightly --profile minimal --component rustfmt
       - run: make check
       - run: make test
+      # Musl binaries for the Docker image, so docker never compiles; built on every push and PR to check the release build.
       - uses: vladkens/actions/rust-build@v1
         with:
           targets: x86_64-unknown-linux-musl aarch64-unknown-linux-musl
           cache: false
+          # ghstats on crates.io is an unrelated crate; dev: build outside releases;
+          # dev-version: keep the plain version the UI compares with the latest release.
           crates: false
           dev: true
           dev-version: false
@@ -37,6 +41,7 @@ jobs:
     needs: [test]
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Listing any permission sets the rest to none, so contents: read stays for checkout.
     permissions:
       contents: read
       packages: write
@@ -89,6 +94,7 @@ jobs:
             echo "EOF"
           } >> "$GITHUB_OUTPUT"
 
+      # BIN_SOURCE=prebuilt copies the binaries from test instead of building from source (the default, used by docker compose).
       - uses: docker/build-push-action@v7
         with:
           context: .
@@ -107,6 +113,7 @@ jobs:
       - uses: actions/checkout@v7
       - uses: vladkens/actions/rust-publish@v1
         with:
+          # Tag and release with changelog notes only: no binary assets, no crates.io, no rolling dev release.
           files: false
           crates: false
           dev: false
