@@ -4,7 +4,7 @@ use std::vec;
 
 use anyhow::Context;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
-use reqwest::{Request, RequestBuilder};
+use reqwest::{Request, RequestBuilder, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +23,9 @@ pub struct Repo {
   pub open_issues_count: u32,
   pub fork: bool,
   pub archived: bool,
+  // Undocumented; owners can disable pull requests and then /pulls returns 404
+  #[serde(default)]
+  pub has_pull_requests: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -120,6 +123,10 @@ impl TokenSource {
 
 // MARK: GhClient
 
+pub fn error_status(err: &anyhow::Error) -> Option<StatusCode> {
+  err.downcast_ref::<reqwest::Error>().and_then(|e| e.status())
+}
+
 pub struct GhClient {
   client: reqwest::Client,
   token: TokenSource,
@@ -155,6 +162,11 @@ impl GhClient {
       .build()?;
 
     Ok(Self { client, token, base_url })
+  }
+
+  #[cfg(test)]
+  pub(crate) fn for_test(base_url: String) -> Res<Self> {
+    Self::with_token(TokenSource::Value("test-token".to_string()), base_url)
   }
 
   async fn execute(&self, mut req: Request) -> Res<reqwest::Response> {

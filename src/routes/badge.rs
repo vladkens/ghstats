@@ -473,6 +473,7 @@ mod tests {
       open_issues_count: 0,
       fork: false,
       archived: false,
+      has_pull_requests: None,
     }
   }
 

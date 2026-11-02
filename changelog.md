@@ -8,6 +8,7 @@
 ### Fixes
 
 - Pages now start with `<!DOCTYPE html>` and use valid void `meta` tags (#30, by @utoni)
+- Repositories with pull requests disabled are synced again instead of being skipped (#27)
 
 ---
 

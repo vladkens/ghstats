@@ -4,7 +4,7 @@ use std::sync::Arc;
 use axum::extract::Request;
 
 use crate::db_client::DbClient;
-use crate::gh_client::{GhClient, Repo};
+use crate::gh_client::{GhClient, PullRequest, Repo, error_status};
 use crate::state::AppState;
 use crate::types::Res;
 
@@ -73,8 +73,22 @@ async fn update_metrics_inner(state: Arc<AppState>) -> Res {
   Ok(())
 }
 
+async fn get_open_pull_requests(gh: &GhClient, repo: &Repo) -> Res<Vec<PullRequest>> {
+  if repo.has_pull_requests == Some(false) {
+    return Ok(vec![]);
+  }
+
+  match gh.get_open_pull_requests(&repo.full_name).await {
+    Err(e) if error_status(&e) == Some(reqwest::StatusCode::NOT_FOUND) => {
+      tracing::info!("pull requests not available for {}, counting 0", repo.full_name);
+      Ok(vec![])
+    }
+    rs => rs,
+  }
+}
+
 async fn update_repo_metrics(db: &DbClient, gh: &GhClient, repo: &Repo, date: &str) -> Res {
-  let prs = gh.get_open_pull_requests(&repo.full_name).await?;
+  let prs = get_open_pull_requests(gh, repo).await?;
   let views = gh.traffic_views(&repo.full_name).await?;
   let clones = gh.traffic_clones(&repo.full_name).await?;
   let referrers = gh.traffic_refs(&repo.full_name).await?;
@@ -261,6 +275,16 @@ impl GhsFilter {
 
 #[cfg(test)]
 mod tests {
+  use std::sync::Mutex;
+  use std::time::{SystemTime, UNIX_EPOCH};
+
+  use axum::extract::{Path, State};
+  use axum::http::StatusCode;
+  use axum::response::{IntoResponse, Response};
+  use axum::routing::get;
+  use axum::{Json, Router};
+  use serde_json::{Value, json};
+
   use super::*;
 
   #[test]
@@ -416,5 +440,132 @@ mod tests {
       assert!(!r.is_included("foo/bar", true, false)); // forks excluded
       assert!(!r.is_included("abc/abc", false, false)); // not included by default
     }
+  }
+
+  const DATE: &str = "2024-01-01T00:00:00Z";
+
+  #[derive(Clone, Default)]
+  struct MockGh {
+    pulls_calls: Arc<Mutex<Vec<String>>>,
+  }
+
+  async fn pulls(
+    State(gh): State<MockGh>,
+    Path((owner, repo)): Path<(String, String)>,
+  ) -> Response {
+    gh.pulls_calls.lock().unwrap().push(format!("{owner}/{repo}"));
+    match repo.as_str() {
+      "pulls-404" => StatusCode::NOT_FOUND.into_response(),
+      "pulls-500" => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+      _ => Json(json!([])).into_response(),
+    }
+  }
+
+  fn daily() -> Value {
+    json!([{ "timestamp": DATE, "uniques": 1, "count": 2 }])
+  }
+
+  async fn views() -> Json<Value> {
+    Json(json!({ "uniques": 1, "count": 2, "views": daily() }))
+  }
+
+  async fn clones() -> Json<Value> {
+    Json(json!({ "uniques": 1, "count": 2, "clones": daily() }))
+  }
+
+  async fn empty_list() -> Json<Value> {
+    Json(json!([]))
+  }
+
+  async fn mock_server(gh: MockGh) -> Res<(String, tokio::task::JoinHandle<()>)> {
+    let router = Router::new()
+      .route("/repos/{owner}/{repo}/pulls", get(pulls))
+      .route("/repos/{owner}/{repo}/traffic/views", get(views))
+      .route("/repos/{owner}/{repo}/traffic/clones", get(clones))
+      .route("/repos/{owner}/{repo}/traffic/popular/referrers", get(empty_list))
+      .route("/repos/{owner}/{repo}/traffic/popular/paths", get(empty_list))
+      .with_state(gh);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let handle = tokio::spawn(async move {
+      axum::serve(listener, router).await.unwrap();
+    });
+    Ok((format!("http://{addr}"), handle))
+  }
+
+  async fn test_db(test_name: &str) -> Res<DbClient> {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path =
+      std::env::temp_dir().join(format!("ghstats-{test_name}-{}-{nanos}.db", std::process::id()));
+    DbClient::new(&path.to_string_lossy()).await
+  }
+
+  fn sample_repo(full_name: &str, has_pull_requests: Option<bool>) -> Repo {
+    Repo {
+      id: 1,
+      full_name: full_name.to_string(),
+      description: None,
+      stargazers_count: 1,
+      forks_count: 0,
+      watchers_count: 0,
+      open_issues_count: 3,
+      fork: false,
+      archived: false,
+      has_pull_requests,
+    }
+  }
+
+  #[tokio::test]
+  async fn repo_with_pull_requests_disabled_is_saved_without_calling_pulls() -> Res {
+    let mock = MockGh::default();
+    let (base_url, server) = mock_server(mock.clone()).await?;
+    let gh = GhClient::for_test(base_url)?;
+    let db = test_db("prs-disabled").await?;
+    let repo = sample_repo("owner/prs-disabled", Some(false));
+
+    update_repo_metrics(&db, &gh, &repo, DATE).await?;
+
+    let totals = db.get_repo_totals("owner/prs-disabled").await?.unwrap();
+    assert_eq!(totals.prs, 0);
+    assert_eq!(totals.issues, 3);
+    assert_eq!(totals.views_count, 2);
+    assert!(mock.pulls_calls.lock().unwrap().is_empty());
+
+    server.abort();
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn repo_with_pulls_not_found_is_saved_with_zero_prs() -> Res {
+    let mock = MockGh::default();
+    let (base_url, server) = mock_server(mock.clone()).await?;
+    let gh = GhClient::for_test(base_url)?;
+    let db = test_db("pulls-404").await?;
+    let repo = sample_repo("owner/pulls-404", None);
+
+    update_repo_metrics(&db, &gh, &repo, DATE).await?;
+
+    let totals = db.get_repo_totals("owner/pulls-404").await?.unwrap();
+    assert_eq!(totals.prs, 0);
+    assert_eq!(totals.issues, 3);
+    assert_eq!(totals.views_count, 2);
+    assert_eq!(*mock.pulls_calls.lock().unwrap(), vec!["owner/pulls-404".to_string()]);
+
+    server.abort();
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn repo_with_other_pulls_error_is_still_skipped() -> Res {
+    let (base_url, server) = mock_server(MockGh::default()).await?;
+    let gh = GhClient::for_test(base_url)?;
+    let db = test_db("pulls-500").await?;
+    let repo = sample_repo("owner/pulls-500", None);
+
+    assert!(update_repo_metrics(&db, &gh, &repo, DATE).await.is_err());
+    assert!(db.get_repo_totals("owner/pulls-500").await?.is_none());
+
+    server.abort();
+    Ok(())
   }
 }
