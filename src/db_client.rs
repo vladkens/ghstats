@@ -1,11 +1,13 @@
 use std::sync::Mutex;
 
 use anyhow::Context;
-use rusqlite::{Connection, OptionalExtension, Row, params};
+use rusqlite::{Connection, OptionalExtension, Row, named_params, params};
 use serde::{Deserialize, Serialize};
 use serde_variant::to_variant_name;
 
-use crate::gh_client::{PullRequest, Repo, RepoClones, RepoPopularPath, RepoReferrer, RepoViews};
+use crate::gh_client::{
+  PullRequest, Release, Repo, RepoClones, RepoPopularPath, RepoReferrer, RepoViews,
+};
 use crate::types::Res;
 
 // MARK: Migrations
@@ -96,7 +98,44 @@ fn migrate_v3(db: &Connection) -> Res {
   Ok(())
 }
 
-const MIGRATIONS: &[fn(&Connection) -> Res] = &[migrate_v1, migrate_v2, migrate_v3];
+fn migrate_v4(db: &Connection) -> Res {
+  let mut queries = vec![];
+
+  // GitHub only exposes the current cumulative download_count, so each row is one asset's count on
+  // one day, upserted on every sync. The key serves the previous-snapshot lookup, the index serves
+  // per-date reads
+  let qs = "CREATE TABLE IF NOT EXISTS repo_release_assets (
+    repo_id INTEGER NOT NULL,
+    asset_id INTEGER NOT NULL,
+    date TEXT NOT NULL,
+    release_id INTEGER NOT NULL,
+    tag TEXT NOT NULL,
+    asset_name TEXT NOT NULL,
+    published_at TEXT DEFAULT NULL,
+    created_at TEXT DEFAULT NULL,
+    download_count INTEGER NOT NULL DEFAULT 0,
+    -- in the day's last fetch; a removed asset keeps its row for the deltas
+    current BOOLEAN NOT NULL DEFAULT TRUE,
+    PRIMARY KEY (repo_id, asset_id, date)
+  );";
+  queries.push(qs);
+
+  let qs = "CREATE INDEX IF NOT EXISTS repo_release_assets_date
+    ON repo_release_assets (repo_id, date);";
+  queries.push(qs);
+
+  // date of the last successful releases fetch, its current rows are the repo's assets
+  let qs = "ALTER TABLE repos ADD COLUMN releases_synced_at TEXT DEFAULT NULL;";
+  queries.push(qs);
+
+  for qs in queries {
+    db.execute(qs, [])?;
+  }
+
+  Ok(())
+}
+
+const MIGRATIONS: &[fn(&Connection) -> Res] = &[migrate_v1, migrate_v2, migrate_v3, migrate_v4];
 
 fn migrate(db: &Connection) -> Res {
   let version: i32 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -173,6 +212,36 @@ pub struct RepoItem {
   pub name: String,
   pub archived: bool,
   pub stars_synced: bool,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct DownloadsDaily {
+  pub date: String,
+  pub downloads: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct ReleaseDownloads {
+  pub release_id: i64,
+  pub tag: String,
+  pub published_at: Option<String>,
+  pub total: i64,
+  pub period: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct AssetDownloads {
+  pub name: String,
+  pub total: i64,
+  pub period: i64,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct RepoDownloads {
+  pub id: i64,
+  pub name: String,
+  pub total: i64,
+  pub period: i64,
 }
 
 // MARK: Filters
@@ -318,6 +387,99 @@ fn repo_item_from_row(row: &Row<'_>) -> rusqlite::Result<RepoItem> {
     archived: row.get("archived")?,
     stars_synced: row.get("stars_synced")?,
   })
+}
+
+fn downloads_daily_from_row(row: &Row<'_>) -> rusqlite::Result<DownloadsDaily> {
+  Ok(DownloadsDaily { date: row.get("date")?, downloads: row.get("downloads")? })
+}
+
+fn release_downloads_from_row(row: &Row<'_>) -> rusqlite::Result<ReleaseDownloads> {
+  Ok(ReleaseDownloads {
+    release_id: row.get("release_id")?,
+    tag: row.get("tag")?,
+    published_at: row.get("published_at")?,
+    total: row.get("total")?,
+    period: row.get("period")?,
+  })
+}
+
+fn asset_downloads_from_row(row: &Row<'_>) -> rusqlite::Result<AssetDownloads> {
+  Ok(AssetDownloads {
+    name: row.get("asset_name")?,
+    total: row.get("total")?,
+    period: row.get("period")?,
+  })
+}
+
+fn repo_downloads_from_row(row: &Row<'_>) -> rusqlite::Result<RepoDownloads> {
+  Ok(RepoDownloads {
+    id: row.get("repo_id")?,
+    name: row.get("repo_name")?,
+    total: row.get("total")?,
+    period: row.get("period")?,
+  })
+}
+
+/// Release asset snapshots since `:since` of visible repos matching `cond`, with `delta` against
+/// the asset's previous snapshot: a gap goes to the later date and a decrease is clamped to 0.
+///
+/// An asset's first snapshot counts in full when the asset became downloadable (the later of its
+/// `created_at` and the release's `published_at`) on or after the repo's previous snapshot date: it
+/// appeared after that day's last fetch, also across a sync outage. On the repo's first snapshot
+/// the bar is the day before instead, so first-day downloads count but older assets are only the
+/// baseline (NULL), as is an asset public before the previous snapshot yet missing from it.
+fn downloads_cte(cond: &str) -> String {
+  #[rustfmt::skip]
+  let qs = format!("
+  WITH deltas AS (
+    SELECT ra.*, MAX(0, ra.download_count - COALESCE((
+      SELECT p.download_count FROM repo_release_assets p
+      WHERE p.repo_id = ra.repo_id AND p.asset_id = ra.asset_id AND p.date < ra.date
+      ORDER BY p.date DESC LIMIT 1
+    ), CASE
+      -- multi-argument MAX is NULL when any argument is, so each side falls back to the other
+      WHEN substr(MAX(
+        COALESCE(ra.created_at, ra.published_at), COALESCE(ra.published_at, ra.created_at)
+      ), 1, 10) >= COALESCE((
+        SELECT substr(MAX(q.date), 1, 10) FROM repo_release_assets q
+        WHERE q.repo_id = ra.repo_id AND q.date < ra.date
+      ), date(substr(ra.date, 1, 10), '-1 day')) THEN 0
+    END)) AS delta
+    FROM repos r
+    INNER JOIN repo_release_assets ra ON ra.repo_id = r.id
+    WHERE r.hidden = FALSE AND {cond} AND ra.date >= :since
+  )
+  ");
+  qs
+}
+
+/// Totals per `key`: all-time sums the assets of the last successful fetch (matches GitHub, deleted
+/// assets drop out), period sums the deltas since `:since`
+fn downloads_totals_query(cond: &str, key: &str, order_by: &str) -> String {
+  // CROSS JOIN keeps repos as the outer loop, so current rows come from the date index
+  #[rustfmt::skip]
+  let qs = format!("
+  {cte}
+  SELECT c.*, r.name AS repo_name, SUM(c.download_count) AS total, COALESCE(p.period, 0) AS period
+  FROM repos r
+  CROSS JOIN repo_release_assets c
+    ON c.repo_id = r.id AND c.date = r.releases_synced_at AND c.current = TRUE
+  LEFT JOIN (SELECT {key}, SUM(delta) AS period FROM deltas GROUP BY {key}) p ON p.{key} = c.{key}
+  WHERE r.hidden = FALSE AND {cond}
+  GROUP BY c.{key}
+  ORDER BY {order_by};
+  ", cte = downloads_cte(cond));
+  qs
+}
+
+/// Start date of the last `period` days, same as `date('now', '-N day')`; 0 is all time
+fn period_since(period: i32) -> String {
+  match period {
+    x if x > 0 => {
+      (chrono::Utc::now() - chrono::Duration::days(x as i64)).format("%Y-%m-%d").to_string()
+    }
+    _ => String::new(), // every date sorts after an empty string
+  }
 }
 
 pub struct DbClient {
@@ -467,6 +629,77 @@ impl DbClient {
     let mut stmt = db.prepare(&qs)?;
     let items = stmt
       .query_map(params![repo], repo_popular_item_from_row)?
+      .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(items)
+  }
+
+  /// Downloads per day summed over the repo's assets; days with only baseline snapshots are skipped
+  pub async fn get_downloads_daily(&self, repo: &str) -> Res<Vec<DownloadsDaily>> {
+    #[rustfmt::skip]
+    let qs = format!("
+    {cte}
+    SELECT date, SUM(delta) AS downloads FROM deltas
+    WHERE delta IS NOT NULL
+    GROUP BY date
+    ORDER BY date ASC;
+    ", cte = downloads_cte("r.name = :repo"));
+
+    let db = self.db.lock().unwrap();
+    let mut stmt = db.prepare(&qs)?;
+    let items = stmt
+      .query_map(named_params! { ":repo": repo, ":since": "" }, downloads_daily_from_row)?
+      .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(items)
+  }
+
+  pub async fn get_release_downloads(&self, repo: &str, period: i32) -> Res<Vec<ReleaseDownloads>> {
+    let qs = downloads_totals_query("r.name = :repo", "release_id", "published_at DESC");
+    let db = self.db.lock().unwrap();
+    let mut stmt = db.prepare(&qs)?;
+    let items = stmt
+      .query_map(
+        named_params! { ":repo": repo, ":since": period_since(period) },
+        release_downloads_from_row,
+      )?
+      .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(items)
+  }
+
+  /// Totals per current asset name; deltas follow the asset id, so a renamed asset keeps its
+  /// history
+  pub async fn get_asset_downloads(&self, repo: &str, period: i32) -> Res<Vec<AssetDownloads>> {
+    #[rustfmt::skip]
+    let qs = format!("
+    {cte}
+    SELECT c.asset_name, SUM(c.download_count) AS total, COALESCE(SUM(p.period), 0) AS period
+    FROM repos r
+    CROSS JOIN repo_release_assets c
+      ON c.repo_id = r.id AND c.date = r.releases_synced_at AND c.current = TRUE
+    LEFT JOIN (
+      SELECT asset_id, SUM(delta) AS period FROM deltas GROUP BY asset_id
+    ) p ON p.asset_id = c.asset_id
+    WHERE r.hidden = FALSE AND r.name = :repo
+    GROUP BY c.asset_name
+    ORDER BY total DESC, c.asset_name ASC;
+    ", cte = downloads_cte("r.name = :repo"));
+
+    let db = self.db.lock().unwrap();
+    let mut stmt = db.prepare(&qs)?;
+    let items = stmt
+      .query_map(
+        named_params! { ":repo": repo, ":since": period_since(period) },
+        asset_downloads_from_row,
+      )?
+      .collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(items)
+  }
+
+  pub async fn get_repos_downloads(&self, period: i32) -> Res<Vec<RepoDownloads>> {
+    let qs = downloads_totals_query("1=1", "repo_id", "total DESC, repo_name ASC");
+    let db = self.db.lock().unwrap();
+    let mut stmt = db.prepare(&qs)?;
+    let items = stmt
+      .query_map(named_params! { ":since": period_since(period) }, repo_downloads_from_row)?
       .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(items)
   }
@@ -627,6 +860,58 @@ impl DbClient {
     Ok(())
   }
 
+  pub async fn insert_release_assets(&self, repo: &Repo, date: &str, releases: &[Release]) -> Res {
+    let qs = "
+    INSERT INTO repo_release_assets AS t
+      (repo_id, asset_id, date, release_id, tag, asset_name, published_at, created_at, download_count)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+    ON CONFLICT(repo_id, asset_id, date) DO UPDATE SET
+      tag = excluded.tag,
+      asset_name = excluded.asset_name,
+      published_at = excluded.published_at,
+      created_at = excluded.created_at,
+      download_count = MAX(t.download_count, excluded.download_count),
+      current = TRUE;
+    ";
+
+    // one transaction, so the current snapshot of a repo is never partial
+    let mut db = self.db.lock().unwrap();
+    let tx = db.transaction()?;
+    for rel in releases {
+      for asset in &rel.assets {
+        tx.execute(
+          qs,
+          params![
+            repo.id as i64,
+            asset.id as i64,
+            date,
+            rel.id as i64,
+            &rel.tag_name,
+            &asset.name,
+            &rel.published_at,
+            &asset.created_at,
+            asset.download_count as i64,
+          ],
+        )?;
+      }
+    }
+
+    // assets missing from this fetch leave the totals, their rows keep the deltas
+    let ids = releases.iter().flat_map(|x| &x.assets).map(|x| (x.id as i64).to_string());
+    let qs = format!(
+      "UPDATE repo_release_assets SET current = FALSE
+      WHERE repo_id = $1 AND date = $2 AND asset_id NOT IN ({});",
+      ids.collect::<Vec<_>>().join(",")
+    );
+    tx.execute(&qs, params![repo.id as i64, date])?;
+
+    let qs = "UPDATE repos SET releases_synced_at = $1 WHERE id = $2;";
+    tx.execute(qs, params![date, repo.id as i64])?;
+
+    tx.commit()?;
+    Ok(())
+  }
+
   // MARK: Updater
 
   pub async fn update_deltas(&self) -> Res {
@@ -682,7 +967,8 @@ mod tests {
 
   use super::*;
   use crate::gh_client::{
-    PullRequest, Repo, RepoClones, RepoPopularPath, RepoReferrer, RepoViews, TrafficDaily,
+    PullRequest, Release, ReleaseAsset, Repo, RepoClones, RepoPopularPath, RepoReferrer, RepoViews,
+    TrafficDaily,
   };
 
   fn db_path(test_name: &str) -> String {
@@ -727,7 +1013,7 @@ mod tests {
 
     let conn = db.db.lock().unwrap();
     let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
 
     let mut stmt = conn.prepare(
       "
@@ -743,6 +1029,7 @@ mod tests {
     assert!(tables.contains(&"repo_stats".to_string()));
     assert!(tables.contains(&"repo_referrers".to_string()));
     assert!(tables.contains(&"repo_popular_paths".to_string()));
+    assert!(tables.contains(&"repo_release_assets".to_string()));
     assert!(!tables.contains(&"_ghstats_healthcheck".to_string()));
 
     Ok(())
@@ -968,6 +1255,238 @@ mod tests {
     Ok(())
   }
 
+  fn days_ago(n: i64) -> String {
+    (chrono::Utc::now() - chrono::Duration::days(n)).format("%Y-%m-%dT00:00:00Z").to_string()
+  }
+
+  fn release(id: u64, tag: &str, published_at: &str, assets: &[(u64, &str, u64)]) -> Release {
+    Release {
+      id,
+      tag_name: tag.to_string(),
+      draft: false,
+      published_at: Some(published_at.to_string()),
+      assets: assets
+        .iter()
+        .map(|(id, name, count)| ReleaseAsset {
+          id: *id,
+          name: name.to_string(),
+          download_count: *count,
+          created_at: None, // falls back to published_at
+        })
+        .collect(),
+    }
+  }
+
+  fn created(mut rel: Release, created_at: &str) -> Release {
+    rel.assets.iter_mut().for_each(|x| x.created_at = Some(created_at.to_string()));
+    rel
+  }
+
+  #[tokio::test]
+  async fn first_day_rule_uses_when_an_asset_became_public() -> Res {
+    let db = test_db("downloads-first-day").await?;
+    let repo = sample_repo(1, "owner/repo");
+    db.insert_repo(&repo).await?;
+
+    let at = |n, time: &str| days_ago(n).replace("00:00:00", time);
+    let old = "2024-01-01T00:00:00Z";
+    let rels = [
+      // uploaded to a draft on D-5, published on D-1: counts in full
+      created(release(1, "draft", &at(4, "12:00:00"), &[(10, "a", 7)]), &at(8, "10:00:00")),
+      // uploaded into an old release on D-2 23:59: before the window, baseline only
+      created(release(2, "late", old, &[(20, "b", 3)]), &at(5, "23:59:59")),
+      // uploaded into an old release on D-1 00:00: counts in full
+      created(release(3, "edge", old, &[(30, "c", 2)]), &at(4, "00:00:00")),
+    ];
+    db.insert_release_assets(&repo, &days_ago(3), &rels).await?;
+
+    let daily = db.get_downloads_daily("owner/repo").await?;
+    let daily = daily.iter().map(|x| (x.date.clone(), x.downloads)).collect::<Vec<_>>();
+    assert_eq!(daily, vec![(days_ago(3), 9)]);
+
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn assets_published_during_a_sync_gap_count_in_full() -> Res {
+    let db = test_db("downloads-gap").await?;
+    let repo = sample_repo(1, "owner/repo");
+    db.insert_repo(&repo).await?;
+
+    // tracked on day 10, no syncs on days 9..7, next snapshot on day 6
+    let at = |n, time: &str| days_ago(n).replace("00:00:00", time);
+    let old = "2024-01-01T00:00:00Z";
+    db.insert_release_assets(&repo, &days_ago(10), &[release(1, "v1.0", old, &[(10, "a", 100)])])
+      .await?;
+
+    let rels = [
+      release(1, "v1.0", old, &[(10, "a", 110)]),
+      // published during the outage: counts in full
+      release(2, "v1.1", &at(9, "12:00:00"), &[(20, "b", 20)]),
+      // public on the previous snapshot's day but missing from it, so it came after that fetch
+      created(release(3, "late", old, &[(30, "c", 4)]), &at(10, "20:00:00")),
+      // public before the previous snapshot yet missing from it: unknown history, baseline only
+      created(release(4, "odd", old, &[(40, "d", 5)]), &at(12, "08:00:00")),
+    ];
+    db.insert_release_assets(&repo, &days_ago(6), &rels).await?;
+
+    let daily = db.get_downloads_daily("owner/repo").await?;
+    let daily = daily.iter().map(|x| (x.date.clone(), x.downloads)).collect::<Vec<_>>();
+    assert_eq!(daily, vec![(days_ago(6), 34)]);
+
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn same_day_refetch_keeps_only_the_last_fetch() -> Res {
+    let db = test_db("downloads-refetch").await?;
+    let repo = sample_repo(1, "owner/repo");
+    db.insert_repo(&repo).await?;
+
+    let (d4, d3) = (days_ago(4), days_ago(3));
+    let rel = |assets: &[(u64, &str, u64)]| release(1, "v1.0", "2024-01-01T00:00:00Z", assets);
+    db.insert_release_assets(&repo, &d4, &[rel(&[(10, "a", 10), (11, "b", 20), (12, "c", 30)])])
+      .await?;
+    db.insert_release_assets(&repo, &d3, &[rel(&[(10, "a", 12), (11, "b", 25), (12, "c", 31)])])
+      .await?;
+
+    // later the same day: b is deleted, c is re-uploaded under a new id
+    let mut last = rel(&[(10, "a", 13)]);
+    last.assets.extend(created(rel(&[(13, "c", 1)]), &d3.replace("T00", "T15")).assets);
+    db.insert_release_assets(&repo, &d3, &[last]).await?;
+
+    let daily = db.get_downloads_daily("owner/repo").await?;
+    let daily = daily.iter().map(|x| (x.date.as_str(), x.downloads)).collect::<Vec<_>>();
+    // b's and the old c's deltas from the morning stay in the history
+    assert_eq!(daily, vec![(d3.as_str(), 10)]);
+
+    // totals only list the last fetch, period deltas still include b and the old c
+    let rels = db.get_release_downloads("owner/repo", 0).await?;
+    assert_eq!(rels.iter().map(|x| (x.total, x.period)).collect::<Vec<_>>(), vec![(14, 10)]);
+
+    let assets = db.get_asset_downloads("owner/repo", 0).await?;
+    let assets = assets.iter().map(|x| (x.name.as_str(), x.total, x.period)).collect::<Vec<_>>();
+    assert_eq!(assets, vec![("a", 13, 3), ("c", 1, 1)]);
+
+    let repos = db.get_repos_downloads(0).await?;
+    assert_eq!(
+      repos.iter().map(|x| (x.id, x.total, x.period)).collect::<Vec<_>>(),
+      vec![(1, 14, 10)]
+    );
+
+    // an empty fetch later the same day: nothing is current, the history stays
+    db.insert_release_assets(&repo, &d3, &[]).await?;
+    assert!(db.get_repos_downloads(0).await?.is_empty());
+    assert!(db.get_release_downloads("owner/repo", 0).await?.is_empty());
+    assert!(db.get_asset_downloads("owner/repo", 0).await?.is_empty());
+
+    let daily = db.get_downloads_daily("owner/repo").await?;
+    let daily = daily.iter().map(|x| (x.date.as_str(), x.downloads)).collect::<Vec<_>>();
+    assert_eq!(daily, vec![(d3.as_str(), 10)]);
+
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn release_downloads_use_deltas_across_gaps_and_clamp_decreases() -> Res {
+    let db = test_db("downloads").await?;
+    let repo = sample_repo(1, "owner/repo");
+    let other = sample_repo(2, "owner/other");
+    db.insert_repo(&repo).await?;
+    db.insert_repo(&other).await?;
+
+    // tracking starts on day 10, days 8..4 are a gap
+    let (d10, d9, d4, d3) = (days_ago(10), days_ago(9), days_ago(4), days_ago(3));
+    // v1 predates tracking (baseline only), app-mac drops on day 9, on day 3 app-linux is renamed
+    // and app-win is deleted
+    let v1 = |assets: &[(u64, &str, u64)]| release(1, "v1.0", "2024-01-01T00:00:00Z", assets);
+    // v2 is published the day before its first snapshot, v3 the same day: first-day downloads count
+    let v2 = |count| release(2, "v1.1", &d10.replace("T00", "T18"), &[(200, "app-linux", count)]);
+    let v3 = || release(3, "v1.2", &d3.replace("T00", "T01"), &[(300, "app-linux", 4)]);
+
+    let s10 = [v1(&[(100, "app-linux", 100), (101, "app-mac", 50), (102, "app-win", 1)])];
+    let s9 = [v2(5), v1(&[(100, "app-linux", 110), (101, "app-mac", 40), (102, "app-win", 3)])];
+    let s3 = |linux, v2_count| {
+      // and re-uploaded into old v1 the day before under a new id: its created_at counts day one
+      let mut v1 = v1(&[(100, "app-linux-x64", linux), (101, "app-mac", 45)]);
+      let created_at = Some(d4.replace("T00", "T20"));
+      v1.assets.push(ReleaseAsset {
+        id: 103,
+        name: "app-win".to_string(),
+        download_count: 6,
+        created_at,
+      });
+      [v3(), v2(v2_count), v1]
+    };
+
+    db.insert_release_assets(&repo, &d10, &s10).await?;
+    db.insert_release_assets(&repo, &d9, &s9).await?;
+    db.insert_release_assets(&repo, &d3, &s3(130, 12)).await?;
+    db.insert_release_assets(&repo, &d3, &s3(120, 10)).await?; // never goes down
+
+    // all releases deleted: nothing is current any more
+    let tool = release(9, "v0.1", "2024-01-01T00:00:00Z", &[(900, "tool", 7)]);
+    db.insert_release_assets(&other, &d9, &[tool]).await?;
+    db.insert_release_assets(&other, &d3, &[]).await?;
+
+    let daily = db.get_downloads_daily("owner/repo").await?;
+    let daily = daily.iter().map(|x| (x.date.as_str(), x.downloads)).collect::<Vec<_>>();
+    assert_eq!(daily, vec![(d9.as_str(), 17), (d3.as_str(), 42)]);
+
+    let rels = |items: Vec<ReleaseDownloads>| {
+      items.into_iter().map(|x| (x.release_id, x.tag, x.total, x.period)).collect::<Vec<_>>()
+    };
+    assert_eq!(
+      rels(db.get_release_downloads("owner/repo", 0).await?),
+      vec![
+        (3, "v1.2".to_string(), 4, 4),
+        (2, "v1.1".to_string(), 12, 12),
+        (1, "v1.0".to_string(), 181, 43)
+      ]
+    );
+    assert_eq!(
+      rels(db.get_release_downloads("owner/repo", 5).await?),
+      vec![
+        (3, "v1.2".to_string(), 4, 4),
+        (2, "v1.1".to_string(), 12, 7),
+        (1, "v1.0".to_string(), 181, 31)
+      ]
+    );
+    assert!(db.get_release_downloads("owner/other", 0).await?.is_empty());
+
+    let assets = |items: Vec<AssetDownloads>| {
+      items.into_iter().map(|x| (x.name, x.total, x.period)).collect::<Vec<_>>()
+    };
+    let expected = |linux_x64, linux| {
+      vec![
+        ("app-linux-x64".to_string(), 130, linux_x64),
+        ("app-mac".to_string(), 45, 5),
+        ("app-linux".to_string(), 16, linux),
+        ("app-win".to_string(), 6, 6),
+      ]
+    };
+    assert_eq!(assets(db.get_asset_downloads("owner/repo", 0).await?), expected(30, 16));
+    assert_eq!(assets(db.get_asset_downloads("owner/repo", 5).await?), expected(20, 11));
+
+    let repos = |items: Vec<RepoDownloads>| {
+      items.into_iter().map(|x| (x.id, x.name, x.total, x.period)).collect::<Vec<_>>()
+    };
+    assert_eq!(
+      repos(db.get_repos_downloads(0).await?),
+      vec![(1, "owner/repo".to_string(), 197, 59)]
+    );
+    assert_eq!(
+      repos(db.get_repos_downloads(5).await?),
+      vec![(1, "owner/repo".to_string(), 197, 42)]
+    );
+
+    db.mark_repo_hidden(&[1]).await?;
+    assert!(db.get_repos_downloads(0).await?.is_empty());
+    assert!(db.get_downloads_daily("owner/repo").await?.is_empty());
+
+    Ok(())
+  }
+
   fn db_at_version(test_name: &str, version: i32) -> Res<String> {
     let path = db_path(test_name);
     let conn = Connection::open(&path)?;
@@ -1004,7 +1523,7 @@ mod tests {
 
     conn.execute("ALTER TABLE repo_stats DROP COLUMN prs", [])?;
     DbClient::new(&path).await?;
-    assert_eq!(user_version(&conn)?, 3);
+    assert_eq!(user_version(&conn)?, 4);
 
     Ok(())
   }
