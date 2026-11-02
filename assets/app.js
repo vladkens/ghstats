@@ -128,7 +128,6 @@
     font: css('--font-ui'),
     rowbar: css('--rowbar'),
     muted: css('--muted'),
-    card: css('--card'),
     lineStrong: css('--line-strong'),
     hatch: hatch(css('--gap-ink')),
   });
@@ -166,14 +165,6 @@
 
         ctx.fillStyle = theme.hatch;
         ctx.fillRect(x0, ca.top, x1 - x0, ca.bottom - ca.top);
-        if (x1 - x0 > 46) {
-          ctx.textAlign = 'center';
-          const tw = ctx.measureText('no data').width;
-          ctx.fillStyle = theme.card;
-          ctx.fillRect((x0 + x1) / 2 - tw / 2 - 5, ca.top + 2, tw + 10, 15);
-          ctx.fillStyle = theme.muted;
-          ctx.fillText('no data', (x0 + x1) / 2, ca.top + 13);
-        }
       }
 
       ctx.restore();

@@ -366,11 +366,30 @@ fn stars_gain(
   today: NaiveDate,
   gaps: &[(NaiveDate, NaiveDate)],
   last: Option<NaiveDate>,
-) -> Option<(String, bool)> {
+) -> Option<StarsGain> {
   let before = p.windows(today)?.start - Days::new(1);
   let inside = gaps.iter().any(|(a, b)| *a < before && before < *b);
   let stale = last.is_some_and(|x| (today - x).num_days() > 3);
-  Some((format!("{} in {}", signed(rp.stars_gain()?), p.label()), inside || stale))
+  let gain = rp.stars_gain()?;
+  let text = match gain {
+    0 => format!("no change in {}", p.label()),
+    x => format!("{} in {}", signed(x), p.label()),
+  };
+
+  Some(StarsGain { text, approx: inside || stale, zero: gain == 0 })
+}
+
+#[derive(Debug, Clone, PartialEq)]
+struct StarsGain {
+  text: String,
+  approx: bool,
+  zero: bool,
+}
+
+impl StarsGain {
+  fn label(&self) -> String {
+    format!("{}{}", if self.approx { "≈ " } else { "" }, self.text)
+  }
 }
 
 const STARS_APPROX: &str =
@@ -388,7 +407,7 @@ struct ChartData<'a> {
 }
 
 /// Stars first: the current count, its gain in the period and the all-time chart
-fn stars_card(stars: i64, gain: Option<(String, bool)>, gaps: bool) -> Markup {
+fn stars_card(stars: i64, gain: Option<StarsGain>, gaps: bool) -> Markup {
   html!(
     section class="card" {
       div class="card-t" {
@@ -399,10 +418,10 @@ fn stars_card(stars: i64, gain: Option<(String, bool)>, gaps: bool) -> Markup {
       }
       div class="card-v" {
         span class="big" { (num(stars)) }
-        @match gain {
-          Some((x, true)) => span class="sub" title=(STARS_APPROX) { "≈ " (x) },
-          Some((x, false)) => span class="sub" { (x) },
-          None => {},
+        @if let Some(x) = gain {
+          span class=(if x.zero { "sub muted" } else { "sub" }) title=[x.approx.then_some(STARS_APPROX)] {
+            (x.label())
+          }
         }
       }
       div class="chart tall" { canvas id="chart_stars" role="img" aria-label="Stars over time" {} }
@@ -643,10 +662,7 @@ pub async fn repo_page(
     charts.push(traffic_card("Clones", "chart_clones", rp.clones, rp.clones_uniques, clones, p));
   }
 
-  let window_label = match (&gain, stars.is_empty()) {
-    (Some((x, approx)), false) => Some(format!("{}{x}", if *approx { "≈ " } else { "" })),
-    _ => None,
-  };
+  let window_label = gain.as_ref().filter(|_| !stars.is_empty()).map(|x| x.label());
 
   let data = ChartData {
     today: today.to_string(),
@@ -739,8 +755,13 @@ fn index_cols() -> Vec<IndexCol> {
   };
 
   let stars: IndexCell = |x, p| {
-    let gain = x.per.stars_gain().map(|x| html!(small class="muted" { (signed(x)) }));
-    two_lines(x.per.stars, p, gain.ok_or("No star history before this period"))
+    let gain = match x.per.stars_gain() {
+      None => Err("No star history before this period"),
+      Some(0) => Err("No change in this period"),
+      Some(x) => Ok(html!(small class="muted" { (signed(x)) })),
+    };
+
+    two_lines(x.per.stars, p, gain)
   };
 
   vec![
@@ -944,8 +965,8 @@ pub async fn index(
       (period_nav(p, false, period_url))
     }
 
-    // a plain table on the page, no card around it
-    div class="tscroll" { (table_html) }
+    // a plain table on the page: no card, and no scroll box, so its headers can stick to the top
+    (table_html)
   );
 
   Ok(base(&state, vec![], html))
@@ -1104,11 +1125,19 @@ mod tests {
     let last = Some(today);
 
     // 7d starts Oct 27, the day before is inside the gap
-    assert_eq!(stars_gain(&rp, Period(7), today, &[], last), Some(("−5 in 7d".into(), false)));
-    assert_eq!(stars_gain(&rp, Period(7), today, &gaps, last), Some(("−5 in 7d".into(), true)));
-    assert_eq!(stars_gain(&rp, Period(30), today, &gaps, last).unwrap().1, false);
-    assert_eq!(stars_gain(&rp, Period(30), today, &[], Some(day("2026-10-28"))).unwrap().1, true);
-    assert!(stars_gain(&rp, Period(-1), today, &gaps, last).is_none());
+    let gain = |p, gaps: &[_], last| stars_gain(&rp, p, today, gaps, last).map(|x| x.label());
+    assert_eq!(gain(Period(7), &[], last).as_deref(), Some("−5 in 7d"));
+    assert_eq!(gain(Period(7), &gaps, last).as_deref(), Some("≈ −5 in 7d"));
+    assert_eq!(gain(Period(30), &gaps, last).as_deref(), Some("−5 in 30d"));
+    assert_eq!(gain(Period(30), &[], Some(day("2026-10-28"))).as_deref(), Some("≈ −5 in 30d"));
+    assert!(gain(Period(-1), &gaps, last).is_none());
+
+    // no new stars: said so, muted, never "+0"
+    let flat = RepoPeriod { stars: 20, stars_start: 20, ..Default::default() };
+    let x = stars_gain(&flat, Period(30), today, &[], last).unwrap();
+    assert_eq!((x.label().as_str(), x.zero), ("no change in 30d", true));
+    let html = stars_card(20, Some(x), false).into_string();
+    assert!(html.contains("<span class=\"sub muted\">no change in 30d</span>"));
   }
 
   #[test]
@@ -1534,5 +1563,26 @@ mod tests {
       .into_string();
     assert!(frag.contains("<td class=\"c-stars\"><span class=\"v\">0</span></td>"));
     assert!(!frag.contains("<small"));
+  }
+
+  #[tokio::test]
+  async fn index_dash_for_no_star_change() {
+    let db = DbClient::new(&db_path("nostars")).await.unwrap();
+    let today = today();
+    db.insert_repo(&test_repo(5)).await.unwrap();
+    for x in [10, 0] {
+      let day = today - Days::new(x);
+      db.insert_stats(&test_repo(5), &format!("{day}T00:00:00Z"), &[]).await.unwrap();
+    }
+
+    let state = Arc::new(AppState::for_test(db, GhsFilter::new("")));
+    let mut headers = HeaderMap::new();
+    headers.insert("hx-target", "repos_table".parse().unwrap());
+    let uri = "/?period=7d".parse().unwrap();
+    let frag = index(State(state), OriginalUri(uri), headers).await.unwrap().into_string();
+    assert!(frag.contains(
+      "<td class=\"c-stars\"><span class=\"v\">5</span><small class=\"muted\" title=\"No change \
+       in this period\">—</small></td>"
+    ));
   }
 }
