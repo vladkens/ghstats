@@ -65,6 +65,8 @@ services:
       - ./data:/app/data
 ```
 
+The database is stored in `/app/data/ghstats.db` (`DB_PATH` changes it).
+
 ## Why ghstats?
 
 - **Own your history**: keep traffic data for months or years instead of losing it
@@ -111,7 +113,7 @@ The file is read before every GitHub API request, including every pagination req
 
 ## How it works?
 
-Every hour `ghstats` loads the list of public repositories and their statistics, and saves the data in SQLite. If at the first startup there is no repositories in the database, synchronization will happen immediately, if `ghstats` is restarted again, synchronization will be performed according to the scheduler. Data is stored per day, re-fetching data for the current day will update existing records in the database.
+Every hour `ghstats` loads the list of public repositories and their statistics, and saves the data in SQLite. If at the first startup there is no repositories in the database, synchronization will happen immediately, if `ghstats` is restarted again, synchronization will be performed according to the scheduler. Data is stored per day, re-fetching data for the current day will update existing records in the database. Release asset download counts are saved as a daily snapshot of GitHub's cumulative totals, refreshed on every sync (one extra request per repository, plus one per additional 100 releases), so download history starts from the first sync.
 
 All public repositories that can be accessed are saved. If you need more detailed configuration – open PR please.
 

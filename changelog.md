@@ -2,9 +2,11 @@
 
 ### Features
 
+- Release asset download counts are now saved daily (not shown in the UI yet)
 - Frontend libraries are now embedded into the binary and served by `ghstats` itself instead of being loaded from unpkg.com (#31)
 - Added `GHS_DISABLE_VERSION_CHECK` to turn off the check for new ghstats releases (#30, by @utoni)
 - Star history is backfilled from GitHub's star history API, which works for repositories you don't administer and needs far fewer requests (#27)
+- Schema migrations run in one transaction, so a failed upgrade leaves the database unchanged
 
 ### Fixes
 

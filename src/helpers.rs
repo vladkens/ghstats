@@ -91,6 +91,17 @@ async fn update_repo_metrics(db: &DbClient, gh: &GhClient, repo: &Repo, date: &s
   db.insert_referrers(repo, date, &referrers).await?;
   db.insert_paths(repo, date, &popular_paths).await?;
 
+  // traffic is kept even when releases fail
+  if let Err(e) = update_repo_releases(db, gh, repo, date).await {
+    tracing::warn!("failed to update releases for {}: {:?}", repo.full_name, e);
+  }
+
+  Ok(())
+}
+
+async fn update_repo_releases(db: &DbClient, gh: &GhClient, repo: &Repo, date: &str) -> Res {
+  let releases = gh.get_releases(&repo.full_name).await?;
+  db.insert_release_assets(repo, date, &releases).await?;
   Ok(())
 }
 
@@ -444,6 +455,7 @@ mod tests {
   struct MockGh {
     pulls_calls: Arc<Mutex<Vec<String>>>,
     history_calls: Arc<Mutex<Vec<String>>>,
+    releases_calls: Arc<Mutex<Vec<String>>>,
   }
 
   async fn pulls(
@@ -510,6 +522,52 @@ mod tests {
     Json(Value::Array(weeks)).into_response()
   }
 
+  fn release(id: u64, tag: &str, draft: bool, assets: &[(u64, &str, u64)]) -> Value {
+    let assets = assets
+      .iter()
+      .map(|(id, name, count)| json!({ "id": id, "name": name, "download_count": count }))
+      .collect::<Vec<_>>();
+
+    let published_at = if draft { Value::Null } else { json!(format!("2024-01-0{id}T00:00:00Z")) };
+    json!({
+      "id": id, "tag_name": tag, "name": tag, "draft": draft, "prerelease": tag.contains("-rc"),
+      "published_at": published_at, "assets": assets
+    })
+  }
+
+  async fn releases(
+    State(gh): State<MockGh>,
+    Path((_, repo)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
+  ) -> Response {
+    let page = query.get("page").map(String::as_str);
+    let calls = {
+      let mut calls = gh.releases_calls.lock().unwrap();
+      calls.push(format!("{repo}?page={}", page.unwrap_or_default()));
+      calls.len() as u64
+    };
+
+    match (repo.as_str(), page) {
+      ("releases", Some("1")) => {
+        let items = json!([
+          release(3, "v2.0", true, &[(30, "app-linux", 9)]),
+          release(2, "v1.1-rc", false, &[(20, "app-linux", 5), (21, "app-mac", 3)]),
+        ]);
+        let mut rep = Json(items).into_response();
+        let link = "<http://example.test/releases?page=2>; rel=\"next\"";
+        rep.headers_mut().insert("link", link.parse().unwrap());
+        rep
+      }
+      ("releases", Some("2")) => {
+        // grows with every request, like a live download counter
+        let assets = [(10, "app-linux", 40 + calls)];
+        Json(json!([release(1, "v1.0", false, &assets)])).into_response()
+      }
+      ("releases-500", _) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+      _ => Json(json!([])).into_response(),
+    }
+  }
+
   async fn mock_server(gh: MockGh) -> Res<(String, tokio::task::JoinHandle<()>)> {
     let router = Router::new()
       .route("/repos/{owner}/{repo}/pulls", get(pulls))
@@ -518,6 +576,7 @@ mod tests {
       .route("/repos/{owner}/{repo}/traffic/popular/referrers", get(empty_list))
       .route("/repos/{owner}/{repo}/traffic/popular/paths", get(empty_list))
       .route("/repos/{owner}/{repo}/stargazers/history", get(stars_history))
+      .route("/repos/{owner}/{repo}/releases", get(releases))
       .with_state(gh);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
@@ -564,6 +623,7 @@ mod tests {
     assert_eq!(totals.issues, 3);
     assert_eq!(totals.views_count, 2);
     assert!(mock.pulls_calls.lock().unwrap().is_empty());
+    assert!(db.get_repos_downloads(0).await?.is_empty()); // no releases, nothing stored
 
     server.abort();
     Ok(())
@@ -598,6 +658,62 @@ mod tests {
 
     assert!(update_repo_metrics(&db, &gh, &repo, DATE).await.is_err());
     assert!(db.get_repo_totals("owner/pulls-500").await?.is_none());
+
+    server.abort();
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn repo_releases_are_stored_every_sync_without_drafts() -> Res {
+    let mock = MockGh::default();
+    let (base_url, server) = mock_server(mock.clone()).await?;
+    let gh = GhClient::for_test(base_url)?;
+    let db = test_db("releases").await?;
+    let repo = sample_repo("owner/releases", None);
+
+    update_repo_metrics(&db, &gh, &repo, DATE).await?;
+    update_repo_metrics(&db, &gh, &repo, DATE).await?; // same day, raises today's row
+    assert_eq!(
+      *mock.releases_calls.lock().unwrap(),
+      vec!["releases?page=1", "releases?page=2", "releases?page=1", "releases?page=2"]
+    );
+
+    // no created_at in the mock, so published_at (day of or before the first snapshot) decides
+    let rels = db.get_release_downloads("owner/releases", 0).await?;
+    let rels = rels.iter().map(|x| (x.tag.as_str(), x.total, x.period)).collect::<Vec<_>>();
+    assert_eq!(rels, vec![("v1.1-rc", 8, 8), ("v1.0", 44, 44)]);
+
+    let assets = db.get_asset_downloads("owner/releases", 0).await?;
+    let assets = assets.iter().map(|x| (x.name.as_str(), x.total)).collect::<Vec<_>>();
+    assert_eq!(assets, vec![("app-linux", 49), ("app-mac", 3)]);
+
+    update_repo_metrics(&db, &gh, &repo, "2024-01-02T00:00:00Z").await?; // next day, new row
+    let daily = db.get_downloads_daily("owner/releases").await?;
+    let daily = daily.iter().map(|x| (x.date.as_str(), x.downloads)).collect::<Vec<_>>();
+    assert_eq!(daily, vec![(DATE, 52), ("2024-01-02T00:00:00Z", 2)]);
+
+    server.abort();
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn repo_with_releases_error_still_saves_traffic() -> Res {
+    let mock = MockGh::default();
+    let (base_url, server) = mock_server(mock.clone()).await?;
+    let gh = GhClient::for_test(base_url)?;
+    let db = test_db("releases-500").await?;
+    let repo = sample_repo("owner/releases-500", None);
+
+    update_repo_metrics(&db, &gh, &repo, DATE).await?;
+
+    let totals = db.get_repo_totals("owner/releases-500").await?.unwrap();
+    assert_eq!(totals.issues, 3);
+    assert_eq!(totals.views_count, 2);
+    assert!(db.get_repos_downloads(0).await?.is_empty());
+
+    // a failed fetch is retried on the next sync of the same day
+    update_repo_metrics(&db, &gh, &repo, DATE).await?;
+    assert_eq!(mock.releases_calls.lock().unwrap().len(), 2);
 
     server.abort();
     Ok(())
