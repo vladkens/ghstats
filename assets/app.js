@@ -454,6 +454,12 @@
   // charts read colors from CSS: redraw on theme change
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
 
+  // an emptied search box leaves no "q=" in the URL
+  document.addEventListener('htmx:configRequest', e => {
+    const params = e.detail.parameters;
+    for (const k of Object.keys(params)) if (params[k] === '') delete params[k];
+  });
+
   // MARK: Tables
 
   // tables opened with "Show all" stay open across htmx sort swaps

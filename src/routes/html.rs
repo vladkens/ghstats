@@ -79,11 +79,22 @@ fn aria_sort(is_cur: bool, dir: &Direction) -> Option<&'static str> {
   }
 }
 
+/// The supported periods, plus an old link's own (e.g. 14d) so it shows as active
+fn periods(cur: Period) -> Vec<Period> {
+  let mut out = Period::ALL.to_vec();
+  if !out.contains(&cur) {
+    let at = out.iter().position(|x| x.0 < 0 || x.0 > cur.0).unwrap_or(out.len());
+    out.insert(at, cur);
+  }
+
+  out
+}
+
 /// Plain links that htmx turns into an in-place swap of `target`, so the scroll position stays
 fn period_nav(cur: Period, oob: bool, target: &str, url: impl Fn(Period) -> String) -> Markup {
   html!(
     nav id="period_nav" class="seg" aria-label="Period" hx-swap-oob=[oob.then_some("true")] {
-      @for p in Period::ALL {
+      @for p in periods(cur) {
         a href=(url(p)) title=(p.title()) aria-current=[(p == cur).then_some("page")]
           hx-get=(url(p)) hx-target=(target) hx-select=[(target == "#page").then_some("#page")]
           hx-swap="outerHTML" hx-push-url="true"
@@ -762,10 +773,13 @@ fn downloads_card(series: &DownloadsSeries) -> Markup {
   )
 }
 
+/// The repo page with its whole state: period and each table's sort
 fn repo_url(repo: &str, qs: &PopularFilter) -> String {
+  let (refs_sort, refs_dir) = qs.sorting(&PopularKind::Refs);
+  let (paths_sort, paths_dir) = qs.sorting(&PopularKind::Path);
   format!(
-    "/{repo}?sort={}&direction={}&period={}&rsort={}&rdir={}",
-    qs.sort, qs.direction, qs.period, qs.rsort, qs.rdir
+    "/{repo}?period={}&refs_sort={refs_sort}&refs_dir={refs_dir}&paths_sort={paths_sort}&paths_dir={paths_dir}&rsort={}&rdir={}",
+    qs.period, qs.rsort, qs.rdir
   )
 }
 
@@ -773,11 +787,23 @@ fn dir_of(x: &str) -> Direction {
   if x == "asc" { Direction::Asc } else { Direction::Desc }
 }
 
-fn releases_table(repo: &str, dl: &Downloads, qs: &PopularFilter, period_tip: &str) -> Markup {
+fn releases_table(
+  repo: &str,
+  dl: &Downloads,
+  qs: &PopularFilter,
+  period_tip: &str,
+  oob: bool,
+) -> Markup {
   let has_period = qs.period.days().is_some();
+  // period numbers hidden while history is short can't order the rows either
+  let rsort = match (qs.rsort, dl.period) {
+    (ReleaseSort::Period, None) => ReleaseSort::Total,
+    (x, _) => x,
+  };
+
   let mut rows: Vec<&ReleaseDownloads> = dl.releases.iter().collect();
   rows.sort_by(|a, b| {
-    let ord = match qs.rsort {
+    let ord = match rsort {
       ReleaseSort::Tag => a.tag.to_lowercase().cmp(&b.tag.to_lowercase()),
       ReleaseSort::Published => a.published_at.cmp(&b.published_at),
       ReleaseSort::Period => a.period.cmp(&b.period),
@@ -791,7 +817,7 @@ fn releases_table(repo: &str, dl: &Downloads, qs: &PopularFilter, period_tip: &s
   });
 
   // the fill follows the sorted number, all-time downloads otherwise
-  let val = |x: &ReleaseDownloads| match qs.rsort {
+  let val = |x: &ReleaseDownloads| match rsort {
     ReleaseSort::Period => x.period,
     _ => x.total,
   };
@@ -807,12 +833,12 @@ fn releases_table(repo: &str, dl: &Downloads, qs: &PopularFilter, period_tip: &s
 
   cols.push((html!("All time"), ReleaseSort::Total, ""));
   let sort_url = |col: ReleaseSort| {
-    let dir = next_dir(qs.rsort == col, &qs.rdir, col == ReleaseSort::Tag);
+    let dir = next_dir(rsort == col, &qs.rdir, col == ReleaseSort::Tag);
     repo_url(repo, &PopularFilter { rsort: col, rdir: dir_of(dir), ..qs.clone() })
   };
 
   html!(
-    div id="releases_table" class="card flush" {
+    div id="releases_table" class="card flush" hx-swap-oob=[oob.then_some("true")] {
       table class="data" {
         colgroup {
           col; col class="n2 opt2";
@@ -822,13 +848,17 @@ fn releases_table(repo: &str, dl: &Downloads, qs: &PopularFilter, period_tip: &s
         thead {
           tr {
             @for (name, col, class) in &cols {
-              th scope="col" class=(class) aria-sort=[aria_sort(qs.rsort == *col, &qs.rdir)] {
-                button type="button"
-                  hx-get=(sort_url(*col))
-                  hx-target="#releases_table"
-                  hx-swap="outerHTML"
-                  hx-replace-url="true"
-                { (name) }
+              th scope="col" class=(class) aria-sort=[aria_sort(rsort == *col, &qs.rdir)] {
+                @if *col == ReleaseSort::Period && dl.period.is_none() {
+                  (name)
+                } @else {
+                  button type="button"
+                    hx-get=(sort_url(*col))
+                    hx-target="#releases_table"
+                    hx-swap="outerHTML"
+                    hx-replace-url="true"
+                  { (name) }
+                }
               }
             }
           }
@@ -889,26 +919,28 @@ fn popular_html(
   repo: &str,
   kind: &PopularKind,
   rows: Vec<PopularRow>,
-  qs: &PopularFilter,
+  state: &PopularFilter,
+  oob: bool,
 ) -> Markup {
   let mut rows: Vec<PopularRow> = rows.into_iter().filter(|x| x.views > 0).collect();
   if rows.is_empty() {
     return html!();
   }
 
+  let (sort, direction) = state.sorting(kind);
   // the row fill follows the sorted column, views when sorted by name
-  let val = |x: &PopularRow| match qs.sort {
+  let val = |x: &PopularRow| match sort {
     PopularSort::Uniques => x.uniques,
     _ => x.views,
   };
 
   rows.sort_by(|a, b| {
-    let ord = match qs.sort {
+    let ord = match sort {
       PopularSort::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
       _ => val(a).cmp(&val(b)),
     };
 
-    match qs.direction {
+    match direction {
       Direction::Asc => ord,
       Direction::Desc => ord.reverse(),
     }
@@ -925,18 +957,26 @@ fn popular_html(
     [(title, PopularSort::Name), ("Views", PopularSort::Count), ("Unique", PopularSort::Uniques)];
 
   let sort_url = |col: &PopularSort| {
-    let dir = next_dir(qs.sort == *col, &qs.direction, *col == PopularSort::Name);
-    repo_url(repo, &PopularFilter { sort: *col, direction: dir_of(dir), ..qs.clone() })
+    let dir = dir_of(next_dir(sort == *col, &direction, *col == PopularSort::Name));
+    let next = match kind {
+      PopularKind::Refs => {
+        PopularFilter { refs_sort: Some(*col), refs_dir: Some(dir), ..state.clone() }
+      }
+      PopularKind::Path => {
+        PopularFilter { paths_sort: Some(*col), paths_dir: Some(dir), ..state.clone() }
+      }
+    };
+    repo_url(repo, &next)
   };
 
   html!(
-    div id=(html_id) class="card flush" {
+    div id=(html_id) class="card flush" hx-swap-oob=[oob.then_some("true")] {
       table class="data" {
         colgroup { col; col class="n"; col class="n"; }
         thead {
           tr {
             @for (name, col) in &cols {
-              th scope="col" aria-sort=[aria_sort(qs.sort == *col, &qs.direction)] {
+              th scope="col" aria-sort=[aria_sort(sort == *col, &direction)] {
                 button type="button"
                   hx-get=(sort_url(col))
                   hx-target=(format!("#{html_id}"))
@@ -984,16 +1024,17 @@ async fn popular_table(
   repo: &str,
   kind: &PopularKind,
   qs: &PopularFilter,
+  oob: bool,
 ) -> HtmlRes {
-  let items = db.get_popular_items(repo, kind, qs).await?;
+  let items = db.get_popular_items(repo, kind, &qs.table(kind)).await?;
   let rows = items.into_iter().map(|x| PopularRow::new(repo, kind, x)).collect();
-  Ok(popular_html(repo, kind, rows, qs))
+  Ok(popular_html(repo, kind, rows, qs, oob))
 }
 
 async fn repo_popular_tables(db: &DbClient, repo: &str, qs: &PopularFilter) -> HtmlRes {
   let tables = [
-    popular_table(db, repo, &PopularKind::Refs, qs).await?,
-    popular_table(db, repo, &PopularKind::Path, qs).await?,
+    popular_table(db, repo, &PopularKind::Refs, qs, false).await?,
+    popular_table(db, repo, &PopularKind::Path, qs, false).await?,
   ];
   let tables: Vec<Markup> = tables.into_iter().filter(|x| !x.0.is_empty()).collect();
 
@@ -1027,12 +1068,6 @@ pub async fn repo_page(
     return AppError::not_found();
   }
 
-  match get_hx_target(&headers) {
-    Some("refs_table") => return popular_table(db, &repo, &PopularKind::Refs, &qs).await,
-    Some("path_table") => return popular_table(db, &repo, &PopularKind::Path, &qs).await,
-    _ => {}
-  }
-
   let (p, today) = (qs.period, today());
   let rp = db.get_periods(Some(&repo), p, today).await?.pop().unwrap_or_default();
   let daily = db.get_daily(&repo, today).await?;
@@ -1058,10 +1093,19 @@ pub async fn repo_page(
   let releases = db.get_release_downloads(&repo, since).await?;
   let dl_daily = db.get_release_downloads_daily(&repo).await?;
   let dl = downloads(releases, &dl_daily, p, today);
-  if let (Some("releases_table"), Some(x)) = (get_hx_target(&headers), &dl) {
-    let tip = format!("{}: {}", p.title(), period_range(p, today, first));
-    return Ok(releases_table(&repo, x, &qs, &tip));
+  let period_url = |x: Period| repo_url(&repo, &PopularFilter { period: x, ..qs.0.clone() });
+  let tip = format!("{}: {}", p.title(), period_range(p, today, first));
+
+  // a table sort swaps that table; the others and the period links come along with the new state
+  if let Some(target @ ("refs_table" | "path_table" | "releases_table")) = get_hx_target(&headers) {
+    let refs = popular_table(db, &repo, &PopularKind::Refs, &qs, target != "refs_table").await?;
+    let paths = popular_table(db, &repo, &PopularKind::Path, &qs, target != "path_table").await?;
+    let releases =
+      dl.as_ref().map(|x| releases_table(&repo, x, &qs, &tip, target != "releases_table"));
+    let nav = period_nav(p, true, "#page", period_url);
+    return Ok(html!((refs) (paths) @if let Some(x) = releases { (x) } (nav)));
   }
+
   let meta = db.get_repo_meta(&repo).await?;
 
   let mut tiles = vec![];
@@ -1100,8 +1144,6 @@ pub async fn repo_page(
     downloads: series,
   };
 
-  let period_url = |x: Period| repo_url(&repo, &PopularFilter { period: x, ..qs.0.clone() });
-
   let html = html!(
     div id="page" class="stack" {
       div class="periodbar" {
@@ -1128,7 +1170,7 @@ pub async fn repo_page(
 
       @if let Some(x) = series { (downloads_card(x)) }
       @if let Some(x) = &dl {
-        (releases_table(&repo, x, &qs, &format!("{}: {}", p.title(), period_range(p, today, first))))
+        (releases_table(&repo, x, &qs, &tip, false))
       }
 
       (repo_popular_tables(db, &repo, &qs).await?)
@@ -1429,8 +1471,12 @@ pub async fn index(
         }
       }
       tbody {
-        @if rows.is_empty() && !cur_q.is_empty() {
-          tr { td colspan=(cols.len()) class="muted" { "No repos match “" (cur_q) "”." } }
+        @if rows.is_empty() {
+          tr {
+            td colspan=(cols.len()) class="muted" {
+              "No repositories match" @if !cur_q.is_empty() { " “" (cur_q) "”" }
+            }
+          }
         }
 
         @for row in &rows {
@@ -1647,7 +1693,7 @@ mod tests {
       series: None,
     };
 
-    let html = releases_table("o/r", &dl, &PopularFilter::default(), "").into_string();
+    let html = releases_table("o/r", &dl, &PopularFilter::default(), "", false).into_string();
     let order: Vec<_> = ["v1.1.0-rc1", "v1.0.0", "v0.9.0"]
       .iter()
       .map(|x| html.find(&format!(">{x}<")).unwrap())
@@ -1663,6 +1709,49 @@ mod tests {
       html.contains("aria-sort=\"descending\"><button")
         && html.contains("rsort=published&amp;rdir=asc")
     );
+  }
+
+  #[test]
+  fn repo_state_is_per_table_and_lenient() {
+    let uri =
+      "/o/r?sort=uniques&refs_sort=name&direction=up&rsort=bogus&period=14".parse().unwrap();
+    let qs: Query<PopularFilter> = Query::try_from_uri(&uri).unwrap();
+    assert_eq!(qs.sorting(&PopularKind::Refs), (PopularSort::Name, Direction::Desc));
+    assert_eq!(qs.sorting(&PopularKind::Path), (PopularSort::Uniques, Direction::Desc), "old pair");
+    assert_eq!(qs.rsort, ReleaseSort::Published, "unknown values fall back");
+    assert_eq!(
+      periods(qs.period).iter().map(|x| x.label()).collect::<Vec<_>>(),
+      ["7d", "14d", "30d", "90d", "1y", "All"]
+    );
+
+    let url = repo_url("o/r", &qs);
+    assert!(
+      url.contains("refs_sort=name&refs_dir=desc&paths_sort=uniques&paths_dir=desc"),
+      "{url}"
+    );
+
+    // period numbers hidden while history is short: not sortable, rows by all time
+    let rel = |tag: &str, total, period| ReleaseDownloads {
+      release_id: 0,
+      tag: tag.into(),
+      published_at: None,
+      prerelease: false,
+      total,
+      period,
+    };
+    let releases = vec![rel("a", 1, 9), rel("b", 5, 0)];
+    let dl = Downloads {
+      total: 6,
+      period: None,
+      since: day("2026-11-01"),
+      change: None,
+      releases,
+      series: None,
+    };
+    let qs = PopularFilter { rsort: ReleaseSort::Period, period: Period(30), ..Default::default() };
+    let html = releases_table("o/r", &dl, &qs, "", false).into_string();
+    assert!(html.find(">b<").unwrap() < html.find(">a<").unwrap());
+    assert!(!html.contains("rsort=period"), "no sort link on the hidden column");
   }
 
   #[test]
@@ -1718,7 +1807,7 @@ mod tests {
     };
 
     let qs = PopularFilter { sort: PopularSort::Uniques, ..Default::default() };
-    let html = popular_html("o/r", &kind, rows(10), &qs).into_string();
+    let html = popular_html("o/r", &kind, rows(10), &qs, false).into_string();
     assert!(html.contains("<td>10</td><td>10</td>"), "uniques clamped to views");
     assert!(!html.contains("/pulls"), "rows without views are dropped");
     assert!(html.contains("<tr style=\"--w:100.0%\"><td class=\"name\" title=\"/\">"));
@@ -1728,7 +1817,7 @@ mod tests {
 
     let qs =
       PopularFilter { sort: PopularSort::Name, direction: Direction::Asc, ..Default::default() };
-    let html = popular_html("o/r", &kind, rows(0), &qs).into_string();
+    let html = popular_html("o/r", &kind, rows(0), &qs, false).into_string();
     assert!(
       html.contains("<tr style=\"--w:25.0%\"><td class=\"name\" title=\"/\">"),
       "fill by views"

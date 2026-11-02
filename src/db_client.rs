@@ -465,10 +465,29 @@ pub struct Windows {
   pub prev_start: NaiveDate,
 }
 
+/// Unknown query values fall back to the default instead of failing the request
+fn lenient<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned + Default>(
+  de: D,
+) -> Result<T, D::Error> {
+  let val = String::deserialize(de)?;
+  let de = serde::de::value::StrDeserializer::<serde::de::value::Error>::new(&val);
+  Ok(T::deserialize(de).unwrap_or_default())
+}
+
+fn lenient_opt<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned>(
+  de: D,
+) -> Result<Option<T>, D::Error> {
+  let val = String::deserialize(de)?;
+  let de = serde::de::value::StrDeserializer::<serde::de::value::Error>::new(&val);
+  Ok(T::deserialize(de).ok())
+}
+
 #[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct RepoFilter {
+  #[serde(deserialize_with = "lenient")]
   pub sort: RepoSort,
+  #[serde(deserialize_with = "lenient")]
   pub direction: Direction,
   pub q: Option<String>,
   pub owner: Option<String>,
@@ -491,15 +510,46 @@ impl std::fmt::Display for ReleaseSort {
   }
 }
 
+/// Repo page state; `sort`/`direction` is the old shared pair, the popular tables' fallback
 #[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct PopularFilter {
+  #[serde(deserialize_with = "lenient")]
   pub sort: PopularSort,
+  #[serde(deserialize_with = "lenient")]
   pub direction: Direction,
   pub period: Period,
-  /// the releases table has its own sort
+  #[serde(deserialize_with = "lenient_opt")]
+  pub refs_sort: Option<PopularSort>,
+  #[serde(deserialize_with = "lenient_opt")]
+  pub refs_dir: Option<Direction>,
+  #[serde(deserialize_with = "lenient_opt")]
+  pub paths_sort: Option<PopularSort>,
+  #[serde(deserialize_with = "lenient_opt")]
+  pub paths_dir: Option<Direction>,
+  #[serde(deserialize_with = "lenient")]
   pub rsort: ReleaseSort,
+  #[serde(deserialize_with = "lenient")]
   pub rdir: Direction,
+}
+
+impl PopularFilter {
+  pub fn sorting(&self, kind: &PopularKind) -> (PopularSort, Direction) {
+    match kind {
+      PopularKind::Refs => {
+        (self.refs_sort.unwrap_or(self.sort), self.refs_dir.unwrap_or(self.direction))
+      }
+      PopularKind::Path => {
+        (self.paths_sort.unwrap_or(self.sort), self.paths_dir.unwrap_or(self.direction))
+      }
+    }
+  }
+
+  /// The filter one popular table queries with
+  pub fn table(&self, kind: &PopularKind) -> Self {
+    let (sort, direction) = self.sorting(kind);
+    Self { sort, direction, ..self.clone() }
+  }
 }
 
 // MARK: DbClient
