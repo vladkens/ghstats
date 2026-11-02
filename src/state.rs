@@ -32,6 +32,24 @@ pub struct SyncStatus {
   pub phase_started: Option<DateTime<Utc>>,
   pub done: usize,
   pub total: usize,
+  /// items of the whole job (planned, grows if a phase is bigger), done in finished phases
+  pub job_total: usize,
+  pub job_done: usize,
+  pub pct: usize,
+}
+
+impl SyncStatus {
+  /// The job's percent never goes back when a phase turns out bigger than planned
+  pub fn advance(&mut self, phase: &'static str, done: usize, total: usize) {
+    if self.phase != phase {
+      self.job_done += self.total;
+      self.phase_started = Some(Utc::now());
+    }
+
+    (self.phase, self.done, self.total) = (phase, done, total);
+    self.job_total = self.job_total.max(self.job_done + total).max(1);
+    self.pct = self.pct.max(((self.job_done + done) * 100 / self.job_total).min(99));
+  }
 }
 
 impl DbHealth {
@@ -116,18 +134,22 @@ impl AppState {
 
   pub fn record_sync_start(&self) {
     let mut status = self.sync_status.lock().unwrap();
-    status.running = true;
-    status.started = Some(Utc::now());
-    (status.phase, status.done, status.total) = ("", 0, 0);
+    let (last_success, last_error) = (status.last_success, status.last_error.take());
+    *status = SyncStatus {
+      running: true,
+      started: Some(Utc::now()),
+      last_success,
+      last_error,
+      ..Default::default()
+    };
+  }
+
+  pub fn record_sync_plan(&self, items: usize) {
+    self.sync_status.lock().unwrap().job_total = items;
   }
 
   pub fn record_sync_progress(&self, phase: &'static str, done: usize, total: usize) {
-    let mut status = self.sync_status.lock().unwrap();
-    if status.phase != phase {
-      status.phase_started = Some(Utc::now());
-    }
-
-    (status.phase, status.done, status.total) = (phase, done, total);
+    self.sync_status.lock().unwrap().advance(phase, done, total);
   }
 
   pub fn record_sync_success(&self) {

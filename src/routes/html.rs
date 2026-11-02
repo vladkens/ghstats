@@ -12,8 +12,8 @@ use url::form_urlencoded::Serializer;
 use crate::AppState;
 use crate::db_client::{
   BACKFILL_DAYS, CMP_LAG, DbClient, Direction, Period, PopularFilter, PopularKind, PopularSort,
-  ReleaseDownloads, RepoDaily, RepoFilter, RepoMeta, RepoPeriod, RepoPopularItem, RepoSort,
-  RepoTotals,
+  ReleaseDownloads, ReleaseSort, RepoDaily, RepoFilter, RepoMeta, RepoPeriod, RepoPopularItem,
+  RepoSort, RepoTotals,
 };
 use crate::routes::assets::vendor_url;
 use crate::state::SyncStatus;
@@ -146,7 +146,7 @@ fn sync_progress(status: &SyncStatus, now: DateTime<Utc>) -> (String, String) {
     }
   }
 
-  (format!("Syncing {done}/{total}"), title)
+  (format!("Syncing {}%", status.pct), title)
 }
 
 /// Public-safe: progress for a long sync, else the last success; errors stay in logs and /health
@@ -209,7 +209,8 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
         script src=(vendor_url("luxon.min.js")) {}
         script src=(vendor_url("chartjs-adapter-luxon.umd.min.js")) {}
         script src=(vendor_url("htmx.min.js")) {}
-        script { "htmx.config.historyCacheSize = 0;" }
+        // settling style/width/height after a swap would wipe the sizes Chart.js set on canvases
+        script { "htmx.config.historyCacheSize = 0; htmx.config.attributesToSettle = ['class'];" }
         script { (PreEscaped(include_str!("../../assets/app.js"))) }
         style { (PreEscaped(include_str!("../../assets/app.css"))) }
       }
@@ -646,8 +647,9 @@ struct DownloadsSeries {
 
 struct Downloads {
   total: i64,
-  /// in the period, when any of its days were collected
+  /// in the period, when at least half of its days were collected
   period: Option<i64>,
+  since: NaiveDate,
   change: Option<Change>,
   releases: Vec<ReleaseDownloads>,
   series: Option<DownloadsSeries>,
@@ -686,7 +688,8 @@ fn downloads(
       let (cur, cur_days) = sum(w.start, today + Days::new(1));
       let (cmp, cmp_days) = sum(w.cmp_start, w.cmp_end);
       let (prev, prev_days) = sum(w.prev_start, w.cmp_start);
-      ((cur_days > 0).then_some(cur), Change::new(cmp, cmp_days, prev, prev_days, p, today))
+      let days = p.days().unwrap_or(1);
+      ((cur_days * 2 >= days).then_some(cur), Change::new(cmp, cmp_days, prev, prev_days, p, today))
     }
     None => (None, None),
   };
@@ -717,16 +720,28 @@ fn downloads(
     DownloadsSeries { start: start.to_string(), days, labels }
   });
 
-  Some(Downloads { total, period, change, releases, series })
+  // a delta needs the snapshot of the day before
+  let since = per_day.first().map(|x| x.0 - Days::new(1)).unwrap_or(today);
+  Some(Downloads { total, period, since, change, releases, series })
+}
+
+fn history_tip(since: NaiveDate, total: i64) -> String {
+  format!("Download history starts {since} · {} all time", num(total))
 }
 
 fn downloads_tile(dl: &Downloads, p: Period) -> Markup {
-  match dl.period {
-    Some(x) => {
+  match (dl.period, p.days()) {
+    (Some(x), _) => {
       let sub = html!((num(dl.total)) " all time");
       tile("Downloads", x, sub, dl.change.as_ref().map(|x| x.tile(p)))
     }
-    None => tile("Downloads", dl.total, html!(span class="muted" { "all time" }), None),
+    (None, Some(_)) => {
+      let sub = html!(span class="muted" title=(history_tip(dl.since, dl.total)) {
+        "collecting since " (dl.since)
+      });
+      tile("Downloads", dl.total, sub, None)
+    }
+    (None, None) => tile("Downloads", dl.total, html!(span class="muted" { "all time" }), None),
   }
 }
 
@@ -747,14 +762,53 @@ fn downloads_card(series: &DownloadsSeries) -> Markup {
   )
 }
 
-fn releases_table(dl: &Downloads, p: Period, today: NaiveDate, period_tip: &str) -> Markup {
-  let has_period = p.days().is_some();
-  let val = |x: &ReleaseDownloads| if has_period { x.period } else { x.total };
-  let max = dl.releases.iter().map(val).max().unwrap_or(1).max(1);
-  let published = |x: &ReleaseDownloads| {
-    let day = x.published_at.as_deref()?.get(..10)?.parse::<NaiveDate>().ok()?;
-    let fmt = if day.year() == today.year() { "%b %-d" } else { "%b %-d, %Y" };
-    Some(day.format(fmt).to_string())
+fn repo_url(repo: &str, qs: &PopularFilter) -> String {
+  format!(
+    "/{repo}?sort={}&direction={}&period={}&rsort={}&rdir={}",
+    qs.sort, qs.direction, qs.period, qs.rsort, qs.rdir
+  )
+}
+
+fn dir_of(x: &str) -> Direction {
+  if x == "asc" { Direction::Asc } else { Direction::Desc }
+}
+
+fn releases_table(repo: &str, dl: &Downloads, qs: &PopularFilter, period_tip: &str) -> Markup {
+  let has_period = qs.period.days().is_some();
+  let mut rows: Vec<&ReleaseDownloads> = dl.releases.iter().collect();
+  rows.sort_by(|a, b| {
+    let ord = match qs.rsort {
+      ReleaseSort::Tag => a.tag.to_lowercase().cmp(&b.tag.to_lowercase()),
+      ReleaseSort::Published => a.published_at.cmp(&b.published_at),
+      ReleaseSort::Period => a.period.cmp(&b.period),
+      ReleaseSort::Total => a.total.cmp(&b.total),
+    };
+
+    match qs.rdir {
+      Direction::Asc => ord,
+      Direction::Desc => ord.reverse(),
+    }
+  });
+
+  // the fill follows the sorted number, all-time downloads otherwise
+  let val = |x: &ReleaseDownloads| match qs.rsort {
+    ReleaseSort::Period => x.period,
+    _ => x.total,
+  };
+  let max = rows.iter().map(|x| val(x)).max().unwrap_or(1).max(1);
+
+  let mut cols = vec![
+    (html!("Releases"), ReleaseSort::Tag, ""),
+    (html!("Published"), ReleaseSort::Published, "opt2"),
+  ];
+  if has_period {
+    cols.push((html!("Downloads "(period_mark(period_tip))), ReleaseSort::Period, ""));
+  }
+
+  cols.push((html!("All time"), ReleaseSort::Total, ""));
+  let sort_url = |col: ReleaseSort| {
+    let dir = next_dir(qs.rsort == col, &qs.rdir, col == ReleaseSort::Tag);
+    repo_url(repo, &PopularFilter { rsort: col, rdir: dir_of(dir), ..qs.clone() })
   };
 
   html!(
@@ -762,23 +816,37 @@ fn releases_table(dl: &Downloads, p: Period, today: NaiveDate, period_tip: &str)
       table class="data" {
         colgroup {
           col; col class="n2 opt2";
-          @if has_period { col class="n2"; }
+          @if has_period { col class="n3"; }
           col class="n2";
         }
         thead {
           tr {
-            th scope="col" { "Releases" }
-            th scope="col" class="opt2" { "Published" }
-            @if has_period { th scope="col" { "Downloads " (period_mark(period_tip)) } }
-            th scope="col" { "All time" }
+            @for (name, col, class) in &cols {
+              th scope="col" class=(class) aria-sort=[aria_sort(qs.rsort == *col, &qs.rdir)] {
+                button type="button"
+                  hx-get=(sort_url(*col))
+                  hx-target="#releases_table"
+                  hx-swap="outerHTML"
+                  hx-replace-url="true"
+                { (name) }
+              }
+            }
           }
         }
         tbody {
-          @for (idx, x) in dl.releases.iter().enumerate() {
+          @for (idx, x) in rows.iter().enumerate() {
             tr hidden[idx >= ROWS_SHOWN] style=(format!("--w:{:.1}%", val(x) as f64 / max as f64 * 100.0)) {
-              td class="name mono" title=(x.tag) { (x.tag) }
-              td class="opt2" { (published(x).unwrap_or_default()) }
-              @if has_period { td { (num(x.period)) } }
+              td class="name" title=(x.tag) {
+                span class="mono" { (x.tag) }
+                @if x.prerelease { " " span class="pre" { "pre-release" } }
+              }
+              td class="opt2" { (x.published_at.as_deref().and_then(|x| x.get(..10)).unwrap_or_default()) }
+              @if has_period {
+                @match dl.period {
+                  Some(_) => td { (num(x.period)) },
+                  None => td class="muted" title=(history_tip(dl.since, dl.total)) { "—" },
+                }
+              }
               td { (num(x.total)) }
             }
           }
@@ -858,7 +926,7 @@ fn popular_html(
 
   let sort_url = |col: &PopularSort| {
     let dir = next_dir(qs.sort == *col, &qs.direction, *col == PopularSort::Name);
-    format!("/{}?sort={}&direction={}&period={}", repo, col, dir, qs.period)
+    repo_url(repo, &PopularFilter { sort: *col, direction: dir_of(dir), ..qs.clone() })
   };
 
   html!(
@@ -990,6 +1058,10 @@ pub async fn repo_page(
   let releases = db.get_release_downloads(&repo, since).await?;
   let dl_daily = db.get_release_downloads_daily(&repo).await?;
   let dl = downloads(releases, &dl_daily, p, today);
+  if let (Some("releases_table"), Some(x)) = (get_hx_target(&headers), &dl) {
+    let tip = format!("{}: {}", p.title(), period_range(p, today, first));
+    return Ok(releases_table(&repo, x, &qs, &tip));
+  }
   let meta = db.get_repo_meta(&repo).await?;
 
   let mut tiles = vec![];
@@ -1028,8 +1100,7 @@ pub async fn repo_page(
     downloads: series,
   };
 
-  let period_url =
-    |x: Period| format!("/{}?sort={}&direction={}&period={}", repo, qs.sort, qs.direction, x);
+  let period_url = |x: Period| repo_url(&repo, &PopularFilter { period: x, ..qs.0.clone() });
 
   let html = html!(
     div id="page" class="stack" {
@@ -1057,7 +1128,7 @@ pub async fn repo_page(
 
       @if let Some(x) = series { (downloads_card(x)) }
       @if let Some(x) = &dl {
-        (releases_table(x, p, today, &format!("{}: {}", p.title(), period_range(p, today, first))))
+        (releases_table(&repo, x, &qs, &format!("{}: {}", p.title(), period_range(p, today, first))))
       }
 
       (repo_popular_tables(db, &repo, &qs).await?)
@@ -1080,7 +1151,8 @@ struct IndexRow<'a> {
 }
 
 struct IndexDownloads {
-  value: i64,
+  /// in the period; `Err(tooltip)` while history covers under half of it
+  value: Result<i64, String>,
   change: Result<Change, &'static str>,
 }
 
@@ -1117,7 +1189,13 @@ fn index_cols(downloads: bool) -> Vec<IndexCol> {
   };
 
   let dl: IndexCell = |x, p| match &x.dl {
-    Some(dl) => two_lines(dl.value, p, dl.change.as_ref().map(|x| x.short()).map_err(|x| *x)),
+    Some(IndexDownloads { value: Ok(v), change }) => {
+      two_lines(*v, p, change.as_ref().map(|x| x.short()).map_err(|x| *x))
+    }
+    Some(IndexDownloads { value: Err(tip), .. }) => html!(
+      span class="v muted" title=(tip) { "—" }
+      small class="muted" title=(tip) { "—" }
+    ),
     None => html!(
       span class="v muted" { "—" }
       @if p.days().is_some() { small class="muted" title="No release assets" { "—" } }
@@ -1215,14 +1293,17 @@ async fn index_downloads(
   let Some(w) = p.windows(today) else {
     let none = || Err("No previous period for all time");
     return Ok(
-      totals.into_iter().map(|(id, x)| (id, IndexDownloads { value: x, change: none() })).collect(),
+      totals
+        .into_iter()
+        .map(|(id, x)| (id, IndexDownloads { value: Ok(x), change: none() }))
+        .collect(),
     );
   };
 
   let daily = db.get_repos_downloads_daily(&w.prev_start.to_string()).await?;
   let out = totals
     .into_iter()
-    .map(|(id, _)| {
+    .map(|(id, total)| {
       let days: Vec<(NaiveDate, i64)> =
         daily.iter().filter(|x| x.0 == id).filter_map(|x| Some((x.1.parse().ok()?, x.2))).collect();
       let sum = |from: NaiveDate, to: NaiveDate| {
@@ -1232,7 +1313,12 @@ async fn index_downloads(
 
       let (cmp, cmp_days) = sum(w.cmp_start, w.cmp_end);
       let (prev, prev_days) = sum(w.prev_start, w.cmp_start);
-      let value = sum(w.start, today + Days::new(1)).0;
+      let (value, value_days) = sum(w.start, today + Days::new(1));
+      let since = days.iter().map(|x| x.0).min().map(|x| x - Days::new(1)).unwrap_or(today);
+      let value = match value_days * 2 >= p.days().unwrap_or(1) {
+        true => Ok(value),
+        false => Err(history_tip(since, total)),
+      };
       let change = Change::compare(cmp, cmp_days, prev, prev_days, p, today);
       (id, IndexDownloads { value, change })
     })
@@ -1471,7 +1557,11 @@ mod tests {
     let uri = OriginalUri(uri.parse().unwrap());
     match uri.path() {
       "/" => index(State(state.clone()), uri, headers).await,
-      _ => repo_page(State(state.clone()), Path(("o".into(), "r".into())), uri, headers).await,
+      x => {
+        let (owner, repo) = x.trim_start_matches('/').split_once('/').unwrap();
+        let path = Path((owner.to_string(), repo.to_string()));
+        repo_page(State(state.clone()), path, uri, headers).await
+      }
     }
   }
 
@@ -1491,14 +1581,11 @@ mod tests {
     let ago = |x| Some(now - chrono::Duration::minutes(x));
     let ok = SyncStatus { last_success: ago(5), ..Default::default() };
     let failed = SyncStatus { last_error: Some("401".into()), ..ok.clone() };
-    let short = SyncStatus {
-      running: true,
-      started: Some(now),
-      phase: "Updating traffic",
-      total: 41,
-      ..ok.clone()
-    };
-    let long = SyncStatus { phase_started: ago(1), started: ago(1), done: 12, ..short.clone() };
+    let short = SyncStatus { running: true, started: Some(now), ..ok.clone() };
+    let mut long = SyncStatus { started: ago(1), job_total: 50, ..short.clone() };
+    long.advance("Updating traffic", 0, 40);
+    long.phase_started = ago(1);
+    long.advance("Updating traffic", 12, 40);
 
     // (status, text, polls)
     let cases = [
@@ -1506,7 +1593,7 @@ mod tests {
       (ok, Some("Synced 5m ago"), false),
       (failed, Some("Synced 5m ago"), false),
       (short, Some("Synced 5m ago"), true),
-      (long.clone(), Some("Syncing 12/41"), true),
+      (long.clone(), Some("Syncing 24%"), true),
     ];
     for (status, text, polls) in cases {
       let html = sync_label(&status, now).into_string();
@@ -1516,10 +1603,65 @@ mod tests {
       assert!(!html.contains("401") && !html.contains("failed"), "errors never in the page");
     }
 
-    // 12 of 41 in a minute: 29 left at 5 s each
+    // 12 of 40 in a minute: 28 left at 5 s each
     let html = sync_label(&long, now).into_string();
     assert!(
-      html.contains("title=\"Updating traffic: 12 of 41 repos · started 1m ago · ~2 min left\"")
+      html.contains("title=\"Updating traffic: 12 of 40 repos · started 1m ago · ~2 min left\"")
+    );
+
+    // the star phase turns out bigger than planned: the percent holds, then grows to 99 at most
+    let mut pct = vec![];
+    for (phase, done, total) in [
+      ("Updating traffic", 40, 40),
+      ("Star history", 0, 20),
+      ("Star history", 10, 20),
+      ("Star history", 20, 20),
+    ] {
+      long.advance(phase, done, total);
+      pct.push(long.pct);
+    }
+    assert_eq!(pct, vec![80, 80, 83, 99]);
+  }
+
+  #[test]
+  fn releases_newest_first_with_prereleases() {
+    let rel = |tag: &str, day: &str, prerelease, total| ReleaseDownloads {
+      release_id: 0,
+      tag: tag.into(),
+      published_at: Some(format!("{day}T10:00:00Z")),
+      prerelease,
+      total,
+      period: 1,
+    };
+    let releases = vec![
+      rel("v1.0.0", "2026-10-14", false, 100),
+      rel("v0.9.0", "2025-03-01", false, 400),
+      rel("v1.1.0-rc1", "2026-10-20", true, 10),
+    ];
+    let dl = Downloads {
+      total: 510,
+      period: Some(3),
+      since: day("2025-01-01"),
+      change: None,
+      releases,
+      series: None,
+    };
+
+    let html = releases_table("o/r", &dl, &PopularFilter::default(), "").into_string();
+    let order: Vec<_> = ["v1.1.0-rc1", "v1.0.0", "v0.9.0"]
+      .iter()
+      .map(|x| html.find(&format!(">{x}<")).unwrap())
+      .collect();
+    assert!(order.is_sorted(), "newest first");
+    assert!(html.contains(">v1.1.0-rc1</span> <span class=\"pre\">pre-release</span>"));
+    assert!(html.contains("<td class=\"opt2\">2025-03-01</td>"), "ISO dates");
+    assert!(
+      html.contains("style=\"--w:100.0%\"><td class=\"name\" title=\"v0.9.0\">"),
+      "fill by all time"
+    );
+    assert!(
+      html.contains("aria-sort=\"descending\"><button")
+        && html.contains("rsort=published&amp;rdir=asc")
     );
   }
 
@@ -1759,23 +1901,30 @@ mod tests {
       db.insert_stats(&repo, &format!("{}T00:00:00Z", ago(0)), &[]).await.unwrap();
     }
 
-    let release = |count| Release {
-      id: 7,
-      tag_name: "</script><b>x</b>".into(),
+    let release = |id, tag: &str, count| Release {
+      id,
+      tag_name: tag.into(),
       draft: false,
+      prerelease: false,
       published_at: Some(format!("{}T10:00:00Z", ago(40))),
       assets: vec![ReleaseAsset {
-        id: 70,
+        id: id * 10,
         name: "app.tar.gz".into(),
         download_count: count,
         created_at: None,
       }],
     };
-    for (x, count) in [(3, 100), (2, 120), (1, 150)] {
-      db.insert_release_assets(&test_repo(5), &format!("{}T00:00:00Z", ago(x)), &[release(count)])
+
+    // o/r has a week of snapshots, o/b only today's
+    for x in 1..=6 {
+      let rel = release(7, "</script><b>x</b>", 160 - 10 * x);
+      db.insert_release_assets(&test_repo(5), &format!("{}T00:00:00Z", ago(x)), &[rel])
         .await
         .unwrap();
     }
+
+    let rel = release(8, "v0.1.0", 30);
+    db.insert_release_assets(&other(5), &format!("{}T00:00:00Z", ago(0)), &[rel]).await.unwrap();
 
     let state = Arc::new(AppState::for_test(db, GhsFilter::new("")));
     let page = get(&state, "/o/r?period=7d", None).await.unwrap().into_string();
@@ -1786,13 +1935,21 @@ mod tests {
       "tag stays a string"
     );
 
+    let page = get(&state, "/o/b?period=7d", None).await.unwrap().into_string();
+    assert!(
+      page.contains(&format!("<h2>Downloads</h2><div class=\"value\">30</div>")),
+      "all time while collecting"
+    );
+    assert!(page.contains(&format!(">collecting since {}</span>", ago(0))));
+
     let frag = get(&state, "/?period=7d", Some("repos_table")).await.unwrap().into_string();
     assert!(frag.contains("<span class=\"v\">50</span>"));
-    assert!(frag.contains("title=\"No release assets\""), "o/b has none");
+    let tip = format!("Download history starts {} · 30 all time", ago(0));
+    assert!(frag.contains(&format!("<span class=\"v muted\" title=\"{tip}\">—</span>")));
 
     // the column follows the visible repos only
     let db = DbClient::new(&path).await.unwrap();
-    let state = Arc::new(AppState::for_test(db, GhsFilter::new("o/b")));
+    let state = Arc::new(AppState::for_test(db, GhsFilter::new("o/c")));
     let frag = get(&state, "/?period=7d", Some("repos_table")).await.unwrap().into_string();
     assert!(!frag.contains("Downloads"));
   }

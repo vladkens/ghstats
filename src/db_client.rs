@@ -144,6 +144,7 @@ fn migrate_v5(db: &Connection) -> Res {
     "ALTER TABLE repos ADD COLUMN created_at TEXT DEFAULT NULL;",
     "ALTER TABLE repos ADD COLUMN pushed_at TEXT DEFAULT NULL;",
     "ALTER TABLE repos ADD COLUMN homepage TEXT DEFAULT NULL;",
+    "ALTER TABLE repo_release_assets ADD COLUMN prerelease BOOLEAN NOT NULL DEFAULT FALSE;",
     // star history rows are written with FALSE: those days have no traffic data
     "ALTER TABLE repo_stats ADD COLUMN traffic BOOLEAN NOT NULL DEFAULT TRUE;",
     // only rows the old star history could have written: live stats rows have other counts
@@ -297,6 +298,7 @@ pub struct ReleaseDownloads {
   pub release_id: i64,
   pub tag: String,
   pub published_at: Option<String>,
+  pub prerelease: bool,
   pub total: i64,
   pub period: i64,
 }
@@ -323,7 +325,7 @@ pub enum PopularKind {
   Path,
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
   Asc,
@@ -359,7 +361,7 @@ impl std::fmt::Display for RepoSort {
   }
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum PopularSort {
   Name,
@@ -473,12 +475,31 @@ pub struct RepoFilter {
   pub period: Period,
 }
 
-#[derive(Debug, Deserialize, Serialize, Default)]
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseSort {
+  Tag,
+  #[default]
+  Published,
+  Period,
+  Total,
+}
+
+impl std::fmt::Display for ReleaseSort {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "{}", to_variant_name(self).unwrap())
+  }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct PopularFilter {
   pub sort: PopularSort,
   pub direction: Direction,
   pub period: Period,
+  /// the releases table has its own sort
+  pub rsort: ReleaseSort,
+  pub rdir: Direction,
 }
 
 // MARK: DbClient
@@ -591,6 +612,7 @@ fn release_downloads_from_row(row: &Row<'_>) -> rusqlite::Result<ReleaseDownload
     release_id: row.get("release_id")?,
     tag: row.get("tag")?,
     published_at: row.get("published_at")?,
+    prerelease: row.get("prerelease")?,
     total: row.get("total")?,
     period: row.get("period")?,
   })
@@ -1291,10 +1313,12 @@ impl DbClient {
   pub async fn insert_release_assets(&self, repo: &Repo, date: &str, releases: &[Release]) -> Res {
     let qs = "
     INSERT INTO repo_release_assets AS t
-      (repo_id, asset_id, date, release_id, tag, asset_name, published_at, created_at, download_count)
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+      (repo_id, asset_id, date, release_id, tag, asset_name, published_at, created_at, download_count,
+        prerelease)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
     ON CONFLICT(repo_id, asset_id, date) DO UPDATE SET
       tag = excluded.tag,
+      prerelease = excluded.prerelease,
       asset_name = excluded.asset_name,
       published_at = excluded.published_at,
       created_at = excluded.created_at,
@@ -1319,6 +1343,7 @@ impl DbClient {
             &rel.published_at,
             &asset.created_at,
             asset.download_count as i64,
+            rel.prerelease,
           ],
         )?;
       }
@@ -1675,7 +1700,7 @@ mod tests {
     db.update_deltas().await?;
 
     let by_count =
-      PopularFilter { sort: PopularSort::Count, direction: Direction::Desc, period: Period(-1) };
+      PopularFilter { sort: PopularSort::Count, period: Period(-1), ..Default::default() };
     let refs = db.get_popular_items("owner/repo", &PopularKind::Refs, &by_count).await?;
     assert_eq!(
       refs.iter().map(|x| (&x.name, x.count, x.uniques)).collect::<Vec<_>>(),
@@ -1783,6 +1808,7 @@ mod tests {
       id,
       tag_name: tag.to_string(),
       draft: false,
+      prerelease: false,
       published_at: Some(published_at.to_string()),
       assets: assets
         .iter()

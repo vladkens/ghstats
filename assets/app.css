@@ -140,7 +140,8 @@ body { overflow-anchor: none; }
 .repo-stats span { white-space: nowrap; }
 .repo-stats b { color: var(--head); font-weight: 600; }
 .stars-card { display: flex; flex-direction: column; }
-.stars-card .chart { flex: 1 1 auto; height: auto; min-height: 240px; }
+/* the chart takes the height the info card gives the row; its size never feeds back into it */
+.stars-card .chart { flex: 1 1 0; height: auto; min-height: 240px; }
 .kpis { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); gap: 1em; }
 .kpis.c1 { --cols: 1; }
 .kpis.c2 { --cols: 2; }
@@ -168,6 +169,7 @@ body { overflow-anchor: none; }
 .sw.s4 { background: var(--s4); }
 .sw.hatch { background: repeating-linear-gradient(135deg, var(--gap-ink) 0 1.5px, transparent 1.5px 4px); box-shadow: inset 0 0 0 1px var(--gap-ink); }
 .chart { position: relative; height: 230px; }
+.chart canvas { position: absolute; inset: 0; }
 
 .tscroll { overflow-x: auto; }
 table.data { width: 100%; border-collapse: collapse; table-layout: fixed; }
@@ -209,7 +211,7 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; }
   background: var(--card) var(--chevron) no-repeat right 0.6em center / 10px 6px;
 }
 .toolbar .seg { margin-left: auto; }
-.idx td { vertical-align: middle; }
+.idx td { vertical-align: middle; height: 3.5em; }
 .data.idx th:first-child, .data.idx td:first-child { padding-left: 0; }
 .data.idx th:last-child, .data.idx td:last-child { padding-right: 0; }
 .per { display: inline-block; width: 0.8em; height: 0.8em; vertical-align: -0.05em; color: var(--muted); cursor: help; }
@@ -222,6 +224,8 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .idx col.c-prs { width: 5.5em; }
 .idx col.c-dl { width: 9.5em; }
 .data col.n2 { width: 8em; }
+.data col.n3 { width: 9.5em; }
+.pre { font-size: 0.8em; color: var(--muted); }
 .mono { font-family: var(--font-mono); font-size: 0.9em; }
 
 @media (max-width: 900px) {

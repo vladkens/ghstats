@@ -108,6 +108,8 @@ pub struct Release {
   pub id: u64,
   pub tag_name: String,
   pub draft: bool,
+  #[serde(default)]
+  pub prerelease: bool,
   pub published_at: Option<String>,
   pub assets: Vec<ReleaseAsset>,
 }

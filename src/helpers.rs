@@ -53,6 +53,12 @@ async fn update_metrics_inner(state: Arc<AppState>) -> Res {
     .filter(|r| state.filter.is_included(&r.full_name, r.fork, r.archived))
     .collect::<Vec<_>>();
 
+  let stars = match was_down {
+    true => state.db.get_repos_ids().await?.len(),
+    false => state.db.repos_to_sync().await?.len(),
+  };
+  state.record_sync_plan(repos.len() + stars);
+
   let progress = |done| state.record_sync_progress("Updating traffic", done, repos.len());
   progress(0);
   for (idx, repo) in repos.iter().enumerate() {
