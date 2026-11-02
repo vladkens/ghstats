@@ -23,7 +23,6 @@ jobs:
       - run: rustup toolchain install nightly --profile minimal --component rustfmt
       - uses: Swatinem/rust-cache@v2
         with:
-          save-if: ${{ github.event_name != 'pull_request' }}
           cache-directories: ~/.cache/cargo-cross
       - run: make check
       - run: make test
