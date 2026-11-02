@@ -90,6 +90,15 @@ fn period_nav(cur: Period, oob: bool, url: impl Fn(Period) -> String) -> Markup 
   )
 }
 
+/// A same-width calendar mark for headers that cover the selected period, its dates in the tooltip
+fn period_mark(tip: &str) -> Markup {
+  const ICON: &str = "<svg viewBox=\"0 0 12 12\" aria-hidden=\"true\"><rect x=\"1.5\" y=\"2.5\" \
+    width=\"9\" height=\"8\" rx=\"1.5\" fill=\"none\" stroke=\"currentColor\"/><path d=\"M1.5 \
+    5h9M4 1v3M8 1v3\" stroke=\"currentColor\"/></svg>";
+
+  html!(span class="per" role="img" aria-label=(tip) title=(tip) { (PreEscaped(ICON)) })
+}
+
 fn period_range(period: Period, today: NaiveDate, first: Option<NaiveDate>) -> String {
   let from = match period.windows(today) {
     Some(x) => x.start,
@@ -715,16 +724,16 @@ fn index_cols() -> Vec<IndexCol> {
     let per = &x.per;
     let change =
       Change::new(per.cmp_views, per.cmp_days, per.prev_views, per.prev_days, p, x.today);
-    // the sub-line stays when empty, so rows keep their height between periods
-    html!(span class="v" { (num(x.per.views)) } @match change { Some(c) => (c.short()), None => small {} })
+    // the sub-line hangs under the number (see app.css), so rows look the same at every period
+    html!(span class="v" { (num(x.per.views)) @if let Some(c) = change { (c.short()) } })
   };
 
   let stars: IndexCell = |x, p| {
     let gain = x.per.stars_gain().filter(|x| *x != 0 && p.days().is_some());
-    html!(
-      span class="v" { (num(x.per.stars)) }
-      small class="muted" { @if let Some(gain) = gain { (signed(gain)) } }
-    )
+    html!(span class="v" {
+      (num(x.per.stars))
+      @if let Some(gain) = gain { small class="muted" { (signed(gain)) } }
+    })
   };
 
   vec![
@@ -818,6 +827,8 @@ pub async fn index(
   sort_index(&mut rows, &qs.sort, &qs.direction);
 
   let cols = index_cols();
+  let first = state.db.get_first_traffic().await?;
+  let period_tip = format!("{}: {}", p.title(), period_range(p, today, first));
   let cur_q = qs.q.clone().unwrap_or_default();
   let cur_owner = qs.owner.clone().unwrap_or_default();
 
@@ -844,7 +855,7 @@ pub async fn index(
                 hx-replace-url="true"
               {
                 (col.name)
-                @if col.per { " " span class="per" { (p.label()) } }
+                @if col.per { " " (period_mark(&period_tip)) }
               }
             }
           }
@@ -1249,7 +1260,8 @@ mod tests {
     let uri = "/?sort=views_count&direction=desc&period=90d&q=x".parse().unwrap();
     let frag = index(State(state), OriginalUri(uri), headers).await.unwrap().into_string();
     assert!(frag.starts_with("<table id=\"repos_table\""));
-    assert!(frag.contains("Views <span class=\"per\">90d</span>"));
+    assert!(frag.contains("Views <span class=\"per\" role=\"img\" aria-label=\"Last 90 days: "));
+    assert!(!frag.contains("90d</span>"), "no period text in headers");
     assert!(
       frag.contains("id=\"filter_period\" name=\"period\" value=\"90d\" hx-swap-oob=\"true\"")
     );
@@ -1483,15 +1495,15 @@ mod tests {
     let frag =
       index(State(state.clone()), OriginalUri(uri), headers.clone()).await.unwrap().into_string();
     assert!(frag.contains(
-      "<td class=\"c-stars\"><span class=\"v\">0</span><small class=\"muted\">−20</small></td>"
+      "<td class=\"c-stars\"><span class=\"v\">0<small class=\"muted\">−20</small></span></td>"
     ));
 
-    // at All neither change nor gain, but the sub-lines stay so rows keep their height
+    // at All neither change nor gain: bare numbers
     let frag = index(State(state), OriginalUri("/?period=all".parse().unwrap()), headers)
       .await
       .unwrap()
       .into_string();
-    assert!(frag.contains("<span class=\"v\">0</span><small class=\"muted\"></small>"));
-    assert!(frag.contains("</span><small></small></td>"));
+    assert!(frag.contains("<td class=\"c-stars\"><span class=\"v\">0</span></td>"));
+    assert!(!frag.contains("<small"));
   }
 }

@@ -584,6 +584,19 @@ impl DbClient {
 
   /// Rows with a real stars value; unlike `get_stars`, days left at zero (such as GitHub's traffic
   /// backfill after an outage) are skipped instead of forward-filled.
+  /// The first day with traffic over all visible repos
+  pub async fn get_first_traffic(&self) -> Res<Option<NaiveDate>> {
+    let qs = "
+    SELECT MIN(substr(rs.date, 1, 10)) FROM repo_stats rs
+    INNER JOIN repos r ON r.id = rs.repo_id
+    WHERE r.hidden = FALSE AND (rs.clones_count > 0 OR rs.views_count > 0);
+    ";
+
+    let db = self.db.lock().unwrap();
+    let day: Option<String> = db.query_row(qs, [], |row| row.get(0))?;
+    Ok(day.and_then(|x| x.parse().ok()))
+  }
+
   pub async fn get_star_rows(&self, repo: &str) -> Res<Vec<RepoStars>> {
     let qs = "
     SELECT date, stars FROM repo_stats rs
