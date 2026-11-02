@@ -159,7 +159,7 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
 
             div class="meta" {
               @for (name, url) in &get_custom_links() {
-                a href=(url) target="_blank" { (name) }
+                a href=(url) target="_blank" rel="noopener" { (name) }
               }
 
               @if is_new_release {
@@ -194,8 +194,8 @@ fn short_range(from: NaiveDate, to: NaiveDate) -> String {
   }
 }
 
-/// Change between the two compared windows of `Period::windows`; only when they are comparable:
-/// both at least half collected and a previous value of 10 or more.
+/// Change between the two compared windows of `Period::windows`, per collected day; only when they
+/// are comparable: both at least half collected and a previous value of 10 or more.
 #[derive(Debug, PartialEq)]
 struct Change {
   pct: f64,
@@ -204,17 +204,25 @@ struct Change {
 }
 
 impl Change {
-  /// `days`: collected days of the less collected window
-  fn new(cur: i64, prev: i64, days: i64, period: Period, today: NaiveDate) -> Option<Self> {
+  /// Totals of the compared and previous windows with their collected days
+  fn new(
+    cur: i64,
+    cur_days: i64,
+    prev: i64,
+    prev_days: i64,
+    period: Period,
+    today: NaiveDate,
+  ) -> Option<Self> {
     let (len, win) = (period.days()?, period.windows(today)?);
-    let coverage = days as f64 / len as f64;
+    let coverage = cur_days.min(prev_days) as f64 / len as f64;
     if coverage < 0.5 || prev < 10 {
       return None;
     }
 
     let day = Days::new(1);
     let mut title = format!(
-      "{} ({}) vs {} ({}) · last {CMP_LAG} days excluded, still incomplete",
+      "{} over {cur_days} days ({}) vs {} over {prev_days} days ({}) · last {CMP_LAG} days \
+       excluded, still incomplete",
       num(cur),
       short_range(win.cmp_start, win.cmp_end - day),
       num(prev),
@@ -225,7 +233,9 @@ impl Change {
       title.push_str(&format!(" · only {:.0}% of days collected", coverage * 100.0));
     }
 
-    Some(Self { pct: (cur - prev) as f64 / prev as f64 * 100.0, coverage, title })
+    let avg = |x: i64, days: i64| x as f64 / days as f64;
+    let pct = (avg(cur, cur_days) / avg(prev, prev_days) - 1.0) * 100.0;
+    Some(Self { pct, coverage, title })
   }
 
   fn approx(&self) -> bool {
@@ -279,8 +289,9 @@ fn tile(title: &str, value: i64, sub: Markup, change: Option<Markup>) -> Markup 
     div class="card kpi" {
       h2 { (title) }
       div class="value" { (num(value)) }
+      // both lines stay when empty, so tiles keep their height between periods
       div class="sub" { (sub) }
-      @if let Some(x) = change { (x) }
+      div class="change" { @if let Some(x) = change { (x) } }
     }
   )
 }
@@ -354,7 +365,7 @@ fn stars_gain(
   let before = p.windows(today)?.start - Days::new(1);
   let inside = gaps.iter().any(|(a, b)| *a < before && before < *b);
   let stale = last.is_some_and(|x| (today - x).num_days() > 3);
-  Some((format!("{} in {}", signed(rp.stars_gain()), p.label()), inside || stale))
+  Some((format!("{} in {}", signed(rp.stars_gain()?), p.label()), inside || stale))
 }
 
 const STARS_APPROX: &str =
@@ -480,8 +491,8 @@ fn popular_html(
         }
 
         tbody {
-          @for x in &rows {
-            tr style=(format!("--w:{:.1}%", val(x) as f64 / max as f64 * 100.0)) {
+          @for (idx, x) in rows.iter().enumerate() {
+            tr hidden[idx >= ROWS_SHOWN] style=(format!("--w:{:.1}%", val(x) as f64 / max as f64 * 100.0)) {
               td class="name" title=(x.name) {
                 @match &x.url {
                   Some(url) => a href=(url) { (x.name) },
@@ -494,6 +505,19 @@ fn popular_html(
           }
         }
       }
+
+      (show_all(rows.len()))
+    }
+  )
+}
+
+/// Rows a table shows before its "Show all" button; the rest are rendered hidden
+const ROWS_SHOWN: usize = 10;
+
+fn show_all(rows: usize) -> Markup {
+  html!(
+    @if rows > ROWS_SHOWN {
+      button type="button" class="show-all" data-show-all { "Show all (" (rows) ")" }
     }
   )
 }
@@ -537,13 +561,6 @@ pub async fn repo_page(
   let qs: Query<PopularFilter> = Query::try_from_uri(&uri)?;
   let db = &state.db;
 
-  match get_hx_target(&headers) {
-    Some("refs_table") => return popular_table(db, &repo, &PopularKind::Refs, &qs).await,
-    Some("path_table") => return popular_table(db, &repo, &PopularKind::Path, &qs).await,
-    Some("popular_tables") => return repo_popular_tables(db, &repo, &qs).await,
-    _ => {}
-  }
-
   let totals = match db.get_repo_totals(&repo).await? {
     Some(x) => x,
     None => return AppError::not_found(),
@@ -551,6 +568,12 @@ pub async fn repo_page(
 
   if !state.filter.is_included(&totals.name, totals.fork, totals.archived) {
     return AppError::not_found();
+  }
+
+  match get_hx_target(&headers) {
+    Some("refs_table") => return popular_table(db, &repo, &PopularKind::Refs, &qs).await,
+    Some("path_table") => return popular_table(db, &repo, &PopularKind::Path, &qs).await,
+    _ => {}
   }
 
   let (p, today) = (qs.period, today());
@@ -568,14 +591,12 @@ pub async fn repo_page(
 
   let mut tiles = vec![];
   if has_views {
-    let days = rp.prev_days.min(rp.cmp_days);
-    let change = Change::new(rp.cmp_views, rp.prev_views, days, p, today);
+    let change = Change::new(rp.cmp_views, rp.cmp_days, rp.prev_views, rp.prev_days, p, today);
     tiles.push(traffic_tile("Views", rp.views, rp.views_uniques, change, p));
   }
 
   if has_clones {
-    let days = rp.prev_days.min(rp.cmp_days);
-    let change = Change::new(rp.cmp_clones, rp.prev_clones, days, p, today);
+    let change = Change::new(rp.cmp_clones, rp.cmp_days, rp.prev_clones, rp.prev_days, p, today);
     tiles.push(traffic_tile("Clones", rp.clones, rp.clones_uniques, change, p));
   }
 
@@ -691,16 +712,17 @@ fn index_cols() -> Vec<IndexCol> {
   };
 
   let views: IndexCell = |x, p| {
-    let days = x.per.prev_days.min(x.per.cmp_days);
-    let change = Change::new(x.per.cmp_views, x.per.prev_views, days, p, x.today);
+    let per = &x.per;
+    let change =
+      Change::new(per.cmp_views, per.cmp_days, per.prev_views, per.prev_days, p, x.today);
     html!(span class="v" { (num(x.per.views)) } @if let Some(c) = change { (c.short()) })
   };
 
   let stars: IndexCell = |x, p| {
-    let gain = x.per.stars_gain();
+    let gain = x.per.stars_gain().filter(|x| *x != 0 && p.days().is_some());
     html!(
       span class="v" { (num(x.per.stars)) }
-      @if p.days().is_some() && gain != 0 { small class="muted" { (signed(gain)) } }
+      @if let Some(gain) = gain { small class="muted" { (signed(gain)) } }
     )
   };
 
@@ -957,21 +979,22 @@ mod tests {
   #[test]
   fn change_needs_half_collected_and_base_of_ten() {
     let (p, today) = (Period(30), "2026-11-02".parse::<NaiveDate>().unwrap());
-    let full = Change::new(110, 100, 30, p, today).unwrap();
-    assert_eq!((full.pct, full.coverage), (10.0, 1.0));
-    assert!(Change::new(110, 100, 14, p, today).is_none());
-    assert!(Change::new(110, 9, 30, p, today).is_none());
-    assert!(Change::new(110, 100, 30, Period(-1), today).is_none());
+    let full = Change::new(110, 30, 100, 30, p, today).unwrap();
+    assert!((full.pct - 10.0).abs() < 1e-9 && full.coverage == 1.0);
+    assert!(Change::new(110, 14, 100, 14, p, today).is_none());
+    assert!(Change::new(110, 30, 9, 30, p, today).is_none());
+    assert!(Change::new(110, 30, 100, 30, Period(-1), today).is_none());
 
     // both compared ranges and values in the title, always
     let html = full.tile(p).into_string();
     assert!(html.contains("class=\"delta up\""));
     assert!(html.contains("▲ 10% vs prev 30d"));
     assert!(html.contains(
-      "title=\"110 (Oct 2–31) vs 100 (Sep 2–Oct 1) · last 2 days excluded, still incomplete\""
+      "title=\"110 over 30 days (Oct 2–31) vs 100 over 30 days (Sep 2–Oct 1) · last 2 days \
+       excluded, still incomplete\""
     ));
 
-    let approx = Change::new(97, 100, 20, p, today).unwrap();
+    let approx = Change::new(97, 20, 100, 20, p, today).unwrap();
     assert!(approx.approx());
     let html = approx.tile(p).into_string();
     assert!(html.contains("class=\"delta down warn\""));
@@ -981,7 +1004,7 @@ mod tests {
 
     // tiles: one decimal under 10%; index: whole percents; ±0% when it rounds to zero
     let fmt = |cur: i64, prev: i64| {
-      let x = Change::new(cur, prev, 30, p, today).unwrap();
+      let x = Change::new(cur, 30, prev, 30, p, today).unwrap();
       let tile = x.tile(p).into_string();
       let tile = tile[tile.find('>').unwrap() + 1..tile.find(" vs prev").unwrap()].to_string();
       let short = x.short().into_string();
@@ -998,12 +1021,16 @@ mod tests {
     assert_eq!(fmt(1004, 1000), ("▲ 0.4%".into(), "±0%".into()));
     assert_eq!(fmt(100004, 100000), ("±0%".into(), "±0%".into()), "never +0.0%");
     assert_eq!(fmt(100, 100), ("±0%".into(), "±0%".into()));
-    assert_eq!(Change::new(1004, 1000, 30, p, today).unwrap().class(), "delta");
+    assert_eq!(Change::new(1004, 30, 1000, 30, p, today).unwrap().class(), "delta");
 
-    let year = Change::new(20, 10, 365, Period(365), today).unwrap();
-    assert!(
-      year.title.starts_with("20 (Nov 1, 2025–Oct 31, 2026) vs 10 (Nov 1, 2024–Oct 31, 2025)")
-    );
+    let year = Change::new(20, 365, 10, 365, Period(365), today).unwrap();
+    assert!(year.title.starts_with(
+      "20 over 365 days (Nov 1, 2025–Oct 31, 2026) vs 10 over 365 days (Nov 1, 2024–Oct 31, 2025)"
+    ));
+
+    // per collected day: 150 over 15 days is the same rate as 300 over 30
+    let half = Change::new(150, 15, 300, 30, p, today).unwrap();
+    assert!(half.pct.abs() < f64::EPSILON && half.approx());
   }
 
   #[test]
@@ -1051,6 +1078,30 @@ mod tests {
     assert_eq!(stars_gain(&rp, Period(30), today, &gaps, last).unwrap().1, false);
     assert_eq!(stars_gain(&rp, Period(30), today, &[], Some(day("2026-10-28"))).unwrap().1, true);
     assert!(stars_gain(&rp, Period(-1), today, &gaps, last).is_none());
+  }
+
+  #[test]
+  fn long_tables_show_ten_rows_and_a_show_all_button() {
+    let kind = PopularKind::Refs;
+    let rows = |n: i64| {
+      (1..=n)
+        .map(|x| RepoPopularItem { name: format!("site{x}"), count: x, uniques: x })
+        .map(|x| PopularRow::new("o/r", &kind, x))
+        .collect::<Vec<_>>()
+    };
+
+    let qs = PopularFilter::default();
+    let html = popular_html("o/r", &kind, rows(12), &qs).into_string();
+    assert_eq!(html.matches("<tr hidden").count(), 2, "rows 11 and 12 are rendered hidden");
+    assert!(html.contains("<tr hidden style=\"--w:8.3%\"><td class=\"name\" title=\"site1\">"));
+    assert!(
+      html.contains(
+        "<button type=\"button\" class=\"show-all\" data-show-all>Show all (12)</button>"
+      )
+    );
+
+    let html = popular_html("o/r", &kind, rows(10), &qs).into_string();
+    assert!(!html.contains("<tr hidden") && !html.contains("Show all"));
   }
 
   #[test]
@@ -1144,8 +1195,14 @@ mod tests {
       )
     };
 
+    // stars before the period are unknown until the stargazer history is synced
     let page = get("/o/r?period=14", None).await.unwrap().into_string();
     assert!(page.contains("<h2>Stars</h2>"));
+    assert!(!page.contains(" in 14d"), "no gain without stars before the period");
+    assert!(page.contains("\"window_label\":null"));
+
+    state.db.mark_repo_stars_synced(1).await.unwrap();
+    let page = get("/o/r?period=14", None).await.unwrap().into_string();
     assert!(page.contains("+5 in 14d"));
     assert!(!page.contains("<h2>Views</h2>"), "no traffic, no views tile");
     assert!(!page.contains("id=\"chart_views\""));
@@ -1156,6 +1213,29 @@ mod tests {
     let frag = get("/o/r?sort=name&period=7d", Some("refs_table")).await.unwrap().into_string();
     assert!(frag.starts_with("<div id=\"refs_table\""));
     assert!(!frag.contains("<html"));
+  }
+
+  #[tokio::test]
+  async fn excluded_repo_fragments_are_not_found() {
+    let db = DbClient::new(&db_path("excluded")).await.unwrap();
+    let repo = test_repo(5);
+    db.insert_repo(&repo).await.unwrap();
+    db.insert_stats(&repo, &format!("{}T00:00:00Z", today()), &[]).await.unwrap();
+
+    let state = Arc::new(AppState::for_test(db, GhsFilter::new("other/*")));
+    for target in [None, Some("refs_table"), Some("path_table")] {
+      let mut headers = HeaderMap::new();
+      if let Some(x) = target {
+        headers.insert("hx-target", x.parse().unwrap());
+      }
+
+      let uri = "/o/r".parse().unwrap();
+      let res =
+        repo_page(State(state.clone()), Path(("o".into(), "r".into())), OriginalUri(uri), headers)
+          .await;
+      let res = axum::response::IntoResponse::into_response(res.unwrap_err());
+      assert_eq!(res.status(), axum::http::StatusCode::NOT_FOUND, "{target:?}");
+    }
   }
 
   #[tokio::test]
@@ -1198,7 +1278,9 @@ mod tests {
     let rp = db.get_periods(Some("o/r"), Period(7), today).await.unwrap().remove(0);
     assert_eq!((rp.views, rp.cmp_views, rp.prev_views), (505, 700, 700));
     assert_eq!((rp.cmp_days, rp.prev_days), (7, 7));
-    let change = Change::new(rp.cmp_views, rp.prev_views, 7, Period(7), today).unwrap();
+    let change =
+      Change::new(rp.cmp_views, rp.cmp_days, rp.prev_views, rp.prev_days, Period(7), today)
+        .unwrap();
     assert!(change.pct.abs() < f64::EPSILON);
 
     let state = Arc::new(AppState::for_test(db, GhsFilter::new("")));
@@ -1235,9 +1317,10 @@ mod tests {
 
       let rp = db.get_periods(Some("o/r"), Period(365), today).await.unwrap().remove(0);
       assert_eq!((rp.prev_days, rp.cmp_days), (365, 365 - outage as i64));
-      let days = rp.prev_days.min(rp.cmp_days);
-      let change = Change::new(rp.cmp_views, rp.prev_views, days, Period(365), today);
+      let change =
+        Change::new(rp.cmp_views, rp.cmp_days, rp.prev_views, rp.prev_days, Period(365), today);
       assert_eq!(change.as_ref().map(|x| x.approx()), approx, "outage {outage}");
+      assert!(change.is_none_or(|x| x.pct.abs() < 1e-9), "flat traffic stays flat");
     }
   }
 
@@ -1276,7 +1359,7 @@ mod tests {
 
     // 7d ending Jun 2: start May 27 is inside the gap, the last real value before it is Apr 1's
     let rp = db.get_periods(Some("o/r"), Period(7), day("2026-06-02")).await.unwrap().remove(0);
-    assert_eq!((rp.stars, rp.stars_start, rp.stars_gain()), (30, 10, 20));
+    assert_eq!((rp.stars, rp.stars_start, rp.stars_gain()), (30, 10, Some(20)));
   }
 
   #[tokio::test]
@@ -1335,8 +1418,10 @@ mod tests {
     // compared ago 8..2: nothing collected; previous ago 15..9: the backfill up to ago 10
     let rp = db.get_periods(Some("o/r"), Period(7), today).await.unwrap().remove(0);
     assert_eq!((rp.cmp_days, rp.prev_days), (0, 6));
-    let days = rp.cmp_days.min(rp.prev_days);
-    assert!(Change::new(rp.cmp_views, rp.prev_views, days, Period(7), today).is_none());
+    assert!(
+      Change::new(rp.cmp_views, rp.cmp_days, rp.prev_views, rp.prev_days, Period(7), today)
+        .is_none()
+    );
   }
 
   #[tokio::test]
@@ -1375,7 +1460,7 @@ mod tests {
     db.insert_stats(&test_repo(0), &format!("{today}T00:00:00Z"), &[]).await.unwrap();
 
     let rp = db.get_periods(Some("o/r"), Period(7), today).await.unwrap().remove(0);
-    assert_eq!((rp.stars, rp.stars_start, rp.stars_gain()), (0, 20, -20));
+    assert_eq!((rp.stars, rp.stars_start, rp.stars_gain()), (0, 20, Some(-20)));
 
     let state = Arc::new(AppState::for_test(db, GhsFilter::new("")));
     let uri = "/o/r?period=7d".parse().unwrap();

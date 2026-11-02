@@ -17,6 +17,7 @@
   --gap-ink: #c3c9d4;
   --good-ink: #0f7a2a;
   --bad-ink: #c23a3a;
+  --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%23646b79' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
 
   --font-ui: system-ui, -apple-system, "Segoe UI", Roboto, Oxygen, Ubuntu, Cantarell, Helvetica,
     Arial, sans-serif;
@@ -44,6 +45,7 @@
     --gap-ink: #3a4253;
     --good-ink: #3fbf5a;
     --bad-ink: #ef7676;
+    --chevron: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238891a4' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
   }
 }
 
@@ -116,7 +118,8 @@ h1, h2 { margin: 0; color: var(--head); text-wrap: balance; }
 .kpi h2 { margin: 0; }
 .kpi .value { font-size: 1.6em; font-weight: 650; color: var(--head); line-height: 1.2; overflow-wrap: anywhere; }
 .kpi .sub { font-size: 0.9em; font-variant-numeric: tabular-nums; }
-.kpi .sub:empty { display: none; }
+/* both lines keep their height when empty, so tiles don't jump between periods */
+.kpi .sub, .kpi .change { min-height: 1.5em; }
 .kpi abbr { text-decoration: underline dotted var(--line-strong); text-underline-offset: 3px; cursor: help; }
 .delta { font-size: 0.85em; font-variant-numeric: tabular-nums; color: var(--muted); }
 .delta.up { color: var(--good-ink); }
@@ -145,25 +148,38 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; font-v
 .data th button { all: unset; cursor: pointer; }
 .data th button:hover { color: var(--accent); }
 .data th button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.data th[aria-sort="descending"] > button::after { content: " ↓"; }
-.data th[aria-sort="ascending"] > button::after { content: " ↑"; }
+/* a fixed slot for the sort arrow on every sortable header, so nothing shifts when it moves; it
+   sits on the outer side of the text, so header text stays aligned with its column */
+.data th > button::before, .data th:first-child > button::after { content: "↓"; display: inline-block; width: 1em; text-align: center; visibility: hidden; }
+.data th > button::before { margin-right: 0.15em; }
+.data th:first-child > button::after { margin-left: 0.15em; }
+.data th[aria-sort] > button::before, .data th[aria-sort] > button::after { visibility: visible; }
+.data th[aria-sort="ascending"] > button::before, .data th[aria-sort="ascending"] > button::after { content: "↑"; }
+.data th:first-child > button::before { content: none; }
 .data tr[style*="--w"] { background: linear-gradient(to right, var(--rowbar) var(--w), transparent var(--w)); }
 .data td.name, .data td.c-name { overflow: hidden; text-overflow: ellipsis; }
-.data col.n { width: 6.5em; }
+.data col.n { width: 7em; }
+.show-all { all: unset; box-sizing: border-box; display: block; width: 100%; padding: 0.5em 1em; text-align: center; font-size: 0.9em; color: var(--muted); cursor: pointer; }
+.show-all:hover { color: var(--accent); background: var(--rowbar); }
+.show-all:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
 
 /* index */
 .toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6em 1em; margin-bottom: 1em; }
 .toolbar select, .toolbar input { font: inherit; font-size: 0.9em; color: var(--ink); background: var(--card); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 0.3em 0.6em; }
 .toolbar input { flex: 1 1 220px; min-width: 0; }
+.toolbar select {
+  appearance: none; -webkit-appearance: none; line-height: 1.5; padding-right: 2em; cursor: pointer;
+  background: var(--card) var(--chevron) no-repeat right 0.6em center / 10px 6px;
+}
 .toolbar .seg { margin-left: auto; }
 .idx td { vertical-align: middle; }
 .idx .per { font-weight: 400; color: var(--muted); font-size: 0.85em; }
 .idx .v { display: block; line-height: 1.25; }
 .idx small { display: block; font-size: 0.78em; line-height: 1.2; }
-.idx col.c-views, .idx col.c-clones { width: 7.5em; }
-.idx col.c-stars { width: 6em; }
-.idx col.c-forks, .idx col.c-issues { width: 5.75em; }
-.idx col.c-prs { width: 5em; }
+.idx col.c-views, .idx col.c-clones { width: 9em; }
+.idx col.c-stars { width: 6.5em; }
+.idx col.c-forks, .idx col.c-issues { width: 6.5em; }
+.idx col.c-prs { width: 5.5em; }
 
 @media (max-width: 860px) {
   .kpis.c4 { --cols: 2; }
@@ -184,8 +200,8 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; font-v
   .data th, .data td { padding-left: 0.5em; padding-right: 0.5em; }
   .data th:first-child, .data td:first-child { padding-left: 0.75em; }
   .data th:last-child, .data td:last-child { padding-right: 0.75em; }
-  .idx col.c-views { width: 5em; }
-  .idx col.c-stars { width: 5em; }
+  .idx col.c-views { width: 6em; }
+  .idx col.c-stars { width: 5.5em; }
   .periodbar .seg, .toolbar .seg { margin-left: 0; }
   .kpi .value { font-size: 1.35em; }
   .kpis { gap: 0.6em; }

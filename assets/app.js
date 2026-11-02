@@ -122,6 +122,17 @@
     return g.createPattern(c, 'repeat');
   };
 
+  // colors and the hatch pattern for the plugins, read once per render (and on theme change)
+  let theme = {};
+  const readTheme = () => ({
+    font: css('--font-ui'),
+    rowbar: css('--rowbar'),
+    muted: css('--muted'),
+    card: css('--card'),
+    lineStrong: css('--line-strong'),
+    hatch: hatch(css('--gap-ink')),
+  });
+
   // overlays: outages (hatched) and the selected period on the stars chart (wash)
   const bandsPlugin = {
     id: 'bands',
@@ -135,14 +146,14 @@
 
       const half = o.category ? Math.abs(x.getPixelForValue(1) - x.getPixelForValue(0)) / 2 : 0;
       ctx.save();
-      ctx.font = `500 11px ${css('--font-ui')}`;
+      ctx.font = `500 11px ${theme.font}`;
 
       for (const w of o.windows || []) {
         const x0 = Math.max(ca.left, x.getPixelForValue(w.from));
         const x1 = Math.min(ca.right, x.getPixelForValue(w.to));
-        ctx.fillStyle = css('--rowbar');
+        ctx.fillStyle = theme.rowbar;
         ctx.fillRect(x0, ca.top, x1 - x0, ca.bottom - ca.top);
-        ctx.fillStyle = css('--muted');
+        ctx.fillStyle = theme.muted;
         ctx.textAlign = 'right';
         const inside = ctx.measureText(w.label).width + 16 < x1 - x0;
         ctx.fillText(w.label, inside ? x1 - 8 : x0 - 6, ca.bottom - 8);
@@ -153,14 +164,14 @@
         const x1 = Math.min(ca.right, x.getPixelForValue(b) + half);
         if (x1 <= x0) continue;
 
-        ctx.fillStyle = hatch(css('--gap-ink'));
+        ctx.fillStyle = theme.hatch;
         ctx.fillRect(x0, ca.top, x1 - x0, ca.bottom - ca.top);
         if (x1 - x0 > 46) {
           ctx.textAlign = 'center';
           const tw = ctx.measureText('no data').width;
-          ctx.fillStyle = css('--card');
+          ctx.fillStyle = theme.card;
           ctx.fillRect((x0 + x1) / 2 - tw / 2 - 5, ca.top + 2, tw + 10, 15);
-          ctx.fillStyle = css('--muted');
+          ctx.fillStyle = theme.muted;
           ctx.fillText('no data', (x0 + x1) / 2, ca.top + 13);
         }
       }
@@ -178,7 +189,7 @@
       const { ctx, chartArea: ca } = chart;
       const x = active[0].element.x;
       ctx.save();
-      ctx.strokeStyle = css('--line-strong');
+      ctx.strokeStyle = theme.lineStrong;
       ctx.lineWidth = 1;
       ctx.beginPath();
       ctx.moveTo(x, ca.top);
@@ -393,7 +404,8 @@
     charts = [];
     if (!current) return;
 
-    Chart.defaults.font.family = css('--font-ui');
+    theme = readTheme();
+    Chart.defaults.font.family = theme.font;
     if (current.daily.start) {
       trafficChart('chart_views', current, 2, 3);
       trafficChart('chart_clones', current, 0, 1);
@@ -410,4 +422,31 @@
 
   // charts read colors from CSS tokens: redraw when the theme changes
   matchMedia('(prefers-color-scheme: dark)').addEventListener('change', render);
+
+  // MARK: Tables
+
+  // "Show all" reveals the rows past the first ten, and keeps them open across htmx sort swaps
+  const expanded = new Set();
+
+  const showAll = card => {
+    card.querySelectorAll('tr[hidden]').forEach(x => {
+      x.hidden = false;
+    });
+    card.querySelector('[data-show-all]')?.remove();
+  };
+
+  document.addEventListener('click', e => {
+    const card = e.target.closest('[data-show-all]')?.closest('.card');
+    if (!card) return;
+
+    expanded.add(card.id);
+    showAll(card);
+  });
+
+  document.addEventListener('htmx:load', e => {
+    const root = e.detail.elt;
+    for (const card of [root, ...root.querySelectorAll('.card')]) {
+      if (card.id && expanded.has(card.id)) showAll(card);
+    }
+  });
 })();

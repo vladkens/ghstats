@@ -182,11 +182,14 @@ pub struct RepoPeriod {
   /// before the period
   pub stars: i64,
   pub stars_start: i64,
+  pub stars_synced: bool,
 }
 
 impl RepoPeriod {
-  pub fn stars_gain(&self) -> i64 {
-    self.stars - self.stars_start
+  /// `None` when stars before the period are unknown: no real value then and the stargazer
+  /// history isn't synced yet
+  pub fn stars_gain(&self) -> Option<i64> {
+    (self.stars_synced || self.stars_start > 0).then_some(self.stars - self.stars_start)
   }
 }
 
@@ -451,6 +454,7 @@ fn repo_period_from_row(row: &Row<'_>) -> rusqlite::Result<RepoPeriod> {
     prev_days: row.get("prev_days")?,
     stars: row.get("stars")?,
     stars_start: row.get("stars_start")?,
+    stars_synced: row.get("stars_synced")?,
   })
 }
 
@@ -607,55 +611,59 @@ impl DbClient {
       None => ["0000"; 4].map(String::from),
     };
 
-    // $1 start, $2 cmp_start, $3 cmp_end (exclusive), $4 prev_start; current stars from the latest
-    // row like TOTAL_QUERY, stars before the period from non-zero rows only;
-    // collected days: every day of the backfill [first, full) (cut at the last row), then days with
-    // a row
+    // ?1 start, ?2 cmp_start, ?3 cmp_end (exclusive), ?4 prev_start, ?5 repo or all, ?6 backfill
+    // days; current stars from the latest row like TOTAL_QUERY, stars before the period from
+    // non-zero rows only; collected days: every day of the backfill [first, full) (cut at the last
+    // row), then days with a row
     let qs = "
     WITH ft AS (
-      SELECT repo_id, first, MIN(date(first, '+15 day'), date(last, '+1 day')) AS full
+      SELECT repo_id, first, MIN(date(first, '+' || ?6 || ' day'), date(last, '+1 day')) AS full
       FROM (
         SELECT repo_id, MAX(substr(date, 1, 10)) AS last,
           MIN(IIF(clones_count > 0 OR views_count > 0, substr(date, 1, 10), NULL)) AS first
         FROM repo_stats
+        WHERE ?5 IS NULL OR repo_id IN (SELECT id FROM repos WHERE name = ?5)
         GROUP BY repo_id
       )
     )
     SELECT
-      r.name,
-      SUM(IIF(rs.date >= $1, rs.views_count, 0)) AS views,
-      SUM(IIF(rs.date >= $1, rs.views_uniques, 0)) AS views_uniques,
-      SUM(IIF(rs.date >= $1, rs.clones_count, 0)) AS clones,
-      SUM(IIF(rs.date >= $1, rs.clones_uniques, 0)) AS clones_uniques,
-      SUM(IIF(rs.date >= $2 AND rs.date < $3, rs.views_count, 0)) AS cmp_views,
-      SUM(IIF(rs.date >= $2 AND rs.date < $3, rs.clones_count, 0)) AS cmp_clones,
-      SUM(IIF(rs.date >= $4 AND rs.date < $2, rs.views_count, 0)) AS prev_views,
-      SUM(IIF(rs.date >= $4 AND rs.date < $2, rs.clones_count, 0)) AS prev_clones,
-      SUM(IIF(rs.date >= $2 AND rs.date < $3 AND rs.date >= ft.full, 1, 0)) + CAST(COALESCE(MAX(0,
-        MIN(julianday($3), julianday(ft.full)) - MAX(julianday($2), julianday(ft.first))
+      r.name, r.stars_synced,
+      SUM(IIF(rs.date >= ?1, rs.views_count, 0)) AS views,
+      SUM(IIF(rs.date >= ?1, rs.views_uniques, 0)) AS views_uniques,
+      SUM(IIF(rs.date >= ?1, rs.clones_count, 0)) AS clones,
+      SUM(IIF(rs.date >= ?1, rs.clones_uniques, 0)) AS clones_uniques,
+      SUM(IIF(rs.date >= ?2 AND rs.date < ?3, rs.views_count, 0)) AS cmp_views,
+      SUM(IIF(rs.date >= ?2 AND rs.date < ?3, rs.clones_count, 0)) AS cmp_clones,
+      SUM(IIF(rs.date >= ?4 AND rs.date < ?2, rs.views_count, 0)) AS prev_views,
+      SUM(IIF(rs.date >= ?4 AND rs.date < ?2, rs.clones_count, 0)) AS prev_clones,
+      SUM(IIF(rs.date >= ?2 AND rs.date < ?3 AND rs.date >= ft.full, 1, 0)) + CAST(COALESCE(MAX(0,
+        MIN(julianday(?3), julianday(ft.full)) - MAX(julianday(?2), julianday(ft.first))
       ), 0) AS INTEGER) AS cmp_days,
-      SUM(IIF(rs.date >= $4 AND rs.date < $2 AND rs.date >= ft.full, 1, 0)) + CAST(COALESCE(MAX(0,
-        MIN(julianday($2), julianday(ft.full)) - MAX(julianday($4), julianday(ft.first))
+      SUM(IIF(rs.date >= ?4 AND rs.date < ?2 AND rs.date >= ft.full, 1, 0)) + CAST(COALESCE(MAX(0,
+        MIN(julianday(?2), julianday(ft.full)) - MAX(julianday(?4), julianday(ft.first))
       ), 0) AS INTEGER) AS prev_days,
       COALESCE((
         SELECT x.stars FROM repo_stats x WHERE x.repo_id = r.id
         ORDER BY x.date DESC LIMIT 1
       ), 0) AS stars,
       COALESCE((
-        SELECT x.stars FROM repo_stats x WHERE x.repo_id = r.id AND x.stars > 0 AND x.date < $1
+        SELECT x.stars FROM repo_stats x WHERE x.repo_id = r.id AND x.stars > 0 AND x.date < ?1
         ORDER BY x.date DESC LIMIT 1
       ), 0) AS stars_start
     FROM repos r
     INNER JOIN repo_stats rs ON rs.repo_id = r.id
     LEFT JOIN ft ON ft.repo_id = r.id
-    WHERE r.hidden = FALSE AND ($5 IS NULL OR r.name = $5)
+    WHERE r.hidden = FALSE AND (?5 IS NULL OR r.name = ?5)
     GROUP BY r.id;
     ";
 
     let db = self.db.lock().unwrap();
     let mut stmt = db.prepare(qs)?;
     let items = stmt
-      .query_map(params![start, cmp_start, cmp_end, prev_start, repo], repo_period_from_row)?
+      .query_map(
+        params![start, cmp_start, cmp_end, prev_start, repo, BACKFILL_DAYS as i64],
+        repo_period_from_row,
+      )?
       .collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(items)
   }
@@ -1308,7 +1316,7 @@ mod tests {
     let rp = db.get_periods(Some("owner/repo"), Period(3), today).await?.remove(0);
     assert_eq!((rp.views, rp.views_uniques), (5, 1));
     assert_eq!((rp.cmp_views, rp.cmp_days, rp.prev_views, rp.prev_days), (40, 3, 50, 2));
-    assert_eq!((rp.stars, rp.stars_start, rp.stars_gain()), (8, 3, 5));
+    assert_eq!((rp.stars, rp.stars_start, rp.stars_gain()), (8, 3, Some(5)));
 
     // real stars only: the traffic rows stay out, unlike get_stars' forward fill
     let stars = db.get_star_rows("owner/repo").await?;
