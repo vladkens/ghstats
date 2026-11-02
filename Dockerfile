@@ -1,3 +1,5 @@
+ARG BIN_SOURCE=builder
+
 FROM --platform=$BUILDPLATFORM rust:alpine AS builder
 # Build the Rust binaries for all supported Linux architectures on the native
 # build platform with cargo-zigbuild. The runtime stage still runs per target
@@ -16,6 +18,12 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry --mount=type=cache,targe
   cp target/x86_64-unknown-linux-musl/release/ghstats /out/linux/amd64 && \
   cp target/aarch64-unknown-linux-musl/release/ghstats /out/linux/arm64
 
+FROM scratch AS prebuilt
+COPY --chmod=755 dist/amd64/ghstats /out/linux/amd64
+COPY --chmod=755 dist/arm64/ghstats /out/linux/arm64
+
+FROM ${BIN_SOURCE} AS bins
+
 FROM alpine:latest AS runtime
 LABEL org.opencontainers.image.source="https://github.com/vladkens/ghstats"
 WORKDIR /app
@@ -25,7 +33,7 @@ RUN addgroup -S appgroup && adduser -S appuser -G appgroup && \
 USER appuser
 
 ARG TARGETPLATFORM
-COPY --from=builder /out/${TARGETPLATFORM} /app/ghstats
+COPY --from=bins /out/${TARGETPLATFORM} /app/ghstats
 
 ENV HOST=0.0.0.0 PORT=8080
 EXPOSE ${PORT}
