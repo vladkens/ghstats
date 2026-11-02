@@ -25,7 +25,11 @@ async fn check_new_release(state: Arc<AppState>) -> Res {
   let tag = state.gh.get_latest_release_ver("vladkens/ghstats").await?;
   let mut last_tag = state.last_release.lock().unwrap();
   if *last_tag != tag {
-    tracing::info!("new release available: {} -> {}", *last_tag, tag);
+    // a dev build is ahead of its own release tag, so only a newer release is worth a log
+    if utils::is_newer_release(&tag, env!("CARGO_PKG_VERSION")) {
+      tracing::info!("new release available: {} -> {}", *last_tag, tag);
+    }
+
     *last_tag = tag.clone();
   }
 

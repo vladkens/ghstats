@@ -30,11 +30,9 @@ jobs:
         with:
           targets: x86_64-unknown-linux-musl aarch64-unknown-linux-musl
           cache: false
-          # ghstats on crates.io is an unrelated crate; dev: build outside releases;
-          # dev-version: keep the plain version the UI compares with the latest release.
+          # ghstats on crates.io is an unrelated crate; dev: build outside releases, versioned by `git describe`.
           crates: false
           dev: true
-          dev-version: false
 
   docker:
     if: github.ref == 'refs/heads/main'
