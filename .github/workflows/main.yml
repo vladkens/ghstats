@@ -113,12 +113,11 @@ jobs:
     needs: [test, build, docker]
     runs-on: ubuntu-latest
     permissions:
-      attestations: write
       contents: write
-      id-token: write
     steps:
       - uses: actions/checkout@v7
       - uses: vladkens/actions/rust-publish@v1
         with:
+          files: false
           crates: false
           dev: false
