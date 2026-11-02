@@ -12,7 +12,7 @@ and a tiny Docker image.
 </div>
 
 <div align="center">
-  <img src="https://github.com/vladkens/ghstats/blob/assets/preview.png?raw=true" alt="preview" />
+  <img src="https://github.com/vladkens/ghstats/blob/assets/preview-v0.11.png?raw=true" alt="preview" />
 </div>
 
 GitHub only keeps repository traffic data for 14 days. `ghstats` continuously
@@ -278,3 +278,4 @@ All contributions are welcome! Feel free to open an issue or submit a pull reque
 ## 🔍 See also
 
 - [repohistory](https://github.com/repohistory/repohistory) – NodeJS application as a service.
+- [gghstats](https://github.com/hrodrig/gghstats) – self-hosted Go application with SQLite.
