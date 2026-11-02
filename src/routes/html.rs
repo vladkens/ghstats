@@ -724,16 +724,18 @@ fn index_cols() -> Vec<IndexCol> {
     let per = &x.per;
     let change =
       Change::new(per.cmp_views, per.cmp_days, per.prev_views, per.prev_days, p, x.today);
-    // the sub-line hangs under the number (see app.css), so rows look the same at every period
-    html!(span class="v" { (num(x.per.views)) @if let Some(c) = change { (c.short()) } })
+    html!(
+      span class="v" { (num(x.per.views)) }
+      @if p.days().is_some() { @match change { Some(c) => (c.short()), None => small {} } }
+    )
   };
 
   let stars: IndexCell = |x, p| {
     let gain = x.per.stars_gain().filter(|x| *x != 0 && p.days().is_some());
-    html!(span class="v" {
-      (num(x.per.stars))
-      @if let Some(gain) = gain { small class="muted" { (signed(gain)) } }
-    })
+    html!(
+      span class="v" { (num(x.per.stars)) }
+      @if p.days().is_some() { small class="muted" { @if let Some(x) = gain { (signed(x)) } } }
+    )
   };
 
   vec![
@@ -840,7 +842,8 @@ pub async fn index(
   let period_url = |x: Period| index_url(&qs, &qs.sort, &qs.direction.to_string(), x);
 
   let table_html = html!(
-    table id="repos_table" class="data idx" {
+    // All has no second line (change, gain): one line per row, else two in every row
+    table id="repos_table" class=(format!("data idx {}", if p.days().is_some() { "two-line" } else { "one-line" })) {
       colgroup {
         @for col in &cols { col class=(col.class); }
       }
@@ -1495,14 +1498,20 @@ mod tests {
     let frag =
       index(State(state.clone()), OriginalUri(uri), headers.clone()).await.unwrap().into_string();
     assert!(frag.contains(
-      "<td class=\"c-stars\"><span class=\"v\">0<small class=\"muted\">−20</small></span></td>"
+      "<td class=\"c-stars\"><span class=\"v\">0</span><small class=\"muted\">−20</small></td>"
     ));
+    assert!(frag.contains("<table id=\"repos_table\" class=\"data idx two-line\">"));
+    assert!(
+      frag.contains("<span class=\"v\">0</span><small></small></td>"),
+      "line 2 kept when empty"
+    );
 
     // at All neither change nor gain: bare numbers
     let frag = index(State(state), OriginalUri("/?period=all".parse().unwrap()), headers)
       .await
       .unwrap()
       .into_string();
+    assert!(frag.contains("<table id=\"repos_table\" class=\"data idx one-line\">"));
     assert!(frag.contains("<td class=\"c-stars\"><span class=\"v\">0</span></td>"));
     assert!(!frag.contains("<small"));
   }

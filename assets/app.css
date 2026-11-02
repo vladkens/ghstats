@@ -174,11 +174,14 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; font-v
 .toolbar .seg { margin-left: auto; }
 /* one row height at every period: values centered, the sub-line hangs under the number in the
    bottom padding without moving it */
-.idx td { vertical-align: middle; padding-top: 0.75em; padding-bottom: 0.75em; }
+/* All: one line per row, centered; other periods: two lines in every row (value, then change or
+   gain, an empty line when there is none), all values on line 1 */
+.idx td { vertical-align: middle; }
+.idx.two-line td { vertical-align: top; }
 .idx .per { display: inline-block; width: 0.8em; height: 0.8em; vertical-align: -0.05em; color: var(--muted); cursor: help; }
 .idx .per svg { display: block; width: 100%; height: 100%; }
-.idx .v { position: relative; display: inline-block; }
-.idx small { position: absolute; right: 0; top: calc(100% - 0.3em); font-size: 0.75em; line-height: 1.1; white-space: nowrap; }
+.idx .v { display: block; }
+.idx small { display: block; height: 1.2em; font-size: 0.75em; line-height: 1.2em; white-space: nowrap; }
 .idx col.c-views, .idx col.c-clones { width: 8em; }
 .idx col.c-stars { width: 6.5em; }
 .idx col.c-forks, .idx col.c-issues { width: 6.5em; }
