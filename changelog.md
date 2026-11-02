@@ -9,6 +9,7 @@
 
 - Pages now start with `<!DOCTYPE html>` and use valid void `meta` tags (#30, by @utoni)
 - Repositories with pull requests disabled are synced again instead of being skipped (#27)
+- A repository whose star history can't be fetched no longer stops star sync for the others (#27)
 
 ---
 

@@ -142,7 +142,7 @@ pub async fn sync_stars(db: &DbClient, gh: &GhClient) -> Res {
       Ok(stars) => stars,
       Err(e) => {
         tracing::warn!("failed to get stars for {}: {:?}", repo.name, e);
-        break;
+        continue;
       }
     };
 
@@ -477,6 +477,18 @@ mod tests {
     Json(json!([]))
   }
 
+  async fn stargazers(Path((_owner, repo)): Path<(String, String)>) -> Response {
+    match repo.as_str() {
+      "stars-403" => StatusCode::FORBIDDEN.into_response(),
+      _ => Json(json!([
+        { "starred_at": "2024-01-01T10:00:00Z" },
+        { "starred_at": "2024-01-01T12:00:00Z" },
+        { "starred_at": "2024-01-02T08:00:00Z" },
+      ]))
+      .into_response(),
+    }
+  }
+
   async fn mock_server(gh: MockGh) -> Res<(String, tokio::task::JoinHandle<()>)> {
     let router = Router::new()
       .route("/repos/{owner}/{repo}/pulls", get(pulls))
@@ -484,6 +496,7 @@ mod tests {
       .route("/repos/{owner}/{repo}/traffic/clones", get(clones))
       .route("/repos/{owner}/{repo}/traffic/popular/referrers", get(empty_list))
       .route("/repos/{owner}/{repo}/traffic/popular/paths", get(empty_list))
+      .route("/repos/{owner}/{repo}/stargazers", get(stargazers))
       .with_state(gh);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
     let addr = listener.local_addr()?;
@@ -564,6 +577,33 @@ mod tests {
 
     assert!(update_repo_metrics(&db, &gh, &repo, DATE).await.is_err());
     assert!(db.get_repo_totals("owner/pulls-500").await?.is_none());
+
+    server.abort();
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn failed_stars_history_does_not_stop_other_repos() -> Res {
+    let (base_url, server) = mock_server(MockGh::default()).await?;
+    let gh = GhClient::for_test(base_url)?;
+    let db = test_db("stars-403").await?;
+    let failing = sample_repo("owner/stars-403", None);
+    let healthy = Repo { id: 2, ..sample_repo("owner/stars-ok", None) };
+    db.insert_repo(&failing).await?;
+    db.insert_repo(&healthy).await?;
+
+    sync_stars(&db, &gh).await?;
+
+    let unsynced = db.repos_to_sync().await?;
+    assert_eq!(
+      unsynced.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
+      vec!["owner/stars-403"]
+    );
+
+    let stars = db.get_stars("owner/stars-ok").await?;
+    let stars = stars.iter().map(|s| (s.date.as_str(), s.stars)).collect::<Vec<_>>();
+    assert_eq!(stars, vec![("2024-01-01T00:00:00Z", 2), ("2024-01-02T00:00:00Z", 3)]);
+    assert!(db.get_stars("owner/stars-403").await?.is_empty());
 
     server.abort();
     Ok(())
