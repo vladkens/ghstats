@@ -20,10 +20,8 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - run: rustup toolchain install stable --profile minimal --component clippy
-      - run: rustup toolchain install nightly --profile minimal --component rustfmt
       - uses: Swatinem/rust-cache@v2
-        with:
-          cache-directories: ~/.cache/cargo-cross
+      - run: rustup toolchain install nightly --profile minimal --component rustfmt
       - run: make check
       - run: make test
       - uses: vladkens/actions/rust-build@v1
