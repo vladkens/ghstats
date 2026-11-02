@@ -9,7 +9,6 @@ on:
 permissions:
   contents: read
 
-# A running main run is never cut off, but a newer push replaces a still-pending one; a release commit gets its own group, so it is never replaced; PR runs cancel each other.
 concurrency:
   group: ${{ github.workflow }}-${{ startsWith(github.event.head_commit.message, 'release:') && github.sha || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -28,7 +27,6 @@ jobs:
       - run: make check
       - run: make test
 
-  # No secrets, no write token. Runs on every PR: checks release PRs and builds the image without pushing it.
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -48,7 +46,6 @@ jobs:
         if: "github.event_name == 'pull_request' && startsWith(github.event.pull_request.title, 'release: v')"
         uses: vladkens/actions/release-check@v1
 
-      # A broken Dockerfile shows before the merge.
       - if: github.event_name == 'pull_request'
         uses: docker/setup-qemu-action@v4
       - if: github.event_name == 'pull_request'
@@ -60,7 +57,6 @@ jobs:
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
 
-  # Writes packages: pushes the image to ghcr.io.
   docker:
     if: github.ref == 'refs/heads/main'
     needs: [test, build]
@@ -104,7 +100,6 @@ jobs:
           cache-to: type=gha,mode=max
           tags: ${{ steps.docker-tags.outputs.tags }}
 
-  # Writes contents: tags the release commit and creates its GitHub release.
   release:
     if: needs.build.outputs.tag != ''
     needs: [build, docker]
