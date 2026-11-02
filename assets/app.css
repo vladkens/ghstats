@@ -1,8 +1,7 @@
 :root {
   --bg: #ffffff;
   --card: #ffffff;
-  --card-shadow: 0 0.125rem 1rem rgba(27, 40, 50, 0.04), 0 0.125rem 2rem rgba(27, 40, 50, 0.08),
-    0 0 0 0.0625rem rgba(27, 40, 50, 0.024);
+  --card-border: #e3e6ec;
   --line: #e7eaf0;
   --line-strong: #cfd5e2;
   --head: #24292f;
@@ -10,10 +9,11 @@
   --muted: #646b79;
   --accent: #0172ad;
   --accent-ink: #ffffff;
-  --traffic: #2a78d6;
-  --traffic-tint: rgba(42, 120, 214, 0.28);
-  --rowbar: rgba(42, 120, 214, 0.05);
-  --stars: #b07400;
+  /* traffic: total pink, unique lavender drawn inside it; stars blue (the old ghstats palette) */
+  --traffic: #7c6ff0;
+  --traffic-tint: rgba(255, 99, 132, 0.35);
+  --rowbar: rgba(124, 111, 240, 0.07);
+  --stars: #2f95dc;
   --gap-ink: #c3c9d4;
   --good-ink: #0f7a2a;
   --bad-ink: #c23a3a;
@@ -30,7 +30,7 @@
     color-scheme: dark;
     --bg: #13171f;
     --card: #181c25;
-    --card-shadow: 0 0 0 0.0625rem #222836;
+    --card-border: #262d3b;
     --line: #262d3b;
     --line-strong: #3a4253;
     --head: #f0f1f3;
@@ -38,10 +38,10 @@
     --muted: #8891a4;
     --accent: #01aaff;
     --accent-ink: #0b1520;
-    --traffic: #3987e5;
-    --traffic-tint: rgba(57, 135, 229, 0.32);
-    --rowbar: rgba(57, 135, 229, 0.065);
-    --stars: #e0a100;
+    --traffic: #9a8cf0;
+    --traffic-tint: rgba(255, 110, 145, 0.75);
+    --rowbar: rgba(154, 140, 240, 0.09);
+    --stars: #4fb0f0;
     --gap-ink: #3a4253;
     --good-ink: #3fbf5a;
     --bad-ink: #ef7676;
@@ -77,8 +77,8 @@ h1, h2 { margin: 0; color: var(--head); text-wrap: balance; }
 .ver { font-family: var(--font-mono); font-size: 0.9em; color: var(--muted); }
 .ver:hover { color: var(--head); }
 
-.card { background: var(--card); box-shadow: var(--card-shadow); border-radius: var(--r); padding: 0.85em 1em 1em; min-width: 0; }
-.card > h2, .chart-h h2 { font-size: 1em; font-weight: 600; color: var(--muted); margin-bottom: 0.5em; }
+.card { background: var(--card); border: 1px solid var(--card-border); border-radius: var(--r); padding: 0.85em 1em 1em; min-width: 0; }
+.card > h2 { font-size: 1em; font-weight: 600; color: var(--muted); margin-bottom: 0.5em; }
 .card.flush { padding: 0; overflow: hidden; }
 .stack { display: grid; gap: 1em; }
 .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1em; }
@@ -92,7 +92,9 @@ h1, h2 { margin: 0; color: var(--head); text-wrap: balance; }
 
 .repo-head { display: grid; gap: 0.25em; padding-bottom: 0.25em; }
 .repo-head h1 { font-size: 1.5em; font-weight: 650; overflow-wrap: anywhere; }
-.repo-head h1 a { color: var(--head); }
+.repo-head h1 a { color: var(--accent); }
+.repo-head h1 a:hover, .repo-head h1 a:focus-visible { text-decoration: underline; text-underline-offset: 3px; }
+.repo-head .ext { margin-left: 0.25em; font-size: 0.65em; vertical-align: 0.35em; }
 .repo-head p { margin: 0; max-width: 75ch; }
 .periodbar {
   position: sticky;
@@ -109,25 +111,18 @@ h1, h2 { margin: 0; color: var(--head); text-wrap: balance; }
 .periodbar .range { font-size: 0.9em; color: var(--muted); }
 .periodbar .seg { margin-left: auto; }
 
-.kpis { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); gap: 1em; }
-.kpis.c1 { --cols: 1; }
-.kpis.c2 { --cols: 2; }
-.kpis.c3 { --cols: 3; }
-.kpis.c4 { --cols: 4; }
-.kpi { display: grid; gap: 0.1em; align-content: start; }
-.kpi h2 { margin: 0; }
-.kpi .value { font-size: 1.6em; font-weight: 650; color: var(--head); line-height: 1.2; overflow-wrap: anywhere; }
-.kpi .sub { font-size: 0.9em; font-variant-numeric: tabular-nums; }
-/* both lines keep their height when empty, so tiles don't jump between periods */
-.kpi .sub, .kpi .change { min-height: 1.5em; }
-.kpi abbr { text-decoration: underline dotted var(--line-strong); text-underline-offset: 3px; cursor: help; }
+/* repo cards: title and legend, then the big number with its details, then the chart */
+.card-t { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; }
+.card-t h2 { margin: 0; font-size: 1em; font-weight: 600; color: var(--muted); }
+.card-v { display: flex; flex-wrap: wrap; align-items: baseline; gap: 2px 12px; margin: 0.1em 0 0.6em; font-variant-numeric: tabular-nums; }
+.card-v .big { font-size: 1.6em; font-weight: 650; color: var(--head); line-height: 1.2; }
+.card-v .sub { font-size: 0.9em; }
+.card-v abbr { text-decoration: underline dotted var(--line-strong); text-underline-offset: 3px; cursor: help; }
 .delta { font-size: 0.85em; font-variant-numeric: tabular-nums; color: var(--muted); }
 .delta.up { color: var(--good-ink); }
 .delta.down { color: var(--bad-ink); }
 .delta.warn::before { content: "≈ "; }
 
-.chart-h { display: flex; flex-wrap: wrap; align-items: baseline; gap: 4px 12px; margin-bottom: 0.5em; }
-.chart-h h2 { margin: 0; }
 .legend { margin-left: auto; display: flex; flex-wrap: wrap; gap: 2px 12px; font-size: 0.8em; color: var(--muted); }
 .legend span { display: inline-flex; align-items: center; gap: 5px; }
 .sw { width: 10px; height: 10px; border-radius: 2px; display: inline-block; flex: none; }
@@ -135,7 +130,7 @@ h1, h2 { margin: 0; color: var(--head); text-wrap: balance; }
 .sw.unique { background: var(--traffic); }
 .sw.hatch { background: repeating-linear-gradient(135deg, var(--gap-ink) 0 1.5px, transparent 1.5px 4px); box-shadow: inset 0 0 0 1px var(--gap-ink); }
 .chart { position: relative; height: 230px; }
-.chart.short { height: 200px; }
+.chart.tall { height: 260px; }
 
 /* tables: normal-case headers, a fill behind the whole row shows its share */
 .tscroll { overflow-x: auto; }
@@ -176,26 +171,27 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; font-v
    bottom padding without moving it */
 /* All: one line per row, centered; other periods: two lines in every row (value, then change or
    gain, an empty line when there is none), all values on line 1 */
+/* every cell centered; a value with a second line (change, gain) is centered as a block */
 .idx td { vertical-align: middle; }
-.idx.two-line td { vertical-align: top; }
+/* the index table sits on the page: its outer columns line up with the toolbar */
+.data.idx th:first-child, .data.idx td:first-child { padding-left: 0; }
+.data.idx th:last-child, .data.idx td:last-child { padding-right: 0; }
 .idx .per { display: inline-block; width: 0.8em; height: 0.8em; vertical-align: -0.05em; color: var(--muted); cursor: help; }
 .idx .per svg { display: block; width: 100%; height: 100%; }
 .idx .v { display: block; }
-.idx small { display: block; height: 1.2em; font-size: 0.75em; line-height: 1.2em; white-space: nowrap; }
+.idx small { display: block; font-size: 0.75em; line-height: 1.2; white-space: nowrap; }
 .idx col.c-views, .idx col.c-clones { width: 8em; }
 .idx col.c-stars { width: 6.5em; }
 .idx col.c-forks, .idx col.c-issues { width: 6.5em; }
 .idx col.c-prs { width: 5.5em; }
 
-@media (max-width: 860px) {
-  .kpis.c4 { --cols: 2; }
-}
 @media (max-width: 900px) {
   .opt { display: none; }
 }
 @media (max-width: 760px) {
   .grid2 { grid-template-columns: minmax(0, 1fr); }
   .chart { height: 200px; }
+  .chart.tall { height: 220px; }
 }
 @media (max-width: 640px) {
   .opt2 { display: none; }
@@ -209,10 +205,5 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; font-v
   .idx col.c-views { width: 6em; }
   .idx col.c-stars { width: 5.5em; }
   .periodbar .seg, .toolbar .seg { margin-left: 0; }
-  .kpi .value { font-size: 1.35em; }
-  .kpis { gap: 0.6em; }
-  .kpi.card { padding: 0.7em 0.75em 0.8em; }
-}
-@media (max-width: 480px) {
-  .kpis.c3 { --cols: 1; }
+  .card-v .big { font-size: 1.35em; }
 }

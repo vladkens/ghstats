@@ -382,7 +382,7 @@
               borderWidth: 2,
               tension: 0,
               fill: 'origin',
-              backgroundColor: c + '1a',
+              backgroundColor: c + '22',
               pointRadius: ctx => (ctx.dataIndex === last ? 4 : 0),
               pointHoverRadius: 4,
               pointBackgroundColor: c,

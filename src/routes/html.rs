@@ -222,10 +222,29 @@ impl Change {
     period: Period,
     today: NaiveDate,
   ) -> Option<Self> {
-    let (len, win) = (period.days()?, period.windows(today)?);
+    Self::compare(cur, cur_days, prev, prev_days, period, today).ok()
+  }
+
+  /// Like `new`, with the reason when there's nothing honest to show
+  fn compare(
+    cur: i64,
+    cur_days: i64,
+    prev: i64,
+    prev_days: i64,
+    period: Period,
+    today: NaiveDate,
+  ) -> Result<Self, &'static str> {
+    let (Some(len), Some(win)) = (period.days(), period.windows(today)) else {
+      return Err("No previous period for all time");
+    };
+
     let coverage = cur_days.min(prev_days) as f64 / len as f64;
-    if coverage < 0.5 || prev < 10 {
-      return None;
+    if coverage < 0.5 {
+      return Err("Not enough days collected to compare with the previous period");
+    }
+
+    if prev < 10 {
+      return Err("Too little in the previous period to compare");
     }
 
     let day = Days::new(1);
@@ -244,7 +263,7 @@ impl Change {
 
     let avg = |x: i64, days: i64| x as f64 / days as f64;
     let pct = (avg(cur, cur_days) / avg(prev, prev_days) - 1.0) * 100.0;
-    Some(Self { pct, coverage, title })
+    Ok(Self { pct, coverage, title })
   }
 
   fn approx(&self) -> bool {
@@ -291,29 +310,6 @@ impl Change {
 
     html!(small class=(self.class()) title=(self.title) { (val) })
   }
-}
-
-fn tile(title: &str, value: i64, sub: Markup, change: Option<Markup>) -> Markup {
-  html!(
-    div class="card kpi" {
-      h2 { (title) }
-      div class="value" { (num(value)) }
-      // both lines stay when empty, so tiles keep their height between periods
-      div class="sub" { (sub) }
-      div class="change" { @if let Some(x) = change { (x) } }
-    }
-  )
-}
-
-fn traffic_tile(
-  title: &str,
-  total: i64,
-  uniques: i64,
-  change: Option<Change>,
-  p: Period,
-) -> Markup {
-  let sub = html!(abbr title=(UNIQUE_TIP) { (num(uniques.min(total))) " unique" });
-  tile(title, total, sub, change.map(|x| x.tile(p)))
 }
 
 // MARK: Charts data
@@ -391,16 +387,51 @@ struct ChartData<'a> {
   window_label: Option<String>,
 }
 
-fn traffic_card(title: &str, canvas_id: &str) -> Markup {
+/// Stars first: the current count, its gain in the period and the all-time chart
+fn stars_card(stars: i64, gain: Option<(String, bool)>, gaps: bool) -> Markup {
   html!(
     section class="card" {
-      div class="chart-h" {
+      div class="card-t" {
+        h2 { "Stars" }
+        @if gaps {
+          div class="legend" { span { i class="sw hatch" {} "No data" } }
+        }
+      }
+      div class="card-v" {
+        span class="big" { (num(stars)) }
+        @match gain {
+          Some((x, true)) => span class="sub" title=(STARS_APPROX) { "≈ " (x) },
+          Some((x, false)) => span class="sub" { (x) },
+          None => {},
+        }
+      }
+      div class="chart tall" { canvas id="chart_stars" role="img" aria-label="Stars over time" {} }
+    }
+  )
+}
+
+fn traffic_card(
+  title: &str,
+  canvas_id: &str,
+  total: i64,
+  uniques: i64,
+  change: Option<Change>,
+  p: Period,
+) -> Markup {
+  html!(
+    section class="card" {
+      div class="card-t" {
         h2 { (title) }
         div class="legend" {
           span { i class="sw total" {} "Total" }
           span { i class="sw unique" {} "Unique" }
           span class="gap-key" hidden { i class="sw hatch" {} "No data" }
         }
+      }
+      div class="card-v" {
+        span class="big" { (num(total)) }
+        span class="sub" { abbr title=(UNIQUE_TIP) { (num(uniques.min(total))) " unique" } }
+        @if let Some(x) = change { (x.tile(p)) }
       }
       div class="chart" {
         canvas id=(canvas_id) role="img" aria-label=(format!("{title}: total and unique")) {}
@@ -598,26 +629,18 @@ pub async fn repo_page(
   let star_days: Vec<NaiveDate> = stars.iter().filter_map(|x| x.0.parse().ok()).collect();
   let gaps = star_gaps(first, &outages(&daily), &star_days, today);
 
-  let mut tiles = vec![];
+  let gain = stars_gain(&rp, p, today, &gaps, star_days.last().copied());
+  let views = Change::new(rp.cmp_views, rp.cmp_days, rp.prev_views, rp.prev_days, p, today);
+  let clones = Change::new(rp.cmp_clones, rp.cmp_days, rp.prev_clones, rp.prev_days, p, today);
+
+  // Downloads will be one more card like these
+  let mut charts = vec![];
   if has_views {
-    let change = Change::new(rp.cmp_views, rp.cmp_days, rp.prev_views, rp.prev_days, p, today);
-    tiles.push(traffic_tile("Views", rp.views, rp.views_uniques, change, p));
+    charts.push(traffic_card("Views", "chart_views", rp.views, rp.views_uniques, views, p));
   }
 
   if has_clones {
-    let change = Change::new(rp.cmp_clones, rp.cmp_days, rp.prev_clones, rp.prev_days, p, today);
-    tiles.push(traffic_tile("Clones", rp.clones, rp.clones_uniques, change, p));
-  }
-
-  let gain = stars_gain(&rp, p, today, &gaps, star_days.last().copied());
-  if !stars.is_empty() || rp.stars > 0 {
-    let sub = match &gain {
-      Some((x, true)) => html!(span title=(STARS_APPROX) { "≈ " (x) }),
-      Some((x, false)) => html!((x)),
-      None => html!(),
-    };
-
-    tiles.push(tile("Stars", rp.stars, sub, None));
+    charts.push(traffic_card("Clones", "chart_clones", rp.clones, rp.clones_uniques, clones, p));
   }
 
   let window_label = match (&gain, stars.is_empty()) {
@@ -637,17 +660,14 @@ pub async fn repo_page(
   let period_url =
     |x: Period| format!("/{}?sort={}&direction={}&period={}", repo, qs.sort, qs.direction, x);
 
-  let charts: Vec<Markup> =
-    [(has_views, "Views", "chart_views"), (has_clones, "Clones", "chart_clones")]
-      .into_iter()
-      .filter(|x| x.0)
-      .map(|x| traffic_card(x.1, x.2))
-      .collect();
-
   let html = html!(
     div class="stack" {
       div class="repo-head" {
-        h1 { a href=(format!("https://github.com/{}", repo)) { (totals.name) } }
+        h1 {
+          a href=(format!("https://github.com/{}", repo)) title="Open on GitHub" {
+            (totals.name) span class="ext" aria-hidden="true" { "↗" }
+          }
+        }
         @if let Some(desc) = totals.description.as_deref().filter(|x| !x.is_empty()) {
           p { (desc) }
         }
@@ -658,29 +678,13 @@ pub async fn repo_page(
         (period_nav(p, false, period_url))
       }
 
-      @if !tiles.is_empty() {
-        div class=(format!("kpis c{}", tiles.len())) {
-          @for x in &tiles { (x) }
-        }
+      @if !stars.is_empty() {
+        (stars_card(rp.stars, gain.clone(), !gaps.is_empty()))
       }
 
       @if !charts.is_empty() {
         div class=[(charts.len() > 1).then_some("grid2")] {
           @for x in &charts { (x) }
-        }
-      }
-
-      @if !stars.is_empty() {
-        section class="card" {
-          div class="chart-h" {
-            h2 { "Stars" }
-            @if !gaps.is_empty() {
-              div class="legend" { span { i class="sw hatch" {} "No data" } }
-            }
-          }
-          div class="chart short" {
-            canvas id="chart_stars" role="img" aria-label="Stars over time" {}
-          }
         }
       }
 
@@ -723,19 +727,20 @@ fn index_cols() -> Vec<IndexCol> {
   let views: IndexCell = |x, p| {
     let per = &x.per;
     let change =
-      Change::new(per.cmp_views, per.cmp_days, per.prev_views, per.prev_days, p, x.today);
-    html!(
-      span class="v" { (num(x.per.views)) }
-      @if p.days().is_some() { @match change { Some(c) => (c.short()), None => small {} } }
-    )
+      Change::compare(per.cmp_views, per.cmp_days, per.prev_views, per.prev_days, p, x.today);
+    two_lines(per.views, p, change.map(|x| x.short()))
+  };
+
+  let clones: IndexCell = |x, p| {
+    let per = &x.per;
+    let change =
+      Change::compare(per.cmp_clones, per.cmp_days, per.prev_clones, per.prev_days, p, x.today);
+    two_lines(per.clones, p, change.map(|x| x.short()))
   };
 
   let stars: IndexCell = |x, p| {
-    let gain = x.per.stars_gain().filter(|x| *x != 0 && p.days().is_some());
-    html!(
-      span class="v" { (num(x.per.stars)) }
-      @if p.days().is_some() { small class="muted" { @if let Some(x) = gain { (signed(x)) } } }
-    )
+    let gain = x.per.stars_gain().map(|x| html!(small class="muted" { (signed(x)) }));
+    two_lines(x.per.stars, p, gain.ok_or("No star history before this period"))
   };
 
   vec![
@@ -746,7 +751,7 @@ fn index_cols() -> Vec<IndexCol> {
       sort: RepoSort::Clones,
       per: true,
       class: "c-clones opt2",
-      cell: |x, _| html!((num(x.per.clones))),
+      cell: clones,
     },
     IndexCol { name: "Stars", sort: RepoSort::Stars, per: false, class: "c-stars", cell: stars },
     IndexCol {
@@ -771,6 +776,19 @@ fn index_cols() -> Vec<IndexCol> {
       cell: |x, _| html!((num(x.repo.prs as i64))),
     },
   ]
+}
+
+/// A value and, for a period, a second line in every row: the change or gain, or "—" with why
+fn two_lines(value: i64, p: Period, second: Result<Markup, &str>) -> Markup {
+  html!(
+    span class="v" { (num(value)) }
+    @if p.days().is_some() {
+      @match second {
+        Ok(x) => (x),
+        Err(why) => small class="muted" title=(why) { "—" },
+      }
+    }
+  )
 }
 
 fn sort_index(rows: &mut [IndexRow], sort: &RepoSort, dir: &Direction) {
@@ -842,8 +860,7 @@ pub async fn index(
   let period_url = |x: Period| index_url(&qs, &qs.sort, &qs.direction.to_string(), x);
 
   let table_html = html!(
-    // All has no second line (change, gain): one line per row, else two in every row
-    table id="repos_table" class=(format!("data idx {}", if p.days().is_some() { "two-line" } else { "one-line" })) {
+    table id="repos_table" class="data idx" {
       colgroup {
         @for col in &cols { col class=(col.class); }
       }
@@ -927,9 +944,8 @@ pub async fn index(
       (period_nav(p, false, period_url))
     }
 
-    div class="card flush" {
-      div class="tscroll" { (table_html) }
-    }
+    // a plain table on the page, no card around it
+    div class="tscroll" { (table_html) }
   );
 
   Ok(base(&state, vec![], html))
@@ -1219,11 +1235,12 @@ mod tests {
     state.db.mark_repo_stars_synced(1).await.unwrap();
     let page = get("/o/r?period=14", None).await.unwrap().into_string();
     assert!(page.contains("+5 in 14d"));
-    assert!(!page.contains("<h2>Views</h2>"), "no traffic, no views tile");
+    assert!(page.contains("<div class=\"card-v\"><span class=\"big\">5</span>"));
+    assert!(!page.contains("<h2>Views</h2>"), "no traffic, no views card");
     assert!(!page.contains("id=\"chart_views\""));
     assert!(page.contains("id=\"refs_table\""));
     assert!(!page.contains("id=\"path_table\""), "no paths, no paths table");
-    assert!(page.contains("kpis c1"));
+    assert!(!page.contains("class=\"kpis"), "no tiles row");
 
     let frag = get("/o/r?sort=name&period=7d", Some("refs_table")).await.unwrap().into_string();
     assert!(frag.starts_with("<div id=\"refs_table\""));
@@ -1313,9 +1330,14 @@ mod tests {
     assert!(page.contains(">≈ −5 in 7d</span>"), "stars before the period are in the gap");
     assert!(page.contains("\"window_label\":\"≈ −5 in 7d\""));
     assert!(page.contains("id=\"chart_views\""));
-    assert!(!page.contains("<h2>Clones</h2>"), "no clones ever, no clones tile");
+    assert!(!page.contains("<h2>Clones</h2>"), "no clones ever, no clones card");
     assert!(!page.contains("id=\"chart_clones\""));
-    assert!(page.contains("kpis c2"));
+
+    // stars first, then the views card on its own
+    let (stars, views) =
+      (page.find("<h2>Stars</h2>").unwrap(), page.find("<h2>Views</h2>").unwrap());
+    assert!(stars < views);
+    assert!(page.contains("<span class=\"big\">505</span>"));
   }
 
   #[tokio::test]
@@ -1489,7 +1511,7 @@ mod tests {
     .await
     .unwrap()
     .into_string();
-    assert!(page.contains("<h2>Stars</h2><div class=\"value\">0</div>"));
+    assert!(page.contains("<div class=\"card-v\"><span class=\"big\">0</span>"));
     assert!(page.contains("−20 in 7d"));
 
     let mut headers = HeaderMap::new();
@@ -1500,18 +1522,16 @@ mod tests {
     assert!(frag.contains(
       "<td class=\"c-stars\"><span class=\"v\">0</span><small class=\"muted\">−20</small></td>"
     ));
-    assert!(frag.contains("<table id=\"repos_table\" class=\"data idx two-line\">"));
-    assert!(
-      frag.contains("<span class=\"v\">0</span><small></small></td>"),
-      "line 2 kept when empty"
-    );
+    // views and clones can't be compared without traffic: a dash with the reason, never nothing
+    let dash = "<span class=\"v\">0</span><small class=\"muted\" title=\"Not enough days collected \
+                to compare with the previous period\">—</small></td>";
+    assert_eq!(frag.matches(dash).count(), 2, "views and clones");
 
     // at All neither change nor gain: bare numbers
     let frag = index(State(state), OriginalUri("/?period=all".parse().unwrap()), headers)
       .await
       .unwrap()
       .into_string();
-    assert!(frag.contains("<table id=\"repos_table\" class=\"data idx one-line\">"));
     assert!(frag.contains("<td class=\"c-stars\"><span class=\"v\">0</span></td>"));
     assert!(!frag.contains("<small"));
   }
