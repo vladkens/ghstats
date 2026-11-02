@@ -39,6 +39,7 @@ pub struct AppState {
   pub gh: GhClient,
   pub filter: GhsFilter,
   pub include_private: bool,
+  pub version_check: bool,
   pub last_release: Mutex<String>,
   db_health: Mutex<DbHealth>,
   sync_status: Mutex<SyncStatus>,
@@ -73,11 +74,21 @@ impl AppState {
     tracing::info!("{:?}", filter);
 
     let include_private = env_bool("GHS_INCLUDE_PRIVATE");
+    let version_check = !env_bool("GHS_DISABLE_VERSION_CHECK");
 
     let last_release = Mutex::new(env!("CARGO_PKG_VERSION").to_string());
     let db_health = Mutex::new(DbHealth::new(Ok(())));
     let sync_status = Mutex::new(SyncStatus::default());
-    Ok(Self { db, gh, filter, include_private, last_release, db_health, sync_status })
+    Ok(Self {
+      db,
+      gh,
+      filter,
+      include_private,
+      version_check,
+      last_release,
+      db_health,
+      sync_status,
+    })
   }
 
   pub fn db_health(&self) -> DbHealth {
@@ -148,6 +159,7 @@ impl AppState {
       gh: GhClient::new("test-token".to_string()).unwrap(),
       filter,
       include_private: false,
+      version_check: false,
       last_release: Mutex::new(env!("CARGO_PKG_VERSION").to_string()),
       db_health: Mutex::new(DbHealth::new(Ok(()))),
       sync_status: Mutex::new(SyncStatus::default()),

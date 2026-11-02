@@ -40,7 +40,9 @@ fn new_metrics_job(state: Arc<AppState>, cron_schedule: &str) -> Res<tokio_cron_
   let job = tokio_cron_scheduler::Job::new_async(cron_schedule, move |_, _| {
     let state = state.clone();
     Box::pin(async move {
-      let _ = check_new_release(state.clone()).await;
+      if state.version_check {
+        let _ = check_new_release(state.clone()).await;
+      }
 
       if let Err(e) = helpers::update_metrics(state.clone()).await {
         tracing::error!("failed to update metrics: {:?}", e);

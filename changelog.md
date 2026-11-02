@@ -3,6 +3,11 @@
 ### Features
 
 - Frontend libraries are now embedded into the binary and served by `ghstats` itself instead of being loaded from unpkg.com (#31)
+- Added `GHS_DISABLE_VERSION_CHECK` to turn off the check for new ghstats releases (#30, by @utoni)
+
+### Fixes
+
+- Pages now start with `<!DOCTYPE html>` and use valid void `meta` tags (#30, by @utoni)
 
 ---
 

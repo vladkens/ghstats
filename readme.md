@@ -141,6 +141,10 @@ If you plan to display your stats publicly, there is an option to add custom lin
 GHS_CUSTOM_LINKS="Blog|https://medium.com/@vladkens,Github|https://github.com/vladkens,Buy me a coffee|https://buymeacoffee.com/vladkens"
 ```
 
+### Version check
+
+By default, `ghstats` asks GitHub for the latest `ghstats` release on the metrics schedule (hourly by default) and shows a notice in the UI when a newer one is available. Set `GHS_DISABLE_VERSION_CHECK=true` to turn this request off.
+
 ### Filter repos
 
 You can filter repos for display (and data collection). You can select a specific org/user or a specific list of repositories. This is configured via the `GHS_FILTER` environment variable. You can use negation in the rules to remove a specific repo or org/user using the `!` symbol. By default, all repos are shown.
