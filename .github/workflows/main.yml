@@ -33,7 +33,7 @@ jobs:
           dev-version: false
 
   docker:
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/main' || github.event_name == 'pull_request'
     needs: [test]
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -67,6 +67,7 @@ jobs:
       - uses: docker/setup-buildx-action@v4
 
       - uses: docker/login-action@v4
+        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -93,9 +94,72 @@ jobs:
         with:
           context: .
           build-args: BIN_SOURCE=prebuilt
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.docker-tags.outputs.tags }}
+
+      - name: Smoke test images
+        if: github.event_name == 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          old=ghcr.io/vladkens/ghstats:main
+          failed=0
+          rows=()
+          port=18080
+
+          for arch in amd64 arm64; do
+            port=$((port + 1))
+            echo "::group::build $arch"
+            docker buildx build --load --platform "linux/$arch" --build-arg BIN_SOURCE=prebuilt -t "ghstats:$arch" .
+            echo "::endgroup::"
+
+            docker run --rm --platform "linux/$arch" --entrypoint /bin/sh "ghstats:$arch" -c 'ls -l /app/ghstats; uname -m'
+            docker run -d --platform "linux/$arch" -e GITHUB_TOKEN=dummy -p "$port:8080" --name "gs-$arch" "ghstats:$arch"
+
+            ok=0
+            for _ in $(seq 1 30); do
+              if curl -fsS "http://127.0.0.1:$port/health"; then
+                ok=1
+                break
+              fi
+
+              sleep 2
+            done
+
+            echo
+            if [ "$ok" = 1 ]; then
+              echo "health ok on $arch"
+              body=$(curl -fsS "http://127.0.0.1:$port/" || true)
+              echo "${body:0:300}"
+              echo
+            else
+              echo "::error::health check failed on $arch"
+              failed=1
+            fi
+
+            echo "--- logs gs-$arch"
+            docker logs "gs-$arch" 2>&1 | tail -20
+            docker rm -f "gs-$arch" >/dev/null
+
+            docker pull --platform "linux/$arch" "$old"
+            docker tag "$old" "ghstats-old:$arch"
+
+            new_img=$(docker image inspect -f '{{.Size}}' "ghstats:$arch")
+            old_img=$(docker image inspect -f '{{.Size}}' "ghstats-old:$arch")
+            new_bin=$(docker run --rm --platform "linux/$arch" --entrypoint stat "ghstats:$arch" -c %s /app/ghstats)
+            old_bin=$(docker run --rm --platform "linux/$arch" --entrypoint stat "ghstats-old:$arch" -c %s /app/ghstats)
+            rows+=("$arch $ok $new_img $old_img $new_bin $old_bin")
+          done
+
+          echo
+          printf '%-6s %-7s %14s %14s %14s %14s\n' arch health new_image old_image new_binary old_binary
+          for row in "${rows[@]}"; do
+            read -r a h ni oi nb ob <<< "$row"
+            printf '%-6s %-7s %14s %14s %14s %14s\n' "$a" "$h" "$ni" "$oi" "$nb" "$ob"
+          done
+
+          exit "$failed"
 
   publish:
     if: github.ref == 'refs/heads/main'
