@@ -154,7 +154,7 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; font-v
 .data th > button::before { margin-right: 0.15em; }
 .data th:first-child > button::after { margin-left: 0.15em; }
 .data th[aria-sort] > button::before, .data th[aria-sort] > button::after { visibility: visible; }
-.data th[aria-sort="ascending"] > button::before, .data th[aria-sort="ascending"] > button::after { content: "↑"; }
+.data th[aria-sort="ascending"] > button::before, .data th:first-child[aria-sort="ascending"] > button::after { content: "↑"; }
 .data th:first-child > button::before { content: none; }
 .data tr[style*="--w"] { background: linear-gradient(to right, var(--rowbar) var(--w), transparent var(--w)); }
 .data td.name, .data td.c-name { overflow: hidden; text-overflow: ellipsis; }
@@ -172,10 +172,10 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; font-v
   background: var(--card) var(--chevron) no-repeat right 0.6em center / 10px 6px;
 }
 .toolbar .seg { margin-left: auto; }
-.idx td { vertical-align: middle; }
+.idx td { vertical-align: top; }
 .idx .per { font-weight: 400; color: var(--muted); font-size: 0.85em; }
-.idx .v { display: block; line-height: 1.25; }
-.idx small { display: block; font-size: 0.78em; line-height: 1.2; }
+.idx .v { display: block; }
+.idx small { display: block; font-size: 0.78em; line-height: 1.2; min-height: 1.2em; }
 .idx col.c-views, .idx col.c-clones { width: 9em; }
 .idx col.c-stars { width: 6.5em; }
 .idx col.c-forks, .idx col.c-issues { width: 6.5em; }

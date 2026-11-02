@@ -715,14 +715,15 @@ fn index_cols() -> Vec<IndexCol> {
     let per = &x.per;
     let change =
       Change::new(per.cmp_views, per.cmp_days, per.prev_views, per.prev_days, p, x.today);
-    html!(span class="v" { (num(x.per.views)) } @if let Some(c) = change { (c.short()) })
+    // the sub-line stays when empty, so rows keep their height between periods
+    html!(span class="v" { (num(x.per.views)) } @match change { Some(c) => (c.short()), None => small {} })
   };
 
   let stars: IndexCell = |x, p| {
     let gain = x.per.stars_gain().filter(|x| *x != 0 && p.days().is_some());
     html!(
       span class="v" { (num(x.per.stars)) }
-      @if let Some(gain) = gain { small class="muted" { (signed(gain)) } }
+      small class="muted" { @if let Some(gain) = gain { (signed(gain)) } }
     )
   };
 
@@ -1479,9 +1480,18 @@ mod tests {
     let mut headers = HeaderMap::new();
     headers.insert("hx-target", "repos_table".parse().unwrap());
     let uri = "/?period=7d".parse().unwrap();
-    let frag = index(State(state), OriginalUri(uri), headers).await.unwrap().into_string();
+    let frag =
+      index(State(state.clone()), OriginalUri(uri), headers.clone()).await.unwrap().into_string();
     assert!(frag.contains(
       "<td class=\"c-stars\"><span class=\"v\">0</span><small class=\"muted\">−20</small></td>"
     ));
+
+    // at All neither change nor gain, but the sub-lines stay so rows keep their height
+    let frag = index(State(state), OriginalUri("/?period=all".parse().unwrap()), headers)
+      .await
+      .unwrap()
+      .into_string();
+    assert!(frag.contains("<span class=\"v\">0</span><small class=\"muted\"></small>"));
+    assert!(frag.contains("</span><small></small></td>"));
   }
 }

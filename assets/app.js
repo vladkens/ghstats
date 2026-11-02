@@ -428,11 +428,18 @@
   // "Show all" reveals the rows past the first ten, and keeps them open across htmx sort swaps
   const expanded = new Set();
 
-  const showAll = card => {
-    card.querySelectorAll('tr[hidden]').forEach(x => {
+  const showAll = (card, focus) => {
+    const rows = [...card.querySelectorAll('tr[hidden]')];
+    rows.forEach(x => {
       x.hidden = false;
     });
     card.querySelector('[data-show-all]')?.remove();
+
+    // the button is gone: keep the keyboard on the first revealed row
+    if (focus && rows.length) {
+      rows[0].tabIndex = -1;
+      rows[0].focus();
+    }
   };
 
   document.addEventListener('click', e => {
@@ -440,7 +447,7 @@
     if (!card) return;
 
     expanded.add(card.id);
-    showAll(card);
+    showAll(card, true);
   });
 
   document.addEventListener('htmx:load', e => {
