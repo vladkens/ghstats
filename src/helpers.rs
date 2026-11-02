@@ -1,10 +1,11 @@
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use axum::extract::Request;
+use chrono::DateTime;
 
 use crate::db_client::DbClient;
-use crate::gh_client::{GhClient, Repo};
+use crate::gh_client::{GhClient, PullRequest, Repo, StarsWeek};
 use crate::state::AppState;
 use crate::types::Res;
 
@@ -73,8 +74,22 @@ async fn update_metrics_inner(state: Arc<AppState>) -> Res {
   Ok(())
 }
 
+async fn get_open_pull_requests(gh: &GhClient, repo: &Repo) -> Res<Vec<PullRequest>> {
+  if repo.has_pull_requests == Some(false) {
+    return Ok(vec![]);
+  }
+
+  match gh.get_open_pull_requests(&repo.full_name).await {
+    Err(e) if GhClient::error_status(&e) == Some(reqwest::StatusCode::NOT_FOUND) => {
+      tracing::info!("pull requests not available for {}, counting 0", repo.full_name);
+      Ok(vec![])
+    }
+    rs => rs,
+  }
+}
+
 async fn update_repo_metrics(db: &DbClient, gh: &GhClient, repo: &Repo, date: &str) -> Res {
-  let prs = gh.get_open_pull_requests(&repo.full_name).await?;
+  let prs = get_open_pull_requests(gh, repo).await?;
   let views = gh.traffic_views(&repo.full_name).await?;
   let clones = gh.traffic_clones(&repo.full_name).await?;
   let referrers = gh.traffic_refs(&repo.full_name).await?;
@@ -91,47 +106,53 @@ async fn update_repo_metrics(db: &DbClient, gh: &GhClient, repo: &Repo, date: &s
   Ok(())
 }
 
-/// Get stars history for a repo
-/// vec![(date_str, acc_stars, new_stars)), ...]
-pub async fn get_stars_history(gh: &GhClient, repo: &str) -> Res<Vec<(String, u32, u32)>> {
-  let stars = gh.get_stars(repo).await?;
+/// Daily stars from weekly history
+/// vec![(date_str, acc_stars, new_stars), ...]
+fn get_stars_history(weeks: &[StarsWeek]) -> Vec<(String, u32, u32)> {
+  let mut dat: BTreeMap<String, u32> = BTreeMap::new();
+  for week in weeks {
+    for (idx, count) in week.days.iter().enumerate() {
+      if *count == 0 {
+        continue;
+      }
 
-  let mut dat: HashMap<String, u32> = HashMap::new();
-  for star in stars {
-    let date = star.starred_at.split("T").next().unwrap().to_owned();
-    let date = format!("{date}T00:00:00Z"); // db stores dates as UTC midnight
-    dat.entry(date).and_modify(|e| *e += 1).or_insert(1);
+      let Some(date) = DateTime::from_timestamp(week.week + idx as i64 * 86400, 0) else {
+        continue;
+      };
+
+      let date = date.format("%Y-%m-%dT00:00:00Z").to_string(); // db stores dates as UTC midnight
+      // a new week can start between page requests, so the same week may come twice
+      dat.insert(date, *count);
+    }
   }
 
-  let mut dat = dat.into_iter().collect::<Vec<_>>();
-  dat.sort_by(|a, b| a.0.cmp(&b.0));
-
-  let mut rs: Vec<(String, u32, u32)> = Vec::with_capacity(dat.len());
-  for i in 0..dat.len() {
-    let (date, new_count) = &dat[i];
-    let acc_count = if i > 0 { rs[i - 1].1 + new_count } else { *new_count };
-    rs.push((date.clone(), acc_count, *new_count));
-  }
-
-  Ok(rs)
+  let mut acc_count = 0;
+  dat
+    .into_iter()
+    .map(|(date, new_count)| {
+      acc_count += new_count;
+      (date, acc_count, new_count)
+    })
+    .collect()
 }
 
 pub async fn sync_stars(db: &DbClient, gh: &GhClient) -> Res {
-  let mut pages_collected = 0;
+  let mut requests_made = 0;
 
   let repos = db.repos_to_sync().await?;
   for repo in repos {
     let stime = std::time::Instant::now();
     // tracing::info!("sync_stars for {}", repo.name);
 
-    let stars = match get_stars_history(gh, &repo.name).await {
-      Ok(stars) => stars,
+    let (weeks, requests) = match gh.get_stars_weeks(&repo.name).await {
+      Ok(rs) => rs,
       Err(e) => {
         tracing::warn!("failed to get stars for {}: {:?}", repo.name, e);
         break;
       }
     };
 
+    let stars = get_stars_history(&weeks);
     db.insert_stars(repo.id, &stars).await?;
     db.mark_repo_stars_synced(repo.id).await?;
 
@@ -144,9 +165,9 @@ pub async fn sync_stars(db: &DbClient, gh: &GhClient) -> Res {
 
     // gh api rate limit is 5000 req/h, so this code will do up to 1000 req/h
     // to not block other possible user pipelines
-    pages_collected += stars_count.div_ceil(100);
-    if pages_collected > 1000 {
-      tracing::info!("sync_stars: {} pages collected, will continue next hour", pages_collected);
+    requests_made += requests;
+    if requests_made > 1000 {
+      tracing::info!("sync_stars: {} requests made, will continue next hour", requests_made);
       break;
     }
   }
@@ -261,6 +282,17 @@ impl GhsFilter {
 
 #[cfg(test)]
 mod tests {
+  use std::collections::HashMap;
+  use std::sync::Mutex;
+  use std::time::{SystemTime, UNIX_EPOCH};
+
+  use axum::extract::{Path, Query, State};
+  use axum::http::StatusCode;
+  use axum::response::{IntoResponse, Response};
+  use axum::routing::get;
+  use axum::{Json, Router};
+  use serde_json::{Value, json};
+
   use super::*;
 
   #[test]
@@ -416,5 +448,221 @@ mod tests {
       assert!(!r.is_included("foo/bar", true, false)); // forks excluded
       assert!(!r.is_included("abc/abc", false, false)); // not included by default
     }
+  }
+
+  const DATE: &str = "2024-01-01T00:00:00Z";
+
+  #[derive(Clone, Default)]
+  struct MockGh {
+    pulls_calls: Arc<Mutex<Vec<String>>>,
+    history_calls: Arc<Mutex<Vec<String>>>,
+  }
+
+  async fn pulls(
+    State(gh): State<MockGh>,
+    Path((owner, repo)): Path<(String, String)>,
+  ) -> Response {
+    gh.pulls_calls.lock().unwrap().push(format!("{owner}/{repo}"));
+
+    match repo.as_str() {
+      "pulls-404" => StatusCode::NOT_FOUND.into_response(),
+      "pulls-500" => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+      _ => Json(json!([])).into_response(),
+    }
+  }
+
+  fn daily() -> Value {
+    json!([{ "timestamp": DATE, "uniques": 1, "count": 2 }])
+  }
+
+  async fn views() -> Json<Value> {
+    Json(json!({ "uniques": 1, "count": 2, "views": daily() }))
+  }
+
+  async fn clones() -> Json<Value> {
+    Json(json!({ "uniques": 1, "count": 2, "clones": daily() }))
+  }
+
+  async fn empty_list() -> Json<Value> {
+    Json(json!([]))
+  }
+
+  const WEEK0: i64 = 1704585600; // Sun 2024-01-07
+  const WEEK: i64 = 7 * 86400;
+
+  fn stars_week(n: i64, days: [u32; 7]) -> Value {
+    json!({ "week": WEEK0 + n * WEEK, "total": days.iter().sum::<u32>(), "days": days })
+  }
+
+  async fn stars_history(
+    State(gh): State<MockGh>,
+    Path((owner, repo)): Path<(String, String)>,
+    Query(query): Query<HashMap<String, String>>,
+  ) -> Response {
+    let (per_page, page) = (&query["per_page"], &query["page"]);
+    gh.history_calls
+      .lock()
+      .unwrap()
+      .push(format!("{owner}/{repo}?per_page={per_page}&page={page}"));
+
+    // full page of 30 weeks newest to oldest, then a short page with the creation week
+    let weeks = match page.as_str() {
+      "1" => (1..=30)
+        .rev()
+        .map(|n| match n {
+          30 => stars_week(n, [0, 2, 0, 0, 0, 0, 0]),
+          1 => stars_week(n, [1, 0, 0, 0, 0, 0, 0]),
+          _ => stars_week(n, [0; 7]),
+        })
+        .collect(),
+      "2" => vec![stars_week(0, [0, 0, 0, 0, 0, 0, 3])],
+      _ => vec![],
+    };
+
+    Json(Value::Array(weeks)).into_response()
+  }
+
+  async fn mock_server(gh: MockGh) -> Res<(String, tokio::task::JoinHandle<()>)> {
+    let router = Router::new()
+      .route("/repos/{owner}/{repo}/pulls", get(pulls))
+      .route("/repos/{owner}/{repo}/traffic/views", get(views))
+      .route("/repos/{owner}/{repo}/traffic/clones", get(clones))
+      .route("/repos/{owner}/{repo}/traffic/popular/referrers", get(empty_list))
+      .route("/repos/{owner}/{repo}/traffic/popular/paths", get(empty_list))
+      .route("/repos/{owner}/{repo}/stargazers/history", get(stars_history))
+      .with_state(gh);
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await?;
+    let addr = listener.local_addr()?;
+    let handle = tokio::spawn(async move {
+      axum::serve(listener, router).await.unwrap();
+    });
+    Ok((format!("http://{addr}"), handle))
+  }
+
+  async fn test_db(test_name: &str) -> Res<DbClient> {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let path =
+      std::env::temp_dir().join(format!("ghstats-{test_name}-{}-{nanos}.db", std::process::id()));
+    DbClient::new(&path.to_string_lossy()).await
+  }
+
+  fn sample_repo(full_name: &str, has_pull_requests: Option<bool>) -> Repo {
+    Repo {
+      id: 1,
+      full_name: full_name.to_string(),
+      description: None,
+      stargazers_count: 1,
+      forks_count: 0,
+      watchers_count: 0,
+      open_issues_count: 3,
+      fork: false,
+      archived: false,
+      has_pull_requests,
+    }
+  }
+
+  #[tokio::test]
+  async fn repo_with_pull_requests_disabled_is_saved_without_calling_pulls() -> Res {
+    let mock = MockGh::default();
+    let (base_url, server) = mock_server(mock.clone()).await?;
+    let gh = GhClient::for_test(base_url)?;
+    let db = test_db("prs-disabled").await?;
+    let repo = sample_repo("owner/prs-disabled", Some(false));
+
+    update_repo_metrics(&db, &gh, &repo, DATE).await?;
+
+    let totals = db.get_repo_totals("owner/prs-disabled").await?.unwrap();
+    assert_eq!(totals.prs, 0);
+    assert_eq!(totals.issues, 3);
+    assert_eq!(totals.views_count, 2);
+    assert!(mock.pulls_calls.lock().unwrap().is_empty());
+
+    server.abort();
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn repo_with_pulls_not_found_is_saved_with_zero_prs() -> Res {
+    let mock = MockGh::default();
+    let (base_url, server) = mock_server(mock.clone()).await?;
+    let gh = GhClient::for_test(base_url)?;
+    let db = test_db("pulls-404").await?;
+    let repo = sample_repo("owner/pulls-404", None);
+
+    update_repo_metrics(&db, &gh, &repo, DATE).await?;
+
+    let totals = db.get_repo_totals("owner/pulls-404").await?.unwrap();
+    assert_eq!(totals.prs, 0);
+    assert_eq!(totals.issues, 3);
+    assert_eq!(totals.views_count, 2);
+    assert_eq!(*mock.pulls_calls.lock().unwrap(), vec!["owner/pulls-404".to_string()]);
+
+    server.abort();
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn repo_with_other_pulls_error_is_still_skipped() -> Res {
+    let (base_url, server) = mock_server(MockGh::default()).await?;
+    let gh = GhClient::for_test(base_url)?;
+    let db = test_db("pulls-500").await?;
+    let repo = sample_repo("owner/pulls-500", None);
+
+    assert!(update_repo_metrics(&db, &gh, &repo, DATE).await.is_err());
+    assert!(db.get_repo_totals("owner/pulls-500").await?.is_none());
+
+    server.abort();
+    Ok(())
+  }
+
+  #[test]
+  fn stars_history_from_weeks() {
+    let weeks = vec![
+      // newest page first, weeks within a page newest to oldest
+      StarsWeek { week: WEEK0 + 2 * WEEK, days: vec![0; 7] },
+      StarsWeek { week: WEEK0 + WEEK, days: vec![2, 0, 0, 0, 0, 0, 1] },
+      StarsWeek { week: WEEK0, days: vec![0, 0, 0, 0, 0, 0, 4] },
+    ];
+
+    assert_eq!(
+      get_stars_history(&weeks),
+      vec![
+        ("2024-01-13T00:00:00Z".to_string(), 4, 4),
+        ("2024-01-14T00:00:00Z".to_string(), 6, 2),
+        ("2024-01-20T00:00:00Z".to_string(), 7, 1),
+      ]
+    );
+    assert!(get_stars_history(&weeks[..1]).is_empty());
+
+    let mut repeated = weeks.clone();
+    repeated.insert(2, StarsWeek { week: WEEK0 + WEEK, days: vec![2, 0, 0, 0, 0, 0, 1] });
+    assert_eq!(get_stars_history(&repeated), get_stars_history(&weeks));
+  }
+
+  #[tokio::test]
+  async fn sync_stars_stores_history_and_marks_repo_synced() -> Res {
+    let mock = MockGh::default();
+    let (base_url, server) = mock_server(mock.clone()).await?;
+    let gh = GhClient::for_test(base_url)?;
+    let db = test_db("stars-ok").await?;
+    db.insert_repo(&sample_repo("owner/stars-ok", None)).await?;
+
+    sync_stars(&db, &gh).await?;
+
+    assert_eq!(
+      *mock.history_calls.lock().unwrap(),
+      vec!["owner/stars-ok?per_page=30&page=1", "owner/stars-ok?per_page=30&page=2"]
+    );
+    assert!(db.repos_to_sync().await?.is_empty());
+
+    let stars = db.get_stars("owner/stars-ok").await?;
+    let stars = stars.iter().map(|s| (s.date.as_str(), s.stars)).collect::<Vec<_>>();
+    assert_eq!(
+      stars,
+      vec![("2024-01-13T00:00:00Z", 3), ("2024-01-14T00:00:00Z", 4), ("2024-08-05T00:00:00Z", 6)]
+    );
+
+    server.abort();
+    Ok(())
   }
 }

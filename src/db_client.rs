@@ -702,6 +702,7 @@ mod tests {
       open_issues_count: 7,
       fork: false,
       archived: false,
+      has_pull_requests: None,
     }
   }
 

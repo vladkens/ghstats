@@ -4,7 +4,7 @@ use std::vec;
 
 use anyhow::Context;
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
-use reqwest::{Request, RequestBuilder};
+use reqwest::{Request, RequestBuilder, StatusCode};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
@@ -23,6 +23,9 @@ pub struct Repo {
   pub open_issues_count: u32,
   pub fork: bool,
   pub archived: bool,
+  // Undocumented; owners can disable pull requests and then /pulls returns 404
+  #[serde(default)]
+  pub has_pull_requests: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -67,9 +70,12 @@ pub struct RepoReferrer {
   pub uniques: u32,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
-pub struct RepoStar {
-  pub starred_at: String,
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct StarsWeek {
+  pub week: i64, // unix seconds of the week start
+  // GitHub buckets days in America/Los_Angeles time although `week` is labelled UTC midnight,
+  // so a star can land one date earlier than its UTC timestamp
+  pub days: Vec<u32>,
 }
 
 #[derive(Deserialize)]
@@ -157,6 +163,11 @@ impl GhClient {
     Ok(Self { client, token, base_url })
   }
 
+  #[cfg(test)]
+  pub(crate) fn for_test(base_url: String) -> Res<Self> {
+    Self::with_token(TokenSource::Value("test-token".to_string()), base_url)
+  }
+
   async fn execute(&self, mut req: Request) -> Res<reqwest::Response> {
     let token = self.token.read().await?;
     let mut auth = HeaderValue::from_str(&format!("Bearer {token}"))?;
@@ -167,6 +178,10 @@ impl GhClient {
 
   async fn send(&self, req: RequestBuilder) -> Res<reqwest::Response> {
     self.execute(req.build()?).await
+  }
+
+  pub fn error_status(err: &anyhow::Error) -> Option<StatusCode> {
+    err.downcast_ref::<reqwest::Error>().and_then(|e| e.status())
   }
 
   async fn with_pagination<T: DeserializeOwned>(&self, req: RequestBuilder) -> Res<Vec<T>> {
@@ -263,12 +278,26 @@ impl GhClient {
     Ok(ver)
   }
 
-  pub async fn get_stars(&self, repo: &str) -> Res<Vec<RepoStar>> {
-    let url = format!("{}/repos/{}/stargazers", self.base_url, repo);
-    let req = self.client.get(url).header("Accept", "application/vnd.github.v3.star+json");
+  /// Weeks from the current one back to the repo creation, plus the number of requests made
+  pub async fn get_stars_weeks(&self, repo: &str) -> Res<(Vec<StarsWeek>, u32)> {
+    let url = format!("{}/repos/{}/stargazers/history", self.base_url, repo);
+    let per_page = 30; // endpoint limits: per_page <= 30, page <= 100
+    let mut weeks: Vec<StarsWeek> = vec![];
+    let mut requests = 0;
 
-    let dat: Vec<RepoStar> = self.with_pagination(req).await?;
-    Ok(dat)
+    for page in 1..=100 {
+      let req = self.client.get(format!("{url}?per_page={per_page}&page={page}"));
+      let dat: Vec<StarsWeek> = self.send(req).await?.json().await?;
+      requests += 1;
+
+      let is_last = dat.len() < per_page;
+      weeks.extend(dat);
+      if is_last {
+        break;
+      }
+    }
+
+    Ok((weeks, requests))
   }
 }
 
