@@ -104,8 +104,6 @@ jobs:
           build-args: BIN_SOURCE=prebuilt
           push: ${{ github.ref == 'refs/heads/main' }}
           platforms: linux/amd64,linux/arm64
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
           tags: ${{ steps.docker-tags.outputs.tags }}
 
   publish:
