@@ -78,6 +78,59 @@ pub struct StarsWeek {
   pub days: Vec<u32>,
 }
 
+/// A primary or secondary rate limit response, detected in `GhClient::execute`
+/// because `reqwest::Error` drops the response headers
+#[derive(Debug)]
+pub struct RateLimited {
+  pub status: StatusCode,
+  pub reset: Option<i64>,       // x-ratelimit-reset, UTC epoch seconds
+  pub retry_after: Option<u64>, // retry-after, seconds
+}
+
+impl RateLimited {
+  // https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api#exceeding-the-rate-limit
+  async fn from_response(rep: reqwest::Response) -> Option<Self> {
+    let status = rep.status();
+    if !matches!(status, StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS) {
+      return None;
+    }
+
+    let header = |name: &str| rep.headers().get(name).and_then(|v| v.to_str().ok());
+    let exhausted = header("x-ratelimit-remaining") == Some("0");
+    let has_retry_after = header("retry-after").is_some();
+    let limited = Self {
+      status,
+      reset: header("x-ratelimit-reset").and_then(|v| v.parse().ok()),
+      retry_after: header("retry-after").and_then(|v| v.parse().ok()),
+    };
+
+    if exhausted || has_retry_after {
+      return Some(limited);
+    }
+
+    // a secondary limit may come without retry-after, then only its message tells it apart
+    let body = rep.text().await.unwrap_or_default();
+    body.to_lowercase().contains("secondary rate limit").then_some(limited)
+  }
+}
+
+impl std::fmt::Display for RateLimited {
+  fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    write!(f, "GitHub rate limit ({})", self.status)?;
+    if let Some(secs) = self.retry_after {
+      write!(f, ", retry after {secs}s")?;
+    }
+
+    if let Some(reset) = self.reset.and_then(|ts| chrono::DateTime::from_timestamp(ts, 0)) {
+      write!(f, ", resets at {reset}")?;
+    }
+
+    Ok(())
+  }
+}
+
+impl std::error::Error for RateLimited {}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Page<T> {
@@ -173,7 +226,13 @@ impl GhClient {
     let mut auth = HeaderValue::from_str(&format!("Bearer {token}"))?;
     auth.set_sensitive(true);
     req.headers_mut().insert(AUTHORIZATION, auth);
-    Ok(self.client.execute(req).await?.error_for_status()?)
+
+    let rep = self.client.execute(req).await?;
+    if let Err(err) = rep.error_for_status_ref() {
+      return Err(RateLimited::from_response(rep).await.map_or(err.into(), Into::into));
+    }
+
+    Ok(rep)
   }
 
   async fn send(&self, req: RequestBuilder) -> Res<reqwest::Response> {
@@ -181,7 +240,10 @@ impl GhClient {
   }
 
   pub fn error_status(err: &anyhow::Error) -> Option<StatusCode> {
-    err.downcast_ref::<reqwest::Error>().and_then(|e| e.status())
+    match err.downcast_ref::<RateLimited>() {
+      Some(limited) => Some(limited.status),
+      None => err.downcast_ref::<reqwest::Error>().and_then(|e| e.status()),
+    }
   }
 
   async fn with_pagination<T: DeserializeOwned>(&self, req: RequestBuilder) -> Res<Vec<T>> {
@@ -278,17 +340,17 @@ impl GhClient {
     Ok(ver)
   }
 
-  /// Weeks from the current one back to the repo creation, plus the number of requests made
-  pub async fn get_stars_weeks(&self, repo: &str) -> Res<(Vec<StarsWeek>, u32)> {
+  /// Weeks from the current one back to the repo creation; `requests` counts every request
+  /// attempted, failed ones included
+  pub async fn get_stars_weeks(&self, repo: &str, requests: &mut u32) -> Res<Vec<StarsWeek>> {
     let url = format!("{}/repos/{}/stargazers/history", self.base_url, repo);
     let per_page = 30; // endpoint limits: per_page <= 30, page <= 100
     let mut weeks: Vec<StarsWeek> = vec![];
-    let mut requests = 0;
 
     for page in 1..=100 {
       let req = self.client.get(format!("{url}?per_page={per_page}&page={page}"));
+      *requests += 1;
       let dat: Vec<StarsWeek> = self.send(req).await?.json().await?;
-      requests += 1;
 
       let is_last = dat.len() < per_page;
       weeks.extend(dat);
@@ -297,7 +359,7 @@ impl GhClient {
       }
     }
 
-    Ok((weeks, requests))
+    Ok(weeks)
   }
 }
 

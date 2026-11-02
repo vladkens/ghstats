@@ -5,7 +5,7 @@ use axum::extract::Request;
 use chrono::DateTime;
 
 use crate::db_client::DbClient;
-use crate::gh_client::{GhClient, PullRequest, Repo, StarsWeek};
+use crate::gh_client::{GhClient, PullRequest, RateLimited, Repo, StarsWeek};
 use crate::state::AppState;
 use crate::types::Res;
 
@@ -136,11 +136,10 @@ fn get_stars_history(weeks: &[StarsWeek]) -> Vec<(String, u32, u32)> {
     .collect()
 }
 
+// 403 also means no access (e.g. SAML SSO), so it's a rate limit only with GhClient's header check
 fn is_rate_limited(err: &anyhow::Error) -> bool {
-  matches!(
-    GhClient::error_status(err),
-    Some(reqwest::StatusCode::FORBIDDEN | reqwest::StatusCode::TOO_MANY_REQUESTS)
-  )
+  err.is::<RateLimited>()
+    || GhClient::error_status(err) == Some(reqwest::StatusCode::TOO_MANY_REQUESTS)
 }
 
 pub async fn sync_stars(db: &DbClient, gh: &GhClient) -> Res {
@@ -158,9 +157,8 @@ pub async fn sync_stars(db: &DbClient, gh: &GhClient) -> Res {
     let stime = std::time::Instant::now();
     // tracing::info!("sync_stars for {}", repo.name);
 
-    let (weeks, requests) = match gh.get_stars_weeks(&repo.name).await {
-      Ok(rs) => rs,
-      // the history endpoint isn't access-restricted, so 403 here is a rate limit too;
+    let weeks = match gh.get_stars_weeks(&repo.name, &mut requests_made).await {
+      Ok(weeks) => weeks,
       // github may ban integrations that keep requesting while rate limited
       Err(e) if is_rate_limited(&e) => {
         tracing::warn!(
@@ -172,7 +170,6 @@ pub async fn sync_stars(db: &DbClient, gh: &GhClient) -> Res {
       }
       Err(e) => {
         tracing::warn!("failed to get stars for {}: {:?}", repo.name, e);
-        requests_made += 1;
         continue;
       }
     };
@@ -187,8 +184,6 @@ pub async fn sync_stars(db: &DbClient, gh: &GhClient) -> Res {
       repo.name,
       stime.elapsed(),
     );
-
-    requests_made += requests;
   }
 
   Ok(())
@@ -524,10 +519,21 @@ mod tests {
       .unwrap()
       .push(format!("{owner}/{repo}?per_page={per_page}&page={page}"));
 
+    let forbidden = StatusCode::FORBIDDEN;
     match repo.as_str() {
-      "stars-403" => return StatusCode::FORBIDDEN.into_response(),
+      "stars-403" => return forbidden.into_response(),
+      "stars-403-remaining" => {
+        let headers = [("x-ratelimit-remaining", "0"), ("x-ratelimit-reset", "1704585600")];
+        return (forbidden, headers).into_response();
+      }
+      "stars-403-retry" => return (forbidden, [("retry-after", "60")]).into_response(),
+      "stars-403-secondary" => {
+        let body = json!({ "message": "You have exceeded a secondary rate limit." });
+        return (forbidden, Json(body)).into_response();
+      }
       "stars-404" => return StatusCode::NOT_FOUND.into_response(),
       "stars-429" => return StatusCode::TOO_MANY_REQUESTS.into_response(),
+      "stars-500-page2" if page == "2" => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
       _ => {}
     }
 
@@ -667,47 +673,51 @@ mod tests {
 
   #[tokio::test]
   async fn failed_stars_history_does_not_stop_other_repos() -> Res {
-    let mock = MockGh::default();
-    let (base_url, server) = mock_server(mock.clone()).await?;
-    let gh = GhClient::for_test(base_url)?;
-    let db = test_db("stars-404").await?;
-    let failing = sample_repo("owner/stars-404", None);
-    let healthy = Repo { id: 2, ..sample_repo("owner/stars-ok", None) };
-    db.insert_repo(&failing).await?;
-    db.insert_repo(&healthy).await?;
+    // a 403 without rate limit headers is an access error of that repo only
+    for status in ["404", "403"] {
+      let mock = MockGh::default();
+      let (base_url, server) = mock_server(mock.clone()).await?;
+      let gh = GhClient::for_test(base_url)?;
+      let db = test_db(&format!("stars-{status}")).await?;
+      let failing = sample_repo(&format!("owner/stars-{status}"), None);
+      let healthy = Repo { id: 2, ..sample_repo("owner/stars-ok", None) };
+      db.insert_repo(&failing).await?;
+      db.insert_repo(&healthy).await?;
 
-    sync_stars(&db, &gh).await?;
+      sync_stars(&db, &gh).await?;
 
-    assert_eq!(
-      *mock.history_calls.lock().unwrap(),
-      vec![
-        "owner/stars-404?per_page=30&page=1".to_string(),
-        "owner/stars-ok?per_page=30&page=1".to_string(),
-        "owner/stars-ok?per_page=30&page=2".to_string(),
-      ]
-    );
+      assert_eq!(
+        *mock.history_calls.lock().unwrap(),
+        vec![
+          format!("owner/stars-{status}?per_page=30&page=1"),
+          "owner/stars-ok?per_page=30&page=1".to_string(),
+          "owner/stars-ok?per_page=30&page=2".to_string(),
+        ]
+      );
 
-    let unsynced = db.repos_to_sync().await?;
-    assert_eq!(
-      unsynced.iter().map(|r| r.name.as_str()).collect::<Vec<_>>(),
-      vec!["owner/stars-404"]
-    );
+      let unsynced = db.repos_to_sync().await?;
+      assert_eq!(
+        unsynced.iter().map(|r| r.name.clone()).collect::<Vec<_>>(),
+        vec![format!("owner/stars-{status}")]
+      );
 
-    let stars = db.get_stars("owner/stars-ok").await?;
-    let stars = stars.iter().map(|s| (s.date.as_str(), s.stars)).collect::<Vec<_>>();
-    assert_eq!(
-      stars,
-      vec![("2024-01-13T00:00:00Z", 3), ("2024-01-14T00:00:00Z", 4), ("2024-08-05T00:00:00Z", 6)]
-    );
-    assert!(db.get_stars("owner/stars-404").await?.is_empty());
+      let stars = db.get_stars("owner/stars-ok").await?;
+      let stars = stars.iter().map(|s| (s.date.as_str(), s.stars)).collect::<Vec<_>>();
+      assert_eq!(
+        stars,
+        vec![("2024-01-13T00:00:00Z", 3), ("2024-01-14T00:00:00Z", 4), ("2024-08-05T00:00:00Z", 6)]
+      );
+      assert!(db.get_stars(&format!("owner/stars-{status}")).await?.is_empty());
 
-    server.abort();
+      server.abort();
+    }
+
     Ok(())
   }
 
   #[tokio::test]
   async fn rate_limited_stars_history_stops_sync() -> Res {
-    for status in ["403", "429"] {
+    for status in ["403-remaining", "403-retry", "403-secondary", "429"] {
       let mock = MockGh::default();
       let (base_url, server) = mock_server(mock.clone()).await?;
       let gh = GhClient::for_test(base_url)?;
@@ -734,6 +744,22 @@ mod tests {
       server.abort();
     }
 
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn stars_weeks_counts_every_request() -> Res {
+    let (base_url, server) = mock_server(MockGh::default()).await?;
+    let gh = GhClient::for_test(base_url)?;
+    let mut requests = 0;
+
+    assert!(gh.get_stars_weeks("owner/stars-500-page2", &mut requests).await.is_err());
+    assert_eq!(requests, 2);
+
+    assert_eq!(gh.get_stars_weeks("owner/stars-ok", &mut requests).await?.len(), 31);
+    assert_eq!(requests, 4);
+
+    server.abort();
     Ok(())
   }
 }
