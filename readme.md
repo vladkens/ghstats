@@ -115,7 +115,7 @@ Every hour `ghstats` loads the list of public repositories and their statistics,
 
 All public repositories that can be accessed are saved. If you need more detailed configuration – open PR please.
 
-The web UI has no external dependencies at runtime: frontend libraries (Pico CSS, Chart.js, Luxon, htmx) are committed to `assets/vendor` and embedded into the binary, so pages work offline and do not load anything from a CDN. To upgrade a library, bump its version in `Makefile` and run `make vendor`.
+The web UI has no external dependencies at runtime: frontend libraries (Pico CSS, Chart.js, Luxon, htmx) are committed to `assets/vendor` and embedded into the binary, so pages work offline and do not load anything from a CDN. `make vendor` refreshes them to the latest release of each library's major version.
 
 ## Configuration
 

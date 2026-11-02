@@ -1,4 +1,4 @@
-.PHONY: prepare check test build update vendor docker-build backup
+.PHONY: prepare check test build update
 
 prepare:
 	cargo +nightly fmt
@@ -19,33 +19,19 @@ build:
 
 update:
 	cargo upgrade -i
+	cargo update
 
-# Frontend libs are committed to assets/vendor and embedded into the binary.
-# To upgrade one, bump its version below and run `make vendor`.
-PICO_VERSION=2.0.6
-CHARTJS_VERSION=4.4.9
-LUXON_VERSION=3.5.0
-CHARTJS_LUXON_VERSION=1.3.1
-HTMX_VERSION=2.0.11
+.PHONY: vendor docker-build backup
 
+# Refresh assets/vendor to the latest release of each library's major
 vendor:
-	mkdir -p assets/vendor
-	curl -fsSL -o assets/vendor/pico.min.css https://unpkg.com/@picocss/pico@$(PICO_VERSION)/css/pico.min.css
-	curl -fsSL -o assets/vendor/chart.umd.js https://unpkg.com/chart.js@$(CHARTJS_VERSION)/dist/chart.umd.js
-	curl -fsSL -o assets/vendor/luxon.min.js https://unpkg.com/luxon@$(LUXON_VERSION)/build/global/luxon.min.js
-	curl -fsSL -o assets/vendor/chartjs-adapter-luxon.umd.min.js https://unpkg.com/chartjs-adapter-luxon@$(CHARTJS_LUXON_VERSION)/dist/chartjs-adapter-luxon.umd.min.js
-	curl -fsSL -o assets/vendor/htmx.min.js https://unpkg.com/htmx.org@$(HTMX_VERSION)/dist/htmx.min.js
-	ls -lh assets/vendor
+	./scripts/vendor.sh
 
+# Build the Docker image and print its size
 docker-build:
 	docker build -t ghstats:latest .
 	docker images -q ghstats:latest | xargs docker inspect -f '{{.Size}}' | xargs numfmt --to=iec
 
-# --- Deploy ---
-
-HOST=srv
-
+# Copy the production database from $BACKUP_HOST (default srv) into data/
 backup:
-	mkdir -p data
-	scp $(HOST):/root/data/ghstats.db data/backup-$(shell date -u +"%Y%m%d_%H%M").db
-	cp $$(ls -1t data/*.db | head -n 1) data/backup.db
+	./scripts/backup.sh
