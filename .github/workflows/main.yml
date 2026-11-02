@@ -28,11 +28,26 @@ jobs:
       - run: make test
 
   build:
+    if: "github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch' || startsWith(github.event.pull_request.title, 'release: v')"
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    outputs:
-      tag: ${{ steps.check.outputs.tag }}
-      notes: ${{ steps.check.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: vladkens/actions/rust-build@v1
+        with:
+          targets: x86_64-unknown-linux-musl aarch64-unknown-linux-musl
+          crates: false
+          dev: true
+          dev-version: false
+
+  docker:
+    if: "github.ref == 'refs/heads/main' || startsWith(github.event.pull_request.title, 'release: v')"
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
     steps:
       - uses: actions/checkout@v7
       - id: commit
@@ -42,34 +57,25 @@ jobs:
         uses: vladkens/actions/release-check@v1
         with:
           releasers: ${{ github.repository_owner }}
-      - id: pr-check
-        if: "github.event_name == 'pull_request' && startsWith(github.event.pull_request.title, 'release: v')"
-        uses: vladkens/actions/release-check@v1
 
-      - if: github.event_name == 'pull_request'
-        uses: docker/setup-qemu-action@v4
-      - if: github.event_name == 'pull_request'
-        uses: docker/setup-buildx-action@v4
-      - if: github.event_name == 'pull_request'
-        uses: docker/build-push-action@v7
+      - uses: actions/download-artifact@v8
         with:
-          push: false
-          platforms: linux/amd64,linux/arm64
-          cache-from: type=gha
+          name: release
+          path: ${{ runner.temp }}/release
 
-  docker:
-    if: github.ref == 'refs/heads/main'
-    needs: [test, build]
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    permissions:
-      contents: read
-      packages: write
-    steps:
+      - name: Extract binaries
+        env:
+          DIR: ${{ runner.temp }}/release
+        run: |
+          mkdir -p dist/amd64 dist/arm64
+          tar -xzf "$DIR/ghstats-dev-x86_64-unknown-linux-musl.tar.gz" -C dist/amd64 ghstats
+          tar -xzf "$DIR/ghstats-dev-aarch64-unknown-linux-musl.tar.gz" -C dist/arm64 ghstats
+
       - uses: docker/setup-qemu-action@v4
       - uses: docker/setup-buildx-action@v4
 
-      - uses: docker/login-action@v4
+      - if: github.ref == 'refs/heads/main'
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -78,7 +84,7 @@ jobs:
       - name: Collect Docker tags
         id: docker-tags
         env:
-          TAG: ${{ needs.build.outputs.tag }}
+          TAG: ${{ steps.check.outputs.tag }}
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY}"
           {
@@ -94,20 +100,25 @@ jobs:
 
       - uses: docker/build-push-action@v7
         with:
-          push: true
+          context: .
+          build-args: BIN_SOURCE=prebuilt
+          push: ${{ github.ref == 'refs/heads/main' }}
           platforms: linux/amd64,linux/arm64
           cache-from: type=gha
           cache-to: type=gha,mode=max
           tags: ${{ steps.docker-tags.outputs.tags }}
 
-  release:
-    if: needs.build.outputs.tag != ''
-    needs: [build, docker]
+  publish:
+    if: github.ref == 'refs/heads/main'
+    needs: [test, build, docker]
     runs-on: ubuntu-latest
     permissions:
+      attestations: write
       contents: write
+      id-token: write
     steps:
-      - uses: vladkens/actions/github-release@v1
+      - uses: actions/checkout@v7
+      - uses: vladkens/actions/rust-publish@v1
         with:
-          tag: ${{ needs.build.outputs.tag }}
-          notes: ${{ needs.build.outputs.notes }}
+          crates: false
+          dev: false
