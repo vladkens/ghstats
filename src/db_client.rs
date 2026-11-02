@@ -313,9 +313,8 @@ pub struct AssetDownloads {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct RepoDownloads {
   pub id: i64,
-  pub name: String,
   pub total: i64,
-  pub period: i64,
+  pub first_day: String,
 }
 
 // MARK: Filters
@@ -681,9 +680,8 @@ fn asset_downloads_from_row(row: &Row<'_>) -> rusqlite::Result<AssetDownloads> {
 fn repo_downloads_from_row(row: &Row<'_>) -> rusqlite::Result<RepoDownloads> {
   Ok(RepoDownloads {
     id: row.get("repo_id")?,
-    name: row.get("repo_name")?,
     total: row.get("total")?,
-    period: row.get("period")?,
+    first_day: row.get("first_day")?,
   })
 }
 
@@ -1161,13 +1159,25 @@ impl DbClient {
     Ok(items)
   }
 
-  pub async fn get_repos_downloads(&self, period: i32) -> Res<Vec<RepoDownloads>> {
-    let qs = downloads_totals_query("1=1", "repo_id", "total DESC, repo_name ASC");
+  // no deltas: the index reads this on every load
+  pub async fn get_repos_downloads(&self) -> Res<Vec<RepoDownloads>> {
+    let qs = "
+    SELECT r.id AS repo_id, SUM(c.download_count) AS total, (
+      SELECT substr(MIN(a.date), 1, 10) FROM repo_release_assets a
+      WHERE a.repo_id = r.id AND a.prerelease = FALSE
+    ) AS first_day
+    FROM repos r
+    CROSS JOIN repo_release_assets c
+      ON c.repo_id = r.id AND c.date = r.releases_synced_at AND c.current = TRUE
+        AND c.prerelease = FALSE
+    WHERE r.hidden = FALSE
+    GROUP BY r.id;
+    ";
+
     let db = self.db.lock().unwrap();
-    let mut stmt = db.prepare(&qs)?;
-    let items = stmt
-      .query_map(named_params! { ":since": period_since(period) }, repo_downloads_from_row)?
-      .collect::<rusqlite::Result<Vec<_>>>()?;
+    let mut stmt = db.prepare(qs)?;
+    let items =
+      stmt.query_map([], repo_downloads_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(items)
   }
 
@@ -1984,15 +1994,9 @@ mod tests {
     let assets = assets.iter().map(|x| (x.name.as_str(), x.total, x.period)).collect::<Vec<_>>();
     assert_eq!(assets, vec![("a", 13, 3), ("c", 1, 1)]);
 
-    let repos = db.get_repos_downloads(0).await?;
-    assert_eq!(
-      repos.iter().map(|x| (x.id, x.total, x.period)).collect::<Vec<_>>(),
-      vec![(1, 14, 10)]
-    );
-
     // an empty fetch later the same day: nothing is current, the history stays
     db.insert_release_assets(&repo, &d3, &[]).await?;
-    assert!(db.get_repos_downloads(0).await?.is_empty());
+    assert!(db.get_repos_downloads().await?.is_empty());
     assert!(db.get_release_downloads("owner/repo", 0).await?.is_empty());
     assert!(db.get_asset_downloads("owner/repo", 0).await?.is_empty());
 
@@ -2107,20 +2111,13 @@ mod tests {
     assert_eq!(assets(db.get_asset_downloads("owner/repo", 0).await?), expected(30, 16));
     assert_eq!(assets(db.get_asset_downloads("owner/repo", 5).await?), expected(20, 11));
 
-    let repos = |items: Vec<RepoDownloads>| {
-      items.into_iter().map(|x| (x.id, x.name, x.total, x.period)).collect::<Vec<_>>()
-    };
-    assert_eq!(
-      repos(db.get_repos_downloads(0).await?),
-      vec![(1, "owner/repo".to_string(), 197, 59)]
-    );
-    assert_eq!(
-      repos(db.get_repos_downloads(5).await?),
-      vec![(1, "owner/repo".to_string(), 197, 42)]
-    );
+    // owner/other has no current assets
+    let repos = db.get_repos_downloads().await?;
+    let repos = repos.into_iter().map(|x| (x.id, x.total, x.first_day)).collect::<Vec<_>>();
+    assert_eq!(repos, vec![(1, 197, d10[..10].to_string())]);
 
     db.mark_repo_hidden(&[1]).await?;
-    assert!(db.get_repos_downloads(0).await?.is_empty());
+    assert!(db.get_repos_downloads().await?.is_empty());
     assert!(db.get_downloads_daily("owner/repo").await?.is_empty());
 
     Ok(())

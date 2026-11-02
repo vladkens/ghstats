@@ -172,7 +172,6 @@ body { overflow-anchor: none; }
 .chart { position: relative; height: 230px; }
 .chart canvas { position: absolute; inset: 0; }
 
-.tscroll { overflow-x: auto; }
 table.data { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .data th, .data td { padding: 0.5em 0.75em; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
 .data th:first-child, .data td:first-child { text-align: left; padding-left: 1em; }

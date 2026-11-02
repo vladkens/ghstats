@@ -227,7 +227,7 @@
           beginAtZero: true,
           grid: { color: css('--line') },
           border: { display: false },
-          ticks: { ...tick, maxTicksLimit: 5, callback: v => compact(v) },
+          ticks: { ...tick, maxTicksLimit: 5, precision: 0, callback: v => compact(v) },
         },
       },
     };

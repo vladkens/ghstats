@@ -3,6 +3,7 @@ use std::sync::Arc;
 
 use axum::extract::Request;
 use chrono::DateTime;
+use reqwest::StatusCode;
 
 use crate::db_client::DbClient;
 use crate::gh_client::{GhClient, PullRequest, Repo, StarsWeek};
@@ -44,6 +45,10 @@ async fn update_metrics_inner(state: Arc<AppState>) -> Res {
   // after downtime the star history is fetched again, so the gap gets the stars
   let yesterday = (chrono::Utc::now() - chrono::Duration::days(1)).date_naive();
   let was_down = state.db.get_last_stats_date().await?.is_some_and(|x| x < yesterday);
+  // marked before today's rows exist, so an interrupted run still refills the gap next time
+  if was_down {
+    state.db.mark_repos_stars_unsynced().await?;
+  }
 
   let repos = state.gh.get_repos(state.include_private).await?;
   check_hidden_repos(&state.db, &repos).await?;
@@ -53,10 +58,7 @@ async fn update_metrics_inner(state: Arc<AppState>) -> Res {
     .filter(|r| state.filter.is_included(&r.full_name, r.fork, r.archived))
     .collect::<Vec<_>>();
 
-  let stars = match was_down {
-    true => state.db.get_repos_ids().await?.len(),
-    false => state.db.repos_to_sync().await?.len(),
-  };
+  let stars = state.db.repos_to_sync().await?.len();
   state.record_sync_plan(repos.len() + stars);
 
   let progress = |done| state.record_sync_progress("Updating traffic", done, repos.len());
@@ -71,9 +73,6 @@ async fn update_metrics_inner(state: Arc<AppState>) -> Res {
 
   tracing::info!("update_metrics took {:?} for {} repos", stime.elapsed(), repos.len());
   state.db.update_deltas().await?;
-  if was_down {
-    state.db.mark_repos_stars_unsynced().await?;
-  }
 
   sync_stars(&state.db, &state.gh, |done, total| {
     state.record_sync_progress("Star history", done, total)
@@ -89,7 +88,7 @@ async fn get_open_pull_requests(gh: &GhClient, repo: &Repo) -> Res<Vec<PullReque
   }
 
   match gh.get_open_pull_requests(&repo.full_name).await {
-    Err(e) if GhClient::error_status(&e) == Some(reqwest::StatusCode::NOT_FOUND) => {
+    Err(e) if GhClient::error_status(&e) == Some(StatusCode::NOT_FOUND) => {
       tracing::info!("pull requests not available for {}, counting 0", repo.full_name);
       Ok(vec![])
     }
@@ -170,7 +169,14 @@ pub async fn sync_stars(db: &DbClient, gh: &GhClient, progress: impl Fn(usize, u
       Ok(rs) => rs,
       Err(e) => {
         tracing::warn!("failed to get stars for {}: {:?}", repo.name, e);
-        break;
+        // 403/429 is the rate limit and a non-HTTP error is likely the network, so stop for both
+        match GhClient::error_status(&e) {
+          Some(StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS) | None => break,
+          Some(_) => {
+            progress(idx + 1, total);
+            continue;
+          }
+        }
       }
     };
 
@@ -648,7 +654,7 @@ mod tests {
     assert_eq!(totals.issues, 3);
     assert_eq!(totals.views_count, 2);
     assert!(mock.pulls_calls.lock().unwrap().is_empty());
-    assert!(db.get_repos_downloads(0).await?.is_empty()); // no releases, nothing stored
+    assert!(db.get_repos_downloads().await?.is_empty()); // no releases, nothing stored
 
     server.abort();
     Ok(())
@@ -734,7 +740,7 @@ mod tests {
     let totals = db.get_repo_totals("owner/releases-500").await?.unwrap();
     assert_eq!(totals.issues, 3);
     assert_eq!(totals.views_count, 2);
-    assert!(db.get_repos_downloads(0).await?.is_empty());
+    assert!(db.get_repos_downloads().await?.is_empty());
 
     // a failed fetch is retried on the next sync of the same day
     update_repo_metrics(&db, &gh, &repo, DATE).await?;

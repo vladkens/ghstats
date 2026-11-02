@@ -13,7 +13,7 @@ use crate::AppState;
 use crate::db_client::{
   BACKFILL_DAYS, CMP_LAG, DbClient, Direction, Period, PopularFilter, PopularKind, PopularSort,
   ReleaseDownloads, ReleaseSort, RepoDaily, RepoFilter, RepoMeta, RepoPeriod, RepoPopularItem,
-  RepoSort, RepoTotals,
+  RepoSort, RepoTotals, Windows,
 };
 use crate::routes::assets::vendor_url;
 use crate::state::SyncStatus;
@@ -290,17 +290,6 @@ struct Change {
 }
 
 impl Change {
-  fn new(
-    cur: i64,
-    cur_days: i64,
-    prev: i64,
-    prev_days: i64,
-    period: Period,
-    today: NaiveDate,
-  ) -> Option<Self> {
-    Self::compare(cur, cur_days, prev, prev_days, period, today).ok()
-  }
-
   fn compare(
     cur: i64,
     cur_days: i64,
@@ -446,6 +435,34 @@ fn stars_gain(
   };
 
   Some(StarsGain { text, approx: inside || stale, zero: gain == 0 })
+}
+
+/// Star gain of the compared window vs the previous one; a day without a row keeps the last count
+fn stars_change(
+  stars: &[(&str, i32)],
+  synced: bool,
+  p: Period,
+  today: NaiveDate,
+) -> Option<Change> {
+  let w = p.windows(today)?;
+  let rows: Vec<(NaiveDate, i64)> =
+    stars.iter().filter_map(|x| Some((x.0.parse().ok()?, x.1 as i64))).collect();
+
+  // an unsynced history knows the count only from the end of its first row's day
+  let known = match synced {
+    true => None,
+    false => Some(rows.first()?.0 + Days::new(1)),
+  };
+
+  let at = |d: NaiveDate| rows.iter().take_while(|x| x.0 < d).last().map_or(0, |x| x.1);
+  let gain = |from: NaiveDate, to: NaiveDate| {
+    let from = known.map_or(from, |x| x.max(from)).min(to);
+    (at(to) - at(from), (to - from).num_days())
+  };
+
+  let (cur, cur_days) = gain(w.cmp_start, w.cmp_end);
+  let (prev, prev_days) = gain(w.prev_start, w.cmp_start);
+  Change::compare(cur, cur_days, prev, prev_days, p, today).ok()
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -620,11 +637,11 @@ fn traffic_tile(
   tile(title, total, sub, change.map(|x| x.tile(p)))
 }
 
-fn stars_tile(stars: i64, gain: Option<StarsGain>) -> Markup {
+fn stars_tile(stars: i64, gain: Option<StarsGain>, change: Option<Change>, p: Period) -> Markup {
   let sub = html!(@if let Some(x) = gain {
     span class=[x.zero.then_some("muted")] title=[x.approx.then_some(STARS_APPROX)] { (x.label()) }
   });
-  tile("Stars", stars, sub, None)
+  tile("Stars", stars, sub, change.map(|x| x.tile(p)))
 }
 
 fn traffic_card(title: &str, canvas_id: &str) -> Markup {
@@ -686,46 +703,44 @@ fn downloads(
     daily.iter().filter_map(|(d, id, n)| Some((d.parse().ok()?, *id, *n))).collect();
   per_day.sort();
 
-  let sum = |from: NaiveDate, to: NaiveDate| {
-    let days: Vec<_> = per_day.iter().filter(|x| x.0 >= from && x.0 < to).collect();
-    let mut dates: Vec<_> = days.iter().map(|x| x.0).collect();
-    dates.dedup();
-    (days.iter().map(|x| x.2).sum::<i64>(), dates.len() as i64)
-  };
-
   let (period, change) = match p.windows(today) {
     Some(w) => {
-      let (cur, cur_days) = sum(w.start, today + Days::new(1));
-      let (cmp, cmp_days) = sum(w.cmp_start, w.cmp_end);
-      let (prev, prev_days) = sum(w.prev_start, w.cmp_start);
-      let days = p.days().unwrap_or(1);
-      ((cur_days * 2 >= days).then_some(cur), Change::new(cmp, cmp_days, prev, prev_days, p, today))
+      let days: Vec<_> = per_day.iter().map(|x| (x.0, x.2)).collect();
+      let (period, change) = window_downloads(&days, &w, p, today);
+      (period, change.ok())
     }
     None => (None, None),
   };
 
   let top: Vec<i64> =
     releases.iter().filter(|x| key(x).0 > 0).take(RELEASES_STACKED).map(|x| x.release_id).collect();
+  let rest = releases.len() - top.len();
+  // downloads of deleted releases land in the other slot too
+  let other = per_day.iter().any(|x| x.2 > 0 && !top.contains(&x.1));
   let series = per_day.first().map(|first| {
     let start = first.0;
     let len = (today - start).num_days().max(0) as usize + 1;
     let mut days: Vec<Option<Vec<i64>>> = vec![None; len];
     for (d, id, n) in &per_day {
       let Some(x) = days.get_mut((*d - start).num_days() as usize) else { continue };
-      let row = x.get_or_insert_with(|| vec![0; top.len() + 1]);
+      let row = x.get_or_insert_with(|| vec![0; top.len() + other as usize]);
       let idx = top.iter().position(|x| x == id).unwrap_or(top.len());
-      row[idx] += n;
+      if let Some(x) = row.get_mut(idx) {
+        *x += n;
+      }
     }
 
-    let rest = releases.len() - top.len();
     let mut labels: Vec<String> = top
       .iter()
       .filter_map(|id| releases.iter().find(|x| x.release_id == *id).map(|x| x.tag.clone()))
       .collect();
-    labels.push(match rest {
-      1 => "1 other release".to_string(),
-      x => format!("{x} other releases"),
-    });
+    if other {
+      labels.push(match rest {
+        0 => "Other".to_string(),
+        1 => "1 other release".to_string(),
+        x => format!("{x} other releases"),
+      });
+    }
 
     DownloadsSeries { start: start.to_string(), days, labels }
   });
@@ -733,6 +748,27 @@ fn downloads(
   // a delta needs the snapshot of the day before
   let since = per_day.first().map(|x| x.0 - Days::new(1)).unwrap_or(today);
   Some(Downloads { total, period, since, change, releases, series })
+}
+
+fn window_downloads(
+  days: &[(NaiveDate, i64)],
+  w: &Windows,
+  p: Period,
+  today: NaiveDate,
+) -> (Option<i64>, Result<Change, &'static str>) {
+  let sum = |from: NaiveDate, to: NaiveDate| {
+    let xs: Vec<_> = days.iter().filter(|x| x.0 >= from && x.0 < to).collect();
+    let mut dates: Vec<_> = xs.iter().map(|x| x.0).collect();
+    dates.sort();
+    dates.dedup();
+    (xs.iter().map(|x| x.1).sum::<i64>(), dates.len() as i64)
+  };
+
+  let (cur, cur_days) = sum(w.start, today + Days::new(1));
+  let (cmp, cmp_days) = sum(w.cmp_start, w.cmp_end);
+  let (prev, prev_days) = sum(w.prev_start, w.cmp_start);
+  let period = (cur_days * 2 >= p.days().unwrap_or(1)).then_some(cur);
+  (period, Change::compare(cmp, cmp_days, prev, prev_days, p, today))
 }
 
 fn history_tip(since: NaiveDate, total: i64) -> String {
@@ -1046,26 +1082,8 @@ pub async fn repo_page(
   }
 
   let (p, today) = (qs.period, today());
-  let rp = db.get_periods(Some(&repo), p, today).await?.pop().unwrap_or_default();
   let daily = db.get_daily(&repo, today).await?;
-  let stars = db.get_star_rows(&repo).await?;
-  let stars: Vec<(&str, i32)> =
-    stars.iter().filter_map(|x| Some((x.date.get(..10)?, x.stars))).collect();
-
-  let has_views = daily.days.iter().flatten().any(|x| x[2] > 0);
-  let has_clones = daily.days.iter().flatten().any(|x| x[0] > 0);
   let first = daily.start.as_deref().and_then(|x| x.parse::<NaiveDate>().ok());
-  let star_days: Vec<NaiveDate> = stars.iter().filter_map(|x| x.0.parse().ok()).collect();
-  // a synced star history has every day, so only traffic-less days after it are unknown
-  let gaps = match rp.stars_synced {
-    true => star_gaps(None, &[], &star_days, today),
-    false => star_gaps(first, &outages(&daily), &star_days, today),
-  };
-
-  let gain = stars_gain(&rp, p, today, &gaps, star_days.last().copied());
-  let views = Change::new(rp.cmp_views, rp.cmp_days, rp.prev_views, rp.prev_days, p, today);
-  let clones = Change::new(rp.cmp_clones, rp.cmp_days, rp.prev_clones, rp.prev_days, p, today);
-
   let since = p.days().map(|x| x as i32 - 1).unwrap_or(0);
   let releases = db.get_release_downloads(&repo, since).await?;
   let dl_daily = db.get_release_downloads_daily(&repo).await?;
@@ -1083,6 +1101,25 @@ pub async fn repo_page(
     return Ok(html!((refs) (paths) @if let Some(x) = releases { (x) } (nav)));
   }
 
+  let rp = db.get_periods(Some(&repo), p, today).await?.pop().unwrap_or_default();
+  let stars = db.get_star_rows(&repo).await?;
+  let stars: Vec<(&str, i32)> =
+    stars.iter().filter_map(|x| Some((x.date.get(..10)?, x.stars))).collect();
+
+  let has_views = daily.days.iter().flatten().any(|x| x[2] > 0);
+  let has_clones = daily.days.iter().flatten().any(|x| x[0] > 0);
+  let star_days: Vec<NaiveDate> = stars.iter().filter_map(|x| x.0.parse().ok()).collect();
+  // a synced star history has every day, so only traffic-less days after it are unknown
+  let gaps = match rp.stars_synced {
+    true => star_gaps(None, &[], &star_days, today),
+    false => star_gaps(first, &outages(&daily), &star_days, today),
+  };
+
+  let gain = stars_gain(&rp, p, today, &gaps, star_days.last().copied());
+  let change = |cur, prev| Change::compare(cur, rp.cmp_days, prev, rp.prev_days, p, today).ok();
+  let (views, clones) =
+    (change(rp.cmp_views, rp.prev_views), change(rp.cmp_clones, rp.prev_clones));
+
   let meta = db.get_repo_meta(&repo).await?;
 
   let mut tiles = vec![];
@@ -1095,7 +1132,8 @@ pub async fn repo_page(
   }
 
   if !stars.is_empty() || rp.stars > 0 {
-    tiles.push(stars_tile(rp.stars, gain.clone()));
+    let change = stars_change(&stars, rp.stars_synced, p, today);
+    tiles.push(stars_tile(rp.stars, gain.clone(), change, p));
   }
 
   if let Some(x) = &dl {
@@ -1308,12 +1346,12 @@ async fn index_downloads(
   today: NaiveDate,
 ) -> Res<HashMap<i64, IndexDownloads>> {
   let ids: Vec<i64> = repos.iter().map(|x| x.id).collect();
-  let totals: Vec<(i64, i64)> = db
-    .get_repos_downloads(0)
+  let totals: Vec<(i64, i64, String)> = db
+    .get_repos_downloads()
     .await?
     .into_iter()
     .filter(|x| ids.contains(&x.id))
-    .map(|x| (x.id, x.total))
+    .map(|x| (x.id, x.total, x.first_day))
     .collect();
 
   let Some(w) = p.windows(today) else {
@@ -1321,7 +1359,7 @@ async fn index_downloads(
     return Ok(
       totals
         .into_iter()
-        .map(|(id, x)| (id, IndexDownloads { value: Ok(x), change: none() }))
+        .map(|(id, x, _)| (id, IndexDownloads { value: Ok(x), change: none() }))
         .collect(),
     );
   };
@@ -1329,23 +1367,12 @@ async fn index_downloads(
   let daily = db.get_repos_downloads_daily(&w.prev_start.to_string()).await?;
   let out = totals
     .into_iter()
-    .map(|(id, total)| {
+    .map(|(id, total, first_day)| {
       let days: Vec<(NaiveDate, i64)> =
         daily.iter().filter(|x| x.0 == id).filter_map(|x| Some((x.1.parse().ok()?, x.2))).collect();
-      let sum = |from: NaiveDate, to: NaiveDate| {
-        let xs: Vec<_> = days.iter().filter(|x| x.0 >= from && x.0 < to).collect();
-        (xs.iter().map(|x| x.1).sum::<i64>(), xs.len() as i64)
-      };
-
-      let (cmp, cmp_days) = sum(w.cmp_start, w.cmp_end);
-      let (prev, prev_days) = sum(w.prev_start, w.cmp_start);
-      let (value, value_days) = sum(w.start, today + Days::new(1));
-      let since = days.iter().map(|x| x.0).min().map(|x| x - Days::new(1)).unwrap_or(today);
-      let value = match value_days * 2 >= p.days().unwrap_or(1) {
-        true => Ok(value),
-        false => Err(history_tip(since, total)),
-      };
-      let change = Change::compare(cmp, cmp_days, prev, prev_days, p, today);
+      let (value, change) = window_downloads(&days, &w, p, today);
+      let since = first_day.parse().unwrap_or(today);
+      let value = value.ok_or_else(|| history_tip(since, total));
       (id, IndexDownloads { value, change })
     })
     .collect();
@@ -1725,6 +1752,37 @@ mod tests {
   }
 
   #[test]
+  fn other_downloads_bucket_only_when_it_holds_any() {
+    let rel = |id, n| ReleaseDownloads {
+      release_id: id,
+      tag: format!("v{id}"),
+      published_at: None,
+      prerelease: false,
+      total: n,
+      period: n,
+    };
+    let labels = |daily: &[(String, i64, i64)]| {
+      let dl = downloads(vec![rel(1, 5), rel(2, 3)], daily, Period(30), day("2026-11-02"));
+      let series = dl.unwrap().series.unwrap();
+      assert!(series.days.iter().flatten().all(|x| x.len() == series.labels.len()));
+      series.labels
+    };
+
+    let d = |id, n| ("2026-11-01".to_string(), id, n);
+    assert_eq!(labels(&[d(1, 5), d(2, 3)]), ["v1", "v2"]);
+    assert_eq!(labels(&[d(1, 5), d(2, 3), d(9, 4)]), ["v1", "v2", "Other"], "deleted release");
+
+    // a release with no downloads in the period stays out of the top but adds nothing to the chart
+    let releases = vec![rel(1, 5), rel(2, 3), rel(3, 0)];
+    let dl = downloads(releases, &[d(1, 5), d(2, 3), d(3, 0)], Period(30), day("2026-11-02"));
+    assert_eq!(dl.unwrap().series.unwrap().labels, ["v1", "v2"]);
+
+    let releases = vec![rel(1, 5), rel(2, 3), rel(3, 0)];
+    let dl = downloads(releases, &[d(1, 5), d(2, 3), d(9, 4)], Period(30), day("2026-11-02"));
+    assert_eq!(dl.unwrap().series.unwrap().labels, ["v1", "v2", "1 other release"]);
+  }
+
+  #[test]
   fn nulls_last_both_ways() {
     let mut xs = vec![Some(2), None, Some(5), None, Some(1)];
     xs.sort_by(|a, b| cmp_dir(*a, *b, &Direction::Asc));
@@ -1799,21 +1857,25 @@ mod tests {
       ((110, 30, 9, 30), None),
     ];
     for ((cur, cur_days, prev, prev_days), want) in cases {
-      let got = Change::new(cur, cur_days, prev, prev_days, p, today)
+      let got = Change::compare(cur, cur_days, prev, prev_days, p, today)
+        .ok()
         .map(|x| (text(x.tile(p)), text(x.short()), x.approx()));
       let want = want.map(|(a, b, c)| (a.to_string(), b.to_string(), c));
       assert_eq!(got, want, "{cur} over {cur_days} vs {prev} over {prev_days}");
     }
 
-    assert!(Change::new(110, 30, 100, 30, Period(-1), today).is_none());
-    let title = Change::new(110, 30, 100, 30, p, today).unwrap().title;
+    assert!(Change::compare(110, 30, 100, 30, Period(-1), today).is_err());
+    let title = Change::compare(110, 30, 100, 30, p, today).unwrap().title;
     assert_eq!(
       title,
       "110 over 30 days (Oct 2–31) vs 100 over 30 days (Sep 2–Oct 1) · last 2 days excluded, still \
        incomplete"
     );
     assert!(
-      Change::new(97, 20, 100, 20, p, today).unwrap().title.ends_with("only 67% of days collected")
+      Change::compare(97, 20, 100, 20, p, today)
+        .unwrap()
+        .title
+        .ends_with("only 67% of days collected")
     );
   }
 
@@ -1891,6 +1953,17 @@ mod tests {
 
     let unknown = RepoPeriod { stars: 20, ..Default::default() };
     assert_eq!(gain(&unknown, Period(30), &[], last), None, "no history before the period");
+  }
+
+  #[test]
+  fn stars_change_compares_window_gains() {
+    // 30d windows: prev Sep 2 – Oct 1, compared Oct 2 – 31
+    let today = day("2026-11-02");
+    let pct = |rows: &[(&str, i32)]| stars_change(rows, false, Period(30), today).map(|x| x.pct);
+
+    let rows = [("2026-08-01", 100), ("2026-09-15", 120), ("2026-10-15", 150)];
+    assert_eq!(pct(&rows), Some(50.0), "+30 vs +20, days between rows carry the count");
+    assert_eq!(pct(&[("2026-08-01", 100), ("2026-09-15", 109), ("2026-10-15", 150)]), None);
   }
 
   #[tokio::test]
