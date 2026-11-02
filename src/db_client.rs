@@ -1,5 +1,6 @@
 use std::sync::Mutex;
 
+use anyhow::Context;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 use serde_variant::to_variant_name;
@@ -95,20 +96,25 @@ fn migrate_v3(db: &Connection) -> Res {
   Ok(())
 }
 
-fn migrate(db: &Connection) -> Res {
-  let migrations: Vec<fn(&Connection) -> Res> = vec![migrate_v1, migrate_v2, migrate_v3];
-  let version: i32 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+const MIGRATIONS: &[fn(&Connection) -> Res] = &[migrate_v1, migrate_v2, migrate_v3];
 
-  for (idx, func) in migrations.iter().enumerate() {
-    let mig_ver = idx as i32 + 1;
-    if version < mig_ver {
-      tracing::info!("running migration to v{}", mig_ver);
-      func(db)?;
-      let qs = format!("PRAGMA user_version = {}", mig_ver);
-      db.execute_batch(&qs)?;
-    }
+fn migrate(db: &Connection) -> Res {
+  let version: i32 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+  let latest = MIGRATIONS.len() as i32;
+  if version >= latest {
+    return Ok(());
   }
 
+  // one transaction for all pending versions: a failed upgrade leaves the db as it was
+  let tx = db.unchecked_transaction()?;
+  for (idx, func) in MIGRATIONS.iter().enumerate().skip(version as usize) {
+    let mig_ver = idx as i32 + 1;
+    tracing::info!("running migration to v{}", mig_ver);
+    func(&tx).with_context(|| format!("migration to v{mig_ver} failed"))?;
+  }
+
+  tx.execute_batch(&format!("PRAGMA user_version = {latest}"))?;
+  tx.commit()?;
   Ok(())
 }
 
@@ -958,6 +964,47 @@ mod tests {
       paths.iter().map(|x| (&x.name, x.count, x.uniques)).collect::<Vec<_>>(),
       vec![(&"/".to_string(), 7, 4),]
     );
+
+    Ok(())
+  }
+
+  fn db_at_version(test_name: &str, version: i32) -> Res<String> {
+    let path = db_path(test_name);
+    let conn = Connection::open(&path)?;
+    for func in MIGRATIONS.iter().take(version as usize) {
+      func(&conn)?;
+    }
+
+    conn.execute("INSERT INTO repos (id, name) VALUES (1, 'owner/repo')", [])?;
+    conn.execute_batch(&format!("PRAGMA user_version = {version}"))?;
+    Ok(path)
+  }
+
+  fn user_version(conn: &Connection) -> Res<i32> {
+    Ok(conn.query_row("PRAGMA user_version", [], |row| row.get(0))?)
+  }
+
+  #[tokio::test]
+  async fn failed_migration_leaves_db_unchanged() -> Res {
+    let path = db_at_version("migration-failed", 1)?;
+    let conn = Connection::open(&path)?;
+    // v2 applies cleanly, then v3 fails on the duplicate column
+    conn.execute("ALTER TABLE repo_stats ADD COLUMN prs INTEGER NOT NULL DEFAULT 0", [])?;
+
+    assert!(DbClient::new(&path).await.is_err());
+
+    let columns: i32 = conn.query_row(
+      "SELECT COUNT(*) FROM pragma_table_info('repos')
+      WHERE name IN ('stars_synced', 'fork', 'hidden')",
+      [],
+      |row| row.get(0),
+    )?;
+    assert_eq!(user_version(&conn)?, 1);
+    assert_eq!(columns, 0);
+
+    conn.execute("ALTER TABLE repo_stats DROP COLUMN prs", [])?;
+    DbClient::new(&path).await?;
+    assert_eq!(user_version(&conn)?, 3);
 
     Ok(())
   }
