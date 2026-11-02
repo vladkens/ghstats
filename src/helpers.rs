@@ -53,11 +53,14 @@ async fn update_metrics_inner(state: Arc<AppState>) -> Res {
     .filter(|r| state.filter.is_included(&r.full_name, r.fork, r.archived))
     .collect::<Vec<_>>();
 
-  for repo in &repos {
+  let progress = |done| state.record_sync_progress("Updating traffic", done, repos.len());
+  progress(0);
+  for (idx, repo) in repos.iter().enumerate() {
     if let Err(e) = update_repo_metrics(&state.db, &state.gh, repo, &date).await {
       tracing::warn!("failed to update metrics for {}: {:?}", repo.full_name, e);
-      continue;
     }
+
+    progress(idx + 1);
   }
 
   tracing::info!("update_metrics took {:?} for {} repos", stime.elapsed(), repos.len());
@@ -66,7 +69,10 @@ async fn update_metrics_inner(state: Arc<AppState>) -> Res {
     state.db.mark_repos_stars_unsynced().await?;
   }
 
-  sync_stars(&state.db, &state.gh).await?;
+  sync_stars(&state.db, &state.gh, |done, total| {
+    state.record_sync_progress("Star history", done, total)
+  })
+  .await?;
 
   Ok(())
 }
@@ -144,11 +150,13 @@ fn get_stars_history(weeks: &[StarsWeek]) -> Vec<(String, u32, u32)> {
     .collect()
 }
 
-pub async fn sync_stars(db: &DbClient, gh: &GhClient) -> Res {
+pub async fn sync_stars(db: &DbClient, gh: &GhClient, progress: impl Fn(usize, usize)) -> Res {
   let mut requests_made = 0;
 
   let repos = db.repos_to_sync().await?;
-  for repo in repos {
+  let total = repos.len();
+  progress(0, total);
+  for (idx, repo) in repos.into_iter().enumerate() {
     let stime = std::time::Instant::now();
     // tracing::info!("sync_stars for {}", repo.name);
 
@@ -163,6 +171,7 @@ pub async fn sync_stars(db: &DbClient, gh: &GhClient) -> Res {
     let stars = get_stars_history(&weeks);
     db.insert_stars(repo.id, &stars).await?;
     db.mark_repo_stars_synced(repo.id).await?;
+    progress(idx + 1, total);
 
     let stars_count = stars.iter().map(|(_, _, c)| c).sum::<u32>();
     tracing::info!(
@@ -761,7 +770,7 @@ mod tests {
     let db = test_db("stars-ok").await?;
     db.insert_repo(&sample_repo("owner/stars-ok", None)).await?;
 
-    sync_stars(&db, &gh).await?;
+    sync_stars(&db, &gh, |_, _| {}).await?;
 
     assert_eq!(
       *mock.history_calls.lock().unwrap(),

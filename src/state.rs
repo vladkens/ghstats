@@ -26,8 +26,12 @@ pub struct DbHealth {
 pub struct SyncStatus {
   pub last_success: Option<DateTime<Utc>>,
   pub last_error: Option<String>,
-  pub last_error_at: Option<DateTime<Utc>>,
   pub running: bool,
+  pub started: Option<DateTime<Utc>>,
+  pub phase: &'static str,
+  pub phase_started: Option<DateTime<Utc>>,
+  pub done: usize,
+  pub total: usize,
 }
 
 impl DbHealth {
@@ -111,7 +115,19 @@ impl AppState {
   }
 
   pub fn record_sync_start(&self) {
-    self.sync_status.lock().unwrap().running = true;
+    let mut status = self.sync_status.lock().unwrap();
+    status.running = true;
+    status.started = Some(Utc::now());
+    (status.phase, status.done, status.total) = ("", 0, 0);
+  }
+
+  pub fn record_sync_progress(&self, phase: &'static str, done: usize, total: usize) {
+    let mut status = self.sync_status.lock().unwrap();
+    if status.phase != phase {
+      status.phase_started = Some(Utc::now());
+    }
+
+    (status.phase, status.done, status.total) = (phase, done, total);
   }
 
   pub fn record_sync_success(&self) {
@@ -122,7 +138,6 @@ impl AppState {
   pub fn record_sync_error(&self, error: &anyhow::Error) {
     let mut status = self.sync_status.lock().unwrap();
     status.last_error = Some(error.to_string());
-    status.last_error_at = Some(Utc::now());
     status.running = false;
   }
 

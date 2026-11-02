@@ -50,5 +50,8 @@ pub fn asset_routes() -> Router<Arc<AppState>> {
 }
 
 pub fn html_routes() -> Router<Arc<AppState>> {
-  Router::new().route("/", get(html::index)).route("/{owner}/{repo}", get(html::repo_page))
+  Router::new()
+    .route("/", get(html::index))
+    .route("/sync-status", get(html::sync_status))
+    .route("/{owner}/{repo}", get(html::repo_page))
 }

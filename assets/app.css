@@ -65,6 +65,7 @@ body {
   background: var(--bg);
   color: var(--ink);
   font: 15px/1.5 var(--font-ui);
+  font-variant-numeric: tabular-nums;
   padding-left: max(16px, env(safe-area-inset-left, 0px));
   padding-right: max(16px, env(safe-area-inset-right, 0px));
   padding-block: 0 48px;
@@ -87,14 +88,14 @@ h1, h2 { margin: 0; color: var(--head); text-wrap: balance; }
 .sync .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gap-ink); flex: none; }
 .sync.ok .dot { background: var(--good-ink); }
 .sync.busy .dot { background: var(--accent); }
-.sync.bad, .sync.bad .text { color: var(--bad-ink); }
-.sync.bad .dot { background: var(--bad-ink); }
 .ver:hover { color: var(--head); }
 
 .card { background: var(--card); border: 1px solid var(--card-border); border-radius: var(--r); padding: 0.85em 1em 1em; min-width: 0; }
 .card > h2 { font-size: 1em; font-weight: 600; color: var(--muted); margin-bottom: 0.5em; }
 .card.flush { padding: 0; overflow: hidden; }
 .stack { display: grid; gap: 1em; }
+/* a period swap replaces the page: keep scrollY as is, the blocks above keep their heights */
+body { overflow-anchor: none; }
 .grid2 { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1em; }
 #popular_tables { align-items: start; }
 
@@ -137,7 +138,7 @@ h1, h2 { margin: 0; color: var(--head); text-wrap: balance; }
 .topic.more { background: transparent; color: var(--muted); padding: 0 0.2em; cursor: help; }
 .repo-stats { display: flex; flex-wrap: wrap; gap: 4px 16px; margin-top: auto; padding-top: 0.75em; border-top: 1px solid var(--line); font-size: 0.9em; color: var(--muted); }
 .repo-stats span { white-space: nowrap; }
-.repo-stats b { color: var(--head); font-weight: 600; font-variant-numeric: tabular-nums; }
+.repo-stats b { color: var(--head); font-weight: 600; }
 .stars-card { display: flex; flex-direction: column; }
 .stars-card .chart { flex: 1 1 auto; height: auto; min-height: 240px; }
 .kpis { display: grid; grid-template-columns: repeat(var(--cols), minmax(0, 1fr)); gap: 1em; }
@@ -147,11 +148,11 @@ h1, h2 { margin: 0; color: var(--head); text-wrap: balance; }
 .kpis.c4 { --cols: 4; }
 .kpi { display: grid; gap: 0.1em; align-content: start; }
 .kpi h2 { margin: 0; font-size: 1em; font-weight: 600; color: var(--muted); }
-.kpi .value { font-size: 1.6em; font-weight: 650; color: var(--head); line-height: 1.2; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.kpi .sub { font-size: 0.9em; font-variant-numeric: tabular-nums; }
+.kpi .value { font-size: 1.6em; font-weight: 650; color: var(--head); line-height: 1.2; overflow-wrap: anywhere; }
+.kpi .sub { font-size: 0.9em; }
 .kpi .sub, .kpi .change { min-height: 1.5em; }
 .kpi abbr { text-decoration: underline dotted var(--line-strong); text-underline-offset: 3px; cursor: help; }
-.delta { font-size: 0.85em; font-variant-numeric: tabular-nums; color: var(--muted); }
+.delta { font-size: 0.85em; color: var(--muted); }
 .delta.up { color: var(--good-ink); }
 .delta.down { color: var(--bad-ink); }
 .delta.warn::before { content: "≈ "; }
@@ -169,7 +170,7 @@ h1, h2 { margin: 0; color: var(--head); text-wrap: balance; }
 .chart { position: relative; height: 230px; }
 
 .tscroll { overflow-x: auto; }
-table.data { width: 100%; border-collapse: collapse; table-layout: fixed; font-variant-numeric: tabular-nums; }
+table.data { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .data th, .data td { padding: 0.5em 0.75em; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
 .data th:first-child, .data td:first-child { text-align: left; padding-left: 1em; }
 .data th:last-child, .data td:last-child { padding-right: 1em; }

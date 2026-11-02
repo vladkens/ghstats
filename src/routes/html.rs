@@ -79,13 +79,15 @@ fn aria_sort(is_cur: bool, dir: &Direction) -> Option<&'static str> {
   }
 }
 
-fn period_nav(cur: Period, oob: bool, url: impl Fn(Period) -> String) -> Markup {
+/// Plain links that htmx turns into an in-place swap of `target`, so the scroll position stays
+fn period_nav(cur: Period, oob: bool, target: &str, url: impl Fn(Period) -> String) -> Markup {
   html!(
     nav id="period_nav" class="seg" aria-label="Period" hx-swap-oob=[oob.then_some("true")] {
       @for p in Period::ALL {
-        a href=(url(p)) title=(p.title()) aria-current=[(p == cur).then_some("page")] {
-          (p.label())
-        }
+        a href=(url(p)) title=(p.title()) aria-current=[(p == cur).then_some("page")]
+          hx-get=(url(p)) hx-target=(target) hx-select=[(target == "#page").then_some("#page")]
+          hx-swap="outerHTML" hx-push-url="true"
+        { (p.label()) }
       }
     }
   )
@@ -123,25 +125,58 @@ fn script_json(x: &impl Serialize) -> Res<String> {
 fn ago_time(x: DateTime<Utc>, now: DateTime<Utc>) -> String {
   match (now - x).num_minutes() {
     x if x < 1 => "just now".to_string(),
-    x if x < 60 => format!("{x} min ago"),
-    x if x < 60 * 24 => format!("{} h ago", x / 60),
-    x => format!("{} d ago", x / 60 / 24),
+    x if x < 60 => format!("{x}m ago"),
+    x if x < 60 * 24 => format!("{}h ago", x / 60),
+    x => format!("{}d ago", x / 60 / 24),
   }
 }
 
-fn sync_label(status: &SyncStatus, now: DateTime<Utc>) -> Markup {
-  let time = |x: DateTime<Utc>| x.format("%Y-%m-%d %H:%M UTC").to_string();
-  let (class, text, title) = match (status.running, &status.last_error, status.last_success) {
-    (true, _, _) => ("sync busy", "Syncing…".to_string(), "Syncing with GitHub".to_string()),
-    (_, Some(err), _) => {
-      let at = status.last_error_at.map(time).unwrap_or_default();
-      ("sync bad", "Sync failed".to_string(), format!("{at}: {err}"))
+fn sync_progress(status: &SyncStatus, now: DateTime<Utc>) -> (String, String) {
+  let (done, total) = (status.done, status.total);
+  let mut title = format!("{}: {done} of {total} repos", status.phase);
+  if let Some(x) = status.started {
+    title.push_str(&format!(" · started {}", ago_time(x, now)));
+  }
+
+  if let Some(x) = status.phase_started.filter(|_| done >= 2 && done < total) {
+    let left = (now - x).num_seconds() as f64 / done as f64 * (total - done) as f64;
+    match (left / 60.0).round() as i64 {
+      0 => title.push_str(" · <1 min left"),
+      x => title.push_str(&format!(" · ~{x} min left")),
     }
-    (_, _, Some(x)) => ("sync ok", format!("Synced {}", ago_time(x, now)), time(x)),
-    _ => ("sync", "Not synced yet".to_string(), "No sync since start".to_string()),
+  }
+
+  (format!("Syncing {done}/{total}"), title)
+}
+
+/// Public-safe: progress for a long sync, else the last success; errors stay in logs and /health
+fn sync_label(status: &SyncStatus, now: DateTime<Utc>) -> Markup {
+  let long =
+    status.phase == "Star history" || status.started.is_some_and(|x| (now - x).num_seconds() > 30);
+  let label = match (status.running && long && status.total > 0, status.last_success) {
+    (true, _) => Some(("sync busy", sync_progress(status, now))),
+    (false, Some(x)) => {
+      let title = x.format("%Y-%m-%d %H:%M UTC").to_string();
+      Some(("sync ok", (format!("Synced {}", ago_time(x, now)), title)))
+    }
+    (false, None) => None,
   };
 
-  html!(span class=(class) title=(title) { i class="dot" {} span class="text" { (text) } })
+  // refreshes itself only while a sync runs
+  let poll = status.running.then_some("every 5s");
+  html!(
+    span id="sync" class=[label.as_ref().map(|x| x.0)] title=[label.as_ref().map(|x| &x.1.1)]
+      hx-get=[poll.map(|_| "/sync-status")] hx-trigger=[poll] hx-swap=[poll.map(|_| "outerHTML")]
+    {
+      @if let Some((_, (text, _))) = &label {
+        i class="dot" {} span class="text" { (text) }
+      }
+    }
+  )
+}
+
+pub async fn sync_status(State(state): State<Arc<AppState>>) -> Markup {
+  sync_label(&state.sync_status(), Utc::now())
 }
 
 fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
@@ -997,10 +1032,10 @@ pub async fn repo_page(
     |x: Period| format!("/{}?sort={}&direction={}&period={}", repo, qs.sort, qs.direction, x);
 
   let html = html!(
-    div class="stack" {
+    div id="page" class="stack" {
       div class="periodbar" {
         span class="range" { (period_range(p, today, first)) }
-        (period_nav(p, false, period_url))
+        (period_nav(p, false, "#page", period_url))
       }
 
       div class=[(!stars.is_empty()).then_some("row1")] {
@@ -1026,9 +1061,10 @@ pub async fn repo_page(
       }
 
       (repo_popular_tables(db, &repo, &qs).await?)
-    }
 
-    script { "window.renderRepo(" (PreEscaped(script_json(&data)?)) ");" }
+      // inside #page, so a period swap renders the new charts
+      script { "window.renderRepo(" (PreEscaped(script_json(&data)?)) ");" }
+    }
   );
 
   Ok(base(&state, vec![(repo, None)], html))
@@ -1332,7 +1368,8 @@ pub async fn index(
   };
 
   if let Some("repos_table") = get_hx_target(&headers) {
-    return Ok(html!((table_html)(filter_inputs(true))(period_nav(p, true, period_url))));
+    let nav = period_nav(p, true, "#repos_table", period_url);
+    return Ok(html!((table_html)(filter_inputs(true))(nav)));
   }
 
   let include = "#filter_sort, #filter_direction, #filter_period";
@@ -1366,7 +1403,7 @@ pub async fn index(
         hx-replace-url="true"
       {}
 
-      (period_nav(p, false, period_url))
+      (period_nav(p, false, "#repos_table", period_url))
     }
 
     // no scroll box around it: that would break the sticky headers
@@ -1451,21 +1488,39 @@ mod tests {
   #[test]
   fn sync_label_states() {
     let now = Utc::now();
-    let ok =
-      SyncStatus { last_success: Some(now - chrono::Duration::minutes(5)), ..Default::default() };
-    let failed =
-      SyncStatus { last_error: Some("401".into()), last_error_at: Some(now), ..ok.clone() };
+    let ago = |x| Some(now - chrono::Duration::minutes(x));
+    let ok = SyncStatus { last_success: ago(5), ..Default::default() };
+    let failed = SyncStatus { last_error: Some("401".into()), ..ok.clone() };
+    let short = SyncStatus {
+      running: true,
+      started: Some(now),
+      phase: "Updating traffic",
+      total: 41,
+      ..ok.clone()
+    };
+    let long = SyncStatus { phase_started: ago(1), started: ago(1), done: 12, ..short.clone() };
+
+    // (status, text, polls)
     let cases = [
-      (SyncStatus::default(), "sync", "Not synced yet"),
-      (SyncStatus { running: true, ..failed.clone() }, "sync busy", "Syncing…"),
-      (ok, "sync ok", "Synced 5 min ago"),
-      (failed, "sync bad", "Sync failed"),
+      (SyncStatus::default(), None, false),
+      (ok, Some("Synced 5m ago"), false),
+      (failed, Some("Synced 5m ago"), false),
+      (short, Some("Synced 5m ago"), true),
+      (long.clone(), Some("Syncing 12/41"), true),
     ];
-    for (status, class, text) in cases {
+    for (status, text, polls) in cases {
       let html = sync_label(&status, now).into_string();
-      assert!(html.starts_with(&format!("<span class=\"{class}\"")), "{html}");
-      assert!(html.contains(&format!("<span class=\"text\">{text}</span>")), "{html}");
+      let got = html.split("class=\"text\">").nth(1).and_then(|x| x.split('<').next());
+      assert_eq!(got, text, "{html}");
+      assert_eq!(html.contains("hx-trigger=\"every 5s\""), polls, "{html}");
+      assert!(!html.contains("401") && !html.contains("failed"), "errors never in the page");
     }
+
+    // 12 of 41 in a minute: 29 left at 5 s each
+    let html = sync_label(&long, now).into_string();
+    assert!(
+      html.contains("title=\"Updating traffic: 12 of 41 repos · started 1m ago · ~2 min left\"")
+    );
   }
 
   #[test]
