@@ -1,3 +1,11 @@
+## Unreleased
+
+### Features
+
+- Frontend libraries are now embedded into the binary and served by `ghstats` itself instead of being loaded from unpkg.com (#31)
+
+---
+
 ## v0.10.0 – 2026-08-26
 
 ### Features

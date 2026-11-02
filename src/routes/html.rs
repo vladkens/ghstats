@@ -11,6 +11,7 @@ use crate::db_client::{
   DbClient, Direction, PopularFilter, PopularKind, PopularSort, RepoFilter, RepoSort, RepoTotals,
 };
 use crate::helpers::truncate_middle;
+use crate::routes::assets::vendor_url;
 use crate::types::{AppError, HtmlRes};
 
 #[derive(Debug)]
@@ -119,11 +120,11 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
         title { (title) }
 
         link rel="icon" type="image/svg+xml" href=(PreEscaped(favicon)) {}
-        link rel="stylesheet" href="https://unpkg.com/@picocss/pico@2.0" {}
-        script src="https://unpkg.com/chart.js@4.4" {}
-        script src="https://unpkg.com/luxon@3.5" {}
-        script src="https://unpkg.com/chartjs-adapter-luxon@1.3" {}
-        script src="https://unpkg.com/htmx.org@2.0" {}
+        link rel="stylesheet" href=(vendor_url("pico.min.css")) {}
+        script src=(vendor_url("chart.umd.js")) {}
+        script src=(vendor_url("luxon.min.js")) {}
+        script src=(vendor_url("chartjs-adapter-luxon.umd.min.js")) {}
+        script src=(vendor_url("htmx.min.js")) {}
         script { "htmx.config.historyCacheSize = 0;" }
         script { (PreEscaped(include_str!("../../assets/app.js"))) }
         style { (PreEscaped(include_str!("../../assets/app.css"))) }

@@ -1,4 +1,4 @@
-.PHONY: prepare check test build update docker-build backup
+.PHONY: prepare check test build update
 
 prepare:
 	cargo +nightly fmt
@@ -19,16 +19,19 @@ build:
 
 update:
 	cargo upgrade -i
+	cargo update
 
+.PHONY: vendor docker-build backup
+
+# Refresh assets/vendor to the latest release of each library's major
+vendor:
+	./scripts/vendor.sh
+
+# Build the Docker image and print its size
 docker-build:
 	docker build -t ghstats:latest .
 	docker images -q ghstats:latest | xargs docker inspect -f '{{.Size}}' | xargs numfmt --to=iec
 
-# --- Deploy ---
-
-HOST=srv
-
+# Copy the production database from $BACKUP_HOST (default srv) into data/
 backup:
-	mkdir -p data
-	scp $(HOST):/root/data/ghstats.db data/backup-$(shell date -u +"%Y%m%d_%H%M").db
-	cp $$(ls -1t data/*.db | head -n 1) data/backup.db
+	./scripts/backup.sh
