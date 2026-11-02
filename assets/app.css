@@ -116,6 +116,7 @@ body { overflow-anchor: none; }
   background: var(--bg);
   border-bottom: 1px solid var(--line);
 }
+.periodbar .name { font-weight: 600; color: var(--head); overflow-wrap: anywhere; }
 .periodbar .range { font-size: 0.9em; color: var(--muted); }
 .periodbar .seg { margin-left: auto; }
 
@@ -225,7 +226,6 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .idx col.c-dl { width: 9.5em; }
 .data col.n2 { width: 8em; }
 .data col.n3 { width: 9.5em; }
-.pre { font-size: 0.8em; color: var(--muted); }
 .mono { font-family: var(--font-mono); font-size: 0.9em; }
 
 @media (max-width: 900px) {

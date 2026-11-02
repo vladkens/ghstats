@@ -706,16 +706,16 @@ mod tests {
     // no created_at in the mock, so published_at (day of or before the first snapshot) decides
     let rels = db.get_release_downloads("owner/releases", 0).await?;
     let rels = rels.iter().map(|x| (x.tag.as_str(), x.total, x.period)).collect::<Vec<_>>();
-    assert_eq!(rels, vec![("v1.1-rc", 8, 8), ("v1.0", 44, 44)]);
+    assert_eq!(rels, vec![("v1.0", 44, 44)], "pre-releases are left out");
 
     let assets = db.get_asset_downloads("owner/releases", 0).await?;
     let assets = assets.iter().map(|x| (x.name.as_str(), x.total)).collect::<Vec<_>>();
-    assert_eq!(assets, vec![("app-linux", 49), ("app-mac", 3)]);
+    assert_eq!(assets, vec![("app-linux", 44)]);
 
     update_repo_metrics(&db, &gh, &repo, "2024-01-02T00:00:00Z").await?; // next day, new row
     let daily = db.get_downloads_daily("owner/releases").await?;
     let daily = daily.iter().map(|x| (x.date.as_str(), x.downloads)).collect::<Vec<_>>();
-    assert_eq!(daily, vec![(DATE, 52), ("2024-01-02T00:00:00Z", 2)]);
+    assert_eq!(daily, vec![(DATE, 44), ("2024-01-02T00:00:00Z", 2)]);
 
     server.abort();
     Ok(())

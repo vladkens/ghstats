@@ -528,7 +528,7 @@ const TOPICS_SHOWN: usize = 6;
 
 fn info_card(totals: &RepoTotals, meta: &RepoMeta, today: NaiveDate) -> Markup {
   let date = |x: &Option<String>| x.as_deref().and_then(|x| x.get(..10)?.parse::<NaiveDate>().ok());
-  let (created, pushed) = (date(&meta.created_at), date(&meta.pushed_at));
+  let created = date(&meta.created_at);
   let homepage =
     meta.homepage.as_deref().filter(|x| x.starts_with("https://") || x.starts_with("http://"));
   let more = meta.topics.get(TOPICS_SHOWN..).unwrap_or_default();
@@ -546,14 +546,13 @@ fn info_card(totals: &RepoTotals, meta: &RepoMeta, today: NaiveDate) -> Markup {
         }
       }
 
-      @if meta.language.is_some() || meta.license.is_some() || created.is_some() || pushed.is_some() {
+      @if meta.language.is_some() || meta.license.is_some() || created.is_some() {
         div class="facts" {
           @if let Some(x) = &meta.language {
             span class="lang" { i class="dot" style=(format!("background:{}", lang_color(x))) {} (x) }
           }
           @if let Some(x) = &meta.license { span { (x) } }
           @if let Some(x) = created { span title=(day_title(x)) { "created " (ago(x, today)) } }
-          @if let Some(x) = pushed { span title=(day_title(x)) { "last push " (ago(x, today)) } }
         }
       }
 
@@ -794,35 +793,28 @@ fn releases_table(
   period_tip: &str,
   oob: bool,
 ) -> Markup {
-  let has_period = qs.period.days().is_some();
-  // period numbers hidden while history is short can't order the rows either
-  let rsort = match (qs.rsort, dl.period) {
-    (ReleaseSort::Period, None) => ReleaseSort::Total,
+  // the period column only once history covers half of it; at All one "Downloads" column
+  let has_period = qs.period.days().is_some() && dl.period.is_some();
+  let rsort = match (qs.rsort, has_period) {
+    (ReleaseSort::Period, false) => ReleaseSort::Total,
     (x, _) => x,
   };
 
-  let mut rows: Vec<&ReleaseDownloads> = dl.releases.iter().collect();
-  rows.sort_by(|a, b| {
-    let ord = match rsort {
-      ReleaseSort::Tag => a.tag.to_lowercase().cmp(&b.tag.to_lowercase()),
-      ReleaseSort::Published => a.published_at.cmp(&b.published_at),
-      ReleaseSort::Period => a.period.cmp(&b.period),
-      ReleaseSort::Total => a.total.cmp(&b.total),
-    };
+  let val = |x: &ReleaseDownloads| match rsort {
+    ReleaseSort::Period => Some(x.period),
+    ReleaseSort::Total => Some(x.total),
+    _ => None,
+  };
 
-    match qs.rdir {
-      Direction::Asc => ord,
-      Direction::Desc => ord.reverse(),
-    }
+  let mut rows: Vec<&ReleaseDownloads> = dl.releases.iter().collect();
+  rows.sort_by(|a, b| match rsort {
+    ReleaseSort::Tag => cmp_dir(Some(a.tag.to_lowercase()), Some(b.tag.to_lowercase()), &qs.rdir),
+    ReleaseSort::Published => cmp_dir(a.published_at.as_ref(), b.published_at.as_ref(), &qs.rdir),
+    _ => cmp_dir(val(a), val(b), &qs.rdir),
   });
 
-  // the fill follows the sorted number, all-time downloads otherwise
-  let val = |x: &ReleaseDownloads| match rsort {
-    ReleaseSort::Period => x.period,
-    _ => x.total,
-  };
-  let max = rows.iter().map(|x| val(x)).max().unwrap_or(1).max(1);
-
+  let max = rows.iter().filter_map(|x| val(x)).max().unwrap_or(1).max(1);
+  let total = if qs.period.days().is_some() { "Total" } else { "Downloads" };
   let mut cols = vec![
     (html!("Releases"), ReleaseSort::Tag, ""),
     (html!("Published"), ReleaseSort::Published, "opt2"),
@@ -831,7 +823,7 @@ fn releases_table(
     cols.push((html!("Downloads "(period_mark(period_tip))), ReleaseSort::Period, ""));
   }
 
-  cols.push((html!("All time"), ReleaseSort::Total, ""));
+  cols.push((html!((total)), ReleaseSort::Total, ""));
   let sort_url = |col: ReleaseSort| {
     let dir = next_dir(rsort == col, &qs.rdir, col == ReleaseSort::Tag);
     repo_url(repo, &PopularFilter { rsort: col, rdir: dir_of(dir), ..qs.clone() })
@@ -849,34 +841,22 @@ fn releases_table(
           tr {
             @for (name, col, class) in &cols {
               th scope="col" class=(class) aria-sort=[aria_sort(rsort == *col, &qs.rdir)] {
-                @if *col == ReleaseSort::Period && dl.period.is_none() {
-                  (name)
-                } @else {
-                  button type="button"
-                    hx-get=(sort_url(*col))
-                    hx-target="#releases_table"
-                    hx-swap="outerHTML"
-                    hx-replace-url="true"
-                  { (name) }
-                }
+                button type="button"
+                  hx-get=(sort_url(*col))
+                  hx-target="#releases_table"
+                  hx-swap="outerHTML"
+                  hx-replace-url="true"
+                { (name) }
               }
             }
           }
         }
         tbody {
           @for (idx, x) in rows.iter().enumerate() {
-            tr hidden[idx >= ROWS_SHOWN] style=(format!("--w:{:.1}%", val(x) as f64 / max as f64 * 100.0)) {
-              td class="name" title=(x.tag) {
-                span class="mono" { (x.tag) }
-                @if x.prerelease { " " span class="pre" { "pre-release" } }
-              }
+            tr hidden[idx >= ROWS_SHOWN] style=[fill(val(x), max)] {
+              td class="name mono" title=(x.tag) { (x.tag) }
               td class="opt2" { (x.published_at.as_deref().and_then(|x| x.get(..10)).unwrap_or_default()) }
-              @if has_period {
-                @match dl.period {
-                  Some(_) => td { (num(x.period)) },
-                  None => td class="muted" title=(history_tip(dl.since, dl.total)) { "—" },
-                }
-              }
+              @if has_period { td { (num(x.period)) } }
               td { (num(x.total)) }
             }
           }
@@ -928,25 +908,20 @@ fn popular_html(
   }
 
   let (sort, direction) = state.sorting(kind);
-  // the row fill follows the sorted column, views when sorted by name
   let val = |x: &PopularRow| match sort {
-    PopularSort::Uniques => x.uniques,
-    _ => x.views,
+    PopularSort::Count => Some(x.views),
+    PopularSort::Uniques => Some(x.uniques),
+    PopularSort::Name => None,
   };
 
-  rows.sort_by(|a, b| {
-    let ord = match sort {
-      PopularSort::Name => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
-      _ => val(a).cmp(&val(b)),
-    };
-
-    match direction {
-      Direction::Asc => ord,
-      Direction::Desc => ord.reverse(),
+  rows.sort_by(|a, b| match sort {
+    PopularSort::Name => {
+      cmp_dir(Some(a.name.to_lowercase()), Some(b.name.to_lowercase()), &direction)
     }
+    _ => cmp_dir(val(a), val(b), &direction),
   });
 
-  let max = rows.iter().map(val).max().unwrap_or(1).max(1);
+  let max = rows.iter().filter_map(val).max().unwrap_or(1).max(1);
 
   let (title, html_id) = match kind {
     PopularKind::Refs => ("Referring sites", "refs_table"),
@@ -990,7 +965,7 @@ fn popular_html(
 
         tbody {
           @for (idx, x) in rows.iter().enumerate() {
-            tr hidden[idx >= ROWS_SHOWN] style=(format!("--w:{:.1}%", val(x) as f64 / max as f64 * 100.0)) {
+            tr hidden[idx >= ROWS_SHOWN] style=[fill(val(x), max)] {
               td class="name" title=(x.name) {
                 @match &x.url {
                   Some(url) => a href=(url) { (x.name) },
@@ -1147,6 +1122,7 @@ pub async fn repo_page(
   let html = html!(
     div id="page" class="stack" {
       div class="periodbar" {
+        span class="name" { (repo) }
         span class="range" { (period_range(p, today, first)) }
         (period_nav(p, false, "#page", period_url))
       }
@@ -1270,7 +1246,13 @@ fn index_cols(downloads: bool) -> Vec<IndexCol> {
       class: "c-clones opt2",
       cell: clones,
     },
-    IndexCol { name: "Downloads", sort: None, per: true, class: "c-dl opt2", cell: dl },
+    IndexCol {
+      name: "Downloads",
+      sort: Some(RepoSort::Downloads),
+      per: true,
+      class: "c-dl opt2",
+      cell: dl,
+    },
     IndexCol {
       name: "Stars",
       sort: Some(RepoSort::Stars),
@@ -1369,22 +1351,45 @@ async fn index_downloads(
   Ok(out)
 }
 
+/// Row background as the share of the sorted column's max; only for a numeric sort
+fn fill(val: Option<i64>, max: i64) -> Option<String> {
+  val.map(|x| format!("--w:{:.1}%", x as f64 / max.max(1) as f64 * 100.0))
+}
+
+/// Orders by `dir` with empty values last either way, like SQL's NULLS LAST
+fn cmp_dir<T: Ord>(a: Option<T>, b: Option<T>, dir: &Direction) -> std::cmp::Ordering {
+  use std::cmp::Ordering::{Equal, Greater, Less};
+  match (a, b, dir) {
+    (Some(a), Some(b), Direction::Asc) => a.cmp(&b),
+    (Some(a), Some(b), Direction::Desc) => b.cmp(&a),
+    (Some(_), None, _) => Less,
+    (None, Some(_), _) => Greater,
+    (None, None, _) => Equal,
+  }
+}
+
 fn sort_index(rows: &mut [IndexRow], sort: &RepoSort, dir: &Direction) {
   rows.sort_by(|a, b| {
-    let ord = match sort {
-      RepoSort::Name => a.repo.name.to_lowercase().cmp(&b.repo.name.to_lowercase()),
-      RepoSort::Stars => a.per.stars.cmp(&b.per.stars),
-      RepoSort::Forks => a.repo.forks.cmp(&b.repo.forks),
-      RepoSort::Watchers => a.repo.watchers.cmp(&b.repo.watchers),
-      RepoSort::Issues => a.repo.issues.cmp(&b.repo.issues),
-      RepoSort::Prs => a.repo.prs.cmp(&b.repo.prs),
-      RepoSort::Clones => a.per.clones.cmp(&b.per.clones),
-      RepoSort::Views => a.per.views.cmp(&b.per.views),
+    let num = |x: &IndexRow| -> Option<i64> {
+      Some(match sort {
+        RepoSort::Name => return None,
+        RepoSort::Stars => x.per.stars,
+        RepoSort::Forks => x.repo.forks as i64,
+        RepoSort::Watchers => x.repo.watchers as i64,
+        RepoSort::Issues => x.repo.issues as i64,
+        RepoSort::Prs => x.repo.prs as i64,
+        RepoSort::Clones => x.per.clones,
+        RepoSort::Views => x.per.views,
+        RepoSort::Downloads => *x.dl.as_ref()?.value.as_ref().ok()?,
+      })
     };
 
-    match dir {
-      Direction::Asc => ord,
-      Direction::Desc => ord.reverse(),
+    match sort {
+      RepoSort::Name => {
+        let name = |x: &IndexRow| Some(x.repo.name.to_lowercase());
+        cmp_dir(name(a), name(b), dir)
+      }
+      _ => cmp_dir(num(a), num(b), dir),
     }
   });
 }
@@ -1426,16 +1431,23 @@ pub async fn index(
       IndexRow { repo: x, per, today, dl: dls.remove(&x.id) }
     })
     .collect();
-  sort_index(&mut rows, &qs.sort, &qs.direction);
+  // only when some repo has a real number for the period, not just "—" while history is short
+  let has_dl = rows.iter().any(|x| x.dl.as_ref().is_some_and(|x| x.value.is_ok()));
+  let cols = index_cols(has_dl);
 
-  let cols = index_cols(rows.iter().any(|x| x.dl.is_some()));
+  // a downloads sort without the column shows the default order; the URL keeps it for other periods
+  let (sort, dir) = match (qs.sort, has_dl) {
+    (RepoSort::Downloads, false) => (RepoSort::Views, Direction::Desc),
+    x => (x.0, qs.direction),
+  };
+  sort_index(&mut rows, &sort, &dir);
   let first = state.db.get_first_traffic().await?;
   let period_tip = format!("{}: {}", p.title(), period_range(p, today, first));
   let cur_q = qs.q.clone().unwrap_or_default();
   let cur_owner = qs.owner.clone().unwrap_or_default();
 
   let sort_url = |col: &RepoSort| {
-    let dir = next_dir(qs.sort == *col, &qs.direction, *col == RepoSort::Name);
+    let dir = next_dir(sort == *col, &dir, *col == RepoSort::Name);
     index_url(&qs, col, dir, p)
   };
 
@@ -1464,7 +1476,7 @@ pub async fn index(
       thead {
         tr {
           @for col in &cols {
-            th scope="col" class=(col.class) aria-sort=[aria_sort(col.sort.as_ref() == Some(&qs.sort), &qs.direction)] {
+            th scope="col" class=(col.class) aria-sort=[aria_sort(col.sort.as_ref() == Some(&sort), &dir)] {
               (head(col))
             }
           }
@@ -1670,19 +1682,19 @@ mod tests {
   }
 
   #[test]
-  fn releases_newest_first_with_prereleases() {
-    let rel = |tag: &str, day: &str, prerelease, total| ReleaseDownloads {
+  fn releases_newest_first_fill_by_sorted_number() {
+    let rel = |tag: &str, day: Option<&str>, total| ReleaseDownloads {
       release_id: 0,
       tag: tag.into(),
-      published_at: Some(format!("{day}T10:00:00Z")),
-      prerelease,
+      published_at: day.map(|x| format!("{x}T10:00:00Z")),
+      prerelease: false,
       total,
       period: 1,
     };
     let releases = vec![
-      rel("v1.0.0", "2026-10-14", false, 100),
-      rel("v0.9.0", "2025-03-01", false, 400),
-      rel("v1.1.0-rc1", "2026-10-20", true, 10),
+      rel("v1.0.0", Some("2026-10-14"), 100),
+      rel("v0.9.0", Some("2025-03-01"), 400),
+      rel("x", None, 10),
     ];
     let dl = Downloads {
       total: 510,
@@ -1694,21 +1706,27 @@ mod tests {
     };
 
     let html = releases_table("o/r", &dl, &PopularFilter::default(), "", false).into_string();
-    let order: Vec<_> = ["v1.1.0-rc1", "v1.0.0", "v0.9.0"]
-      .iter()
-      .map(|x| html.find(&format!(">{x}<")).unwrap())
-      .collect();
-    assert!(order.is_sorted(), "newest first");
-    assert!(html.contains(">v1.1.0-rc1</span> <span class=\"pre\">pre-release</span>"));
+    let order: Vec<_> = ["v1.0.0", "v0.9.0", ">x<"].iter().map(|x| html.find(x).unwrap()).collect();
+    assert!(order.is_sorted(), "newest first, no date last");
     assert!(html.contains("<td class=\"opt2\">2025-03-01</td>"), "ISO dates");
+    assert!(!html.contains("--w:"), "no fill when sorted by date");
+    assert!(html.contains(">Total</button>") && html.contains("rsort=published&amp;rdir=asc"));
+
+    let qs = PopularFilter { rsort: ReleaseSort::Total, ..Default::default() };
+    let html = releases_table("o/r", &dl, &qs, "", false).into_string();
     assert!(
-      html.contains("style=\"--w:100.0%\"><td class=\"name\" title=\"v0.9.0\">"),
-      "fill by all time"
+      html.contains("style=\"--w:100.0%\"><td class=\"name mono\" title=\"v0.9.0\">"),
+      "share of the max"
     );
-    assert!(
-      html.contains("aria-sort=\"descending\"><button")
-        && html.contains("rsort=published&amp;rdir=asc")
-    );
+  }
+
+  #[test]
+  fn nulls_last_both_ways() {
+    let mut xs = vec![Some(2), None, Some(5), None, Some(1)];
+    xs.sort_by(|a, b| cmp_dir(*a, *b, &Direction::Asc));
+    assert_eq!(xs, [Some(1), Some(2), Some(5), None, None]);
+    xs.sort_by(|a, b| cmp_dir(*a, *b, &Direction::Desc));
+    assert_eq!(xs, [Some(5), Some(2), Some(1), None, None]);
   }
 
   #[test]
@@ -1818,10 +1836,7 @@ mod tests {
     let qs =
       PopularFilter { sort: PopularSort::Name, direction: Direction::Asc, ..Default::default() };
     let html = popular_html("o/r", &kind, rows(0), &qs, false).into_string();
-    assert!(
-      html.contains("<tr style=\"--w:25.0%\"><td class=\"name\" title=\"/\">"),
-      "fill by views"
-    );
+    assert!(!html.contains("--w:"), "no fill when sorted by name");
     assert!(!html.contains("Show all"));
   }
 
@@ -2036,10 +2051,24 @@ mod tests {
     let tip = format!("Download history starts {} · 30 all time", ago(0));
     assert!(frag.contains(&format!("<span class=\"v muted\" title=\"{tip}\">—</span>")));
 
-    // the column follows the visible repos only
+    assert!(
+      frag.contains("hx-get=\"/?sort=downloads&amp;direction=desc&amp;period=7d\""),
+      "sortable"
+    );
+
+    // only o/b visible: no real 7d number yet, so no column; at All its total, sortable
     let db = DbClient::new(&path).await.unwrap();
-    let state = Arc::new(AppState::for_test(db, GhsFilter::new("o/c")));
-    let frag = get(&state, "/?period=7d", Some("repos_table")).await.unwrap().into_string();
+    let state = Arc::new(AppState::for_test(db, GhsFilter::new("o/b")));
+    let url = "/?period=7d&sort=downloads&direction=asc";
+    let frag = get(&state, url, Some("repos_table")).await.unwrap().into_string();
     assert!(!frag.contains("Downloads"));
+    assert!(frag.contains("aria-sort=\"descending\"><button type=\"button\" hx-get=\"/?sort=views_count&amp;direction=asc"));
+    assert!(frag.contains("name=\"sort\" value=\"downloads\""), "kept for other periods");
+    let frag =
+      get(&state, "/?period=all&sort=downloads", Some("repos_table")).await.unwrap().into_string();
+    assert!(frag.contains("<span class=\"v\">30</span>"));
+    assert!(
+      frag.contains("aria-sort=\"descending\"><button type=\"button\" hx-get=\"/?sort=downloads")
+    );
   }
 }

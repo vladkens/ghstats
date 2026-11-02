@@ -339,7 +339,7 @@ impl std::fmt::Display for Direction {
   }
 }
 
-#[derive(Debug, Default, Deserialize, Serialize, PartialEq)]
+#[derive(Debug, Default, Clone, Copy, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "snake_case")]
 pub enum RepoSort {
   Name,
@@ -353,6 +353,8 @@ pub enum RepoSort {
   #[serde(rename = "views_count")]
   #[default]
   Views,
+  /// release downloads, sorted in Rust (no such column in SQL)
+  Downloads,
 }
 
 impl std::fmt::Display for RepoSort {
@@ -711,7 +713,7 @@ fn downloads_cte(cond: &str) -> String {
       ), date(substr(ra.date, 1, 10), '-1 day')) THEN 0
     END)) AS delta
     FROM repos r
-    INNER JOIN repo_release_assets ra ON ra.repo_id = r.id
+    INNER JOIN repo_release_assets ra ON ra.repo_id = r.id AND ra.prerelease = FALSE
     WHERE r.hidden = FALSE AND {cond} AND ra.date >= :since
   )
   ");
@@ -729,6 +731,7 @@ fn downloads_totals_query(cond: &str, key: &str, order_by: &str) -> String {
   FROM repos r
   CROSS JOIN repo_release_assets c
     ON c.repo_id = r.id AND c.date = r.releases_synced_at AND c.current = TRUE
+      AND c.prerelease = FALSE
   LEFT JOIN (SELECT {key}, SUM(delta) AS period FROM deltas GROUP BY {key}) p ON p.{key} = c.{key}
   WHERE r.hidden = FALSE AND {cond}
   GROUP BY c.{key}
@@ -819,10 +822,12 @@ impl DbClient {
   }
 
   pub async fn get_repos(&self, filter: &RepoFilter) -> Res<Vec<RepoTotals>> {
-    let qs = format!(
-      "{} WHERE r.hidden = FALSE ORDER BY {} {}",
-      TOTAL_QUERY, filter.sort, filter.direction
-    );
+    let sort = match filter.sort {
+      RepoSort::Downloads => RepoSort::Views,
+      x => x,
+    };
+    let qs =
+      format!("{} WHERE r.hidden = FALSE ORDER BY {} {}", TOTAL_QUERY, sort, filter.direction);
     let db = self.db.lock().unwrap();
     let mut stmt = db.prepare(&qs)?;
     let items = stmt.query_map([], repo_totals_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1136,6 +1141,7 @@ impl DbClient {
     FROM repos r
     CROSS JOIN repo_release_assets c
       ON c.repo_id = r.id AND c.date = r.releases_synced_at AND c.current = TRUE
+      AND c.prerelease = FALSE
     LEFT JOIN (
       SELECT asset_id, SUM(delta) AS period FROM deltas GROUP BY asset_id
     ) p ON p.asset_id = c.asset_id
