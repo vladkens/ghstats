@@ -2,7 +2,7 @@ use std::sync::Arc;
 
 use axum::extract::{OriginalUri, Path, Query, State};
 use axum::http::HeaderMap;
-use maud::{Markup, PreEscaped, html, DOCTYPE};
+use maud::{DOCTYPE, Markup, PreEscaped, html};
 use thousands::Separable;
 use url::form_urlencoded::Serializer;
 
@@ -61,7 +61,6 @@ fn compact_number(value: i32) -> String {
 fn totals_card(title: &str, unique: i32, total: i32) -> Markup {
   let full_value = format!("{} / {}", unique.separate_with_commas(), total.separate_with_commas());
   html!(
-    (DOCTYPE)
     article class="flex-col" style="padding: 0.75rem;" {
       h6 class="mb-0" { (title) }
       h4 class="mb-0 grow flex-row items-center"
@@ -99,18 +98,8 @@ fn get_custom_links() -> Vec<(String, String)> {
 fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
   let (app_name, app_version) = (env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
-  let last_release: String;
-  let is_new_release: bool;
-  match state.last_release {
-    Some(ref lr) => {
-        last_release = lr.lock().unwrap().clone();
-        is_new_release = last_release != app_version;
-    },
-    _ => {
-        last_release = String::new();
-        is_new_release = false;
-    }
-  };
+  let last_release = state.last_release.lock().unwrap().clone();
+  let is_new_release = last_release != app_version;
 
   let title = match navs.len() {
     0 => app_name,
@@ -124,6 +113,7 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
   let favicon = format!("data:image/svg+xml,{}", favicon);
 
   html!(
+    (DOCTYPE)
     html {
       head {
         meta charset="utf-8";
@@ -515,4 +505,28 @@ pub async fn index(
   );
 
   Ok(base(&state, vec![], html))
+}
+
+#[cfg(test)]
+mod tests {
+  use std::time::{SystemTime, UNIX_EPOCH};
+
+  use super::*;
+  use crate::helpers::GhsFilter;
+
+  #[tokio::test]
+  async fn base_starts_with_doctype() {
+    let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let db_path = std::env::temp_dir()
+      .join(format!("ghstats-html-base-{}-{nanos}.db", std::process::id()))
+      .to_string_lossy()
+      .into_owned();
+
+    let db = DbClient::new(&db_path).await.unwrap();
+    let state = Arc::new(AppState::for_test(db, GhsFilter::new("")));
+    let page = base(&state, vec![], html!()).into_string();
+
+    assert!(page.starts_with("<!DOCTYPE html><html><head><meta charset=\"utf-8\">"));
+    assert_eq!(page.matches("<!DOCTYPE html>").count(), 1);
+  }
 }

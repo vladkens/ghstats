@@ -3,10 +3,6 @@ name = "ghstats"
 version = "0.10.0"
 edition = "2024"
 
-[features]
-default = ["version-check"]
-version-check = []
-
 [dependencies]
 anyhow = "1.0.104"
 axum = "0.8.9"
