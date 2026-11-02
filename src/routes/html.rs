@@ -18,6 +18,7 @@ use crate::db_client::{
 use crate::routes::assets::vendor_url;
 use crate::state::SyncStatus;
 use crate::types::{AppError, HtmlRes, Res};
+use crate::utils::is_newer_release;
 
 // MARK: Helpers
 
@@ -190,11 +191,18 @@ pub async fn sync_status(State(state): State<Arc<AppState>>) -> Markup {
   sync_label(&state.sync_status(), Utc::now())
 }
 
+fn version_url(version: &str) -> String {
+  match version.rsplit_once("-g") {
+    Some((_, hash)) => format!("https://github.com/vladkens/ghstats/commit/{hash}"),
+    None => "https://github.com/vladkens/ghstats".to_string(),
+  }
+}
+
 fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
   let (app_name, app_version) = (env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
   let last_release = state.last_release.lock().unwrap().clone();
-  let is_new_release = last_release != app_version;
+  let is_new_release = is_newer_release(&last_release, app_version);
 
   let title = match navs.len() {
     0 => app_name,
@@ -256,7 +264,7 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
 
               (sync_label(&state.sync_status(), Utc::now()))
 
-              a class="ver" href="https://github.com/vladkens/ghstats" target="_blank" {
+              a class="ver" href=(version_url(app_version)) target="_blank" {
                 (format!("{} v{}", app_name, app_version))
               }
             }
@@ -1680,6 +1688,15 @@ mod tests {
         repo_page(State(state.clone()), path, uri, headers).await
       }
     }
+  }
+
+  #[test]
+  fn version_link() {
+    assert_eq!(version_url("0.11.0"), "https://github.com/vladkens/ghstats");
+    assert_eq!(
+      version_url("0.11.0-3-gabc1234"),
+      "https://github.com/vladkens/ghstats/commit/abc1234"
+    );
   }
 
   #[tokio::test]

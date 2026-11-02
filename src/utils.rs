@@ -40,3 +40,36 @@ pub async fn shutdown_signal() {
       _ = terminate => {},
   }
 }
+
+// dev builds report `git describe` (0.11.0-3-g1a2b3c4), so only the release part is compared
+pub fn is_newer_release(latest: &str, running: &str) -> bool {
+  let parse = |x: &str| -> Option<Vec<u64>> {
+    x.split('-').next()?.split('.').map(|x| x.parse().ok()).collect()
+  };
+
+  match (parse(latest), parse(running)) {
+    (Some(latest), Some(running)) => latest > running,
+    _ => false,
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn newer_release() {
+    let cases = [
+      ("0.11.0", "0.11.0", false),
+      ("0.11.0", "0.11.0-3-gabc1234", false),
+      ("0.12.0", "0.11.0-3-gabc1234", true),
+      ("0.10.0", "0.11.0", false),
+      ("0.10.0", "0.9.9", true),
+      ("1.0.0", "0.11.0", true),
+    ];
+
+    for (latest, running, expected) in cases {
+      assert_eq!(is_newer_release(latest, running), expected, "{latest} vs {running}");
+    }
+  }
+}
