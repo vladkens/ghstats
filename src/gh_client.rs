@@ -298,7 +298,8 @@ impl GhClient {
   // https://docs.github.com/en/rest/releases/releases?apiVersion=2022-11-28#list-releases
   pub async fn get_releases(&self, repo: &str) -> Res<Vec<Release>> {
     let url = format!("{}/repos/{}/releases", self.base_url, repo);
-    let dat: Vec<Release> = self.with_pagination(self.client.get(url)).await?;
+    let req = self.client.get(url);
+    let dat: Vec<Release> = self.with_pagination(req).await?;
     Ok(dat.into_iter().filter(|x| !x.draft).collect())
   }
 
