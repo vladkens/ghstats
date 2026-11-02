@@ -125,6 +125,9 @@ fn backup_db(db: &Connection, version: i32) -> Res {
       .with_context(|| format!("failed to remove old backup {tmp_path}"))?;
   }
 
+  create_backup_file(db_path, &tmp_path)
+    .with_context(|| format!("failed to create backup file {tmp_path}"))?;
+
   db.execute("VACUUM INTO ?1", [&tmp_path])
     .with_context(|| format!("failed to back up database to {tmp_path}"))?;
   std::fs::rename(&tmp_path, &path)
@@ -132,6 +135,23 @@ fn backup_db(db: &Connection, version: i32) -> Res {
 
   tracing::info!("database backed up to {}", path);
   prune_backups(db_path, version);
+  Ok(())
+}
+
+// VACUUM INTO would create the file with default permissions, exposing a private (0600) db
+fn create_backup_file(db_path: &str, path: &str) -> Res {
+  let mut options = std::fs::OpenOptions::new();
+  options.write(true).create_new(true);
+
+  #[cfg(unix)]
+  {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+
+    let mode = std::fs::metadata(db_path)?.permissions().mode();
+    options.mode(mode & 0o777);
+  }
+
+  options.open(path)?;
   Ok(())
 }
 
@@ -1096,6 +1116,22 @@ mod tests {
     assert_eq!(version, 1);
     assert_eq!(repos, 1);
     assert_eq!(backups_of(&path), vec![format!("{}.v1.bak", file_name(&path))]);
+
+    Ok(())
+  }
+
+  #[cfg(unix)]
+  #[tokio::test]
+  async fn backup_keeps_db_permissions() -> Res {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = db_at_version("backup-perms", 1)?;
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600))?;
+
+    DbClient::new(&path).await?;
+
+    let mode = std::fs::metadata(backup_path(&path, 1))?.permissions().mode();
+    assert_eq!(mode & 0o777, 0o600);
 
     Ok(())
   }
