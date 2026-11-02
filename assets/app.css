@@ -212,6 +212,7 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; }
 }
 .toolbar .seg { margin-left: auto; }
 .idx td { vertical-align: middle; height: 3.5em; }
+.idx caption { caption-side: bottom; padding-top: 0.75em; font-size: 0.9em; text-align: left; }
 .data.idx th:first-child, .data.idx td:first-child { padding-left: 0; }
 .data.idx th:last-child, .data.idx td:last-child { padding-right: 0; }
 .per { display: inline-block; width: 0.8em; height: 0.8em; vertical-align: -0.05em; color: var(--muted); cursor: help; }

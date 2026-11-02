@@ -1,3 +1,4 @@
+use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
@@ -5,7 +6,7 @@ use axum::extract::Request;
 use chrono::DateTime;
 use reqwest::StatusCode;
 
-use crate::db_client::DbClient;
+use crate::db_client::{DbClient, RepoTotals};
 use crate::gh_client::{GhClient, PullRequest, Repo, StarsWeek};
 use crate::state::AppState;
 use crate::types::Res;
@@ -204,6 +205,63 @@ pub async fn sync_stars(db: &DbClient, gh: &GhClient, progress: impl Fn(usize, u
   Ok(())
 }
 
+#[derive(Debug, Clone, Copy)]
+enum Field {
+  Stars,
+  Forks,
+  Issues,
+  Prs,
+}
+
+#[derive(Debug)]
+pub struct Cond {
+  field: Field,
+  ords: &'static [Ordering],
+  value: i64,
+  negate: bool,
+}
+
+impl Cond {
+  fn parse(rule: &str) -> Option<Self> {
+    const OPS: [(&str, &[Ordering]); 5] = [
+      (">=", &[Ordering::Greater, Ordering::Equal]),
+      ("<=", &[Ordering::Less, Ordering::Equal]),
+      (">", &[Ordering::Greater]),
+      ("<", &[Ordering::Less]),
+      ("=", &[Ordering::Equal]),
+    ];
+
+    let (negate, rule) = match rule.strip_prefix('!') {
+      Some(x) => (true, x),
+      None => (false, rule),
+    };
+
+    let (field, rest) = rule.split_at(rule.find(['<', '>', '='])?);
+    let field = match field.trim() {
+      "stars" => Field::Stars,
+      "forks" => Field::Forks,
+      "issues" => Field::Issues,
+      "prs" => Field::Prs,
+      _ => return None,
+    };
+
+    let (ords, value) = OPS.iter().find_map(|(op, ords)| Some((*ords, rest.strip_prefix(op)?)))?;
+    let value = value.trim().parse().ok()?;
+    Some(Self { field, ords, value, negate })
+  }
+
+  fn holds(&self, x: &RepoTotals) -> bool {
+    let val = match self.field {
+      Field::Stars => x.stars,
+      Field::Forks => x.forks,
+      Field::Issues => x.issues,
+      Field::Prs => x.prs,
+    };
+
+    self.ords.contains(&(val as i64).cmp(&self.value)) != self.negate
+  }
+}
+
 #[derive(Debug)]
 pub struct GhsFilter {
   pub include_repos: Vec<String>,
@@ -211,15 +269,26 @@ pub struct GhsFilter {
   pub exclude_forks: bool,
   pub exclude_archs: bool,
   pub default_all: bool,
+  pub conds: Vec<Cond>,
 }
 
 impl GhsFilter {
   pub fn new(rules: &str) -> Self {
+    Self::parse(rules, false).0
+  }
+
+  pub fn show(rules: &str) -> (Self, Vec<String>) {
+    Self::parse(rules, true)
+  }
+
+  fn parse(rules: &str, with_conds: bool) -> (Self, Vec<String>) {
     let mut default_all = false;
     let mut exclude_forks = false;
     let mut exclude_archs = false;
     let mut include_repos: Vec<&str> = Vec::new();
     let mut exclude_repos: Vec<&str> = Vec::new();
+    let mut conds: Vec<Cond> = Vec::new();
+    let mut ignored: Vec<String> = Vec::new();
 
     let rules = rules.trim().to_lowercase();
     for rule in rules.split(",").map(|x| x.trim()) {
@@ -242,7 +311,13 @@ impl GhsFilter {
         continue;
       }
 
+      if with_conds && let Some(cond) = Cond::parse(rule) {
+        conds.push(cond);
+        continue;
+      }
+
       if rule.matches('/').count() != 1 {
+        ignored.push(rule.to_string());
         continue;
       }
 
@@ -258,16 +333,38 @@ impl GhsFilter {
       default_all = true;
     }
 
-    Self {
+    // conditions narrow `owner/*` rules when given, else all repos, so `stars>=25,foo/bar` adds one
+    if !conds.is_empty() && !include_repos.iter().any(|x| x.ends_with("/*")) {
+      default_all = true;
+    }
+
+    let filter = Self {
       include_repos: include_repos.into_iter().map(|x| x.to_string()).collect(),
       exclude_repos: exclude_repos.into_iter().map(|x| x.to_string()).collect(),
       exclude_forks,
       exclude_archs,
       default_all,
-    }
+      conds,
+    };
+
+    (filter, ignored)
   }
 
   pub fn is_included(&self, repo: &str, is_fork: bool, is_arch: bool) -> bool {
+    self.matches(repo, self.meta_out(is_fork, is_arch))
+  }
+
+  pub fn is_shown(&self, x: &RepoTotals) -> bool {
+    let failed = !self.conds.iter().all(|c| c.holds(x));
+    self.matches(&x.name, failed || self.meta_out(x.fork, x.archived))
+  }
+
+  fn meta_out(&self, is_fork: bool, is_arch: bool) -> bool {
+    (self.exclude_forks && is_fork) || (self.exclude_archs && is_arch)
+  }
+
+  // `meta_out`: a meta rule excludes the repo, so only an exact name can bring it back
+  fn matches(&self, repo: &str, meta_out: bool) -> bool {
     let repo = repo.trim().to_lowercase();
     if repo.is_empty()
       || repo.matches('/').count() != 1
@@ -283,8 +380,8 @@ impl GhsFilter {
           return flag;
         }
 
-        // skip wildcards for forks / archived
-        if (self.exclude_forks && is_fork) || (self.exclude_archs && is_arch) {
+        // skip wildcards for forks / archived / failed conditions
+        if meta_out {
           continue;
         }
 
@@ -297,11 +394,7 @@ impl GhsFilter {
       }
     }
 
-    if self.exclude_forks && is_fork {
-      return false;
-    }
-
-    if self.exclude_archs && is_arch {
+    if meta_out {
       return false;
     }
 
@@ -476,6 +569,62 @@ mod tests {
       assert!(r.is_included("foo/bar", false, false)); // wildcard included
       assert!(!r.is_included("foo/bar", true, false)); // forks excluded
       assert!(!r.is_included("abc/abc", false, false)); // not included by default
+    }
+  }
+
+  #[test]
+  fn show_rules() {
+    let (r, ignored) = GhsFilter::show("stars>=25, Stars > 1 ,stars==5,likes>1,foo,a/b,!fork");
+    assert_eq!(r.conds.len(), 2);
+    assert_eq!(ignored, vec!["stars==5", "likes>1", "foo"]);
+    assert!(GhsFilter::new("stars>=25").conds.is_empty(), "GHS_FILTER ignores conditions");
+
+    let repo = |name: &str, stars, fork| RepoTotals {
+      id: 1,
+      name: name.into(),
+      description: None,
+      fork,
+      archived: false,
+      date: DATE.into(),
+      stars,
+      forks: 3,
+      watchers: 0,
+      issues: 2,
+      prs: 1,
+      clones_count: 0,
+      clones_uniques: 0,
+      views_count: 0,
+      views_uniques: 0,
+    };
+
+    let cases = [
+      ("", "a/b", 0, false, true),
+      ("stars>=25", "a/b", 25, false, true),
+      ("stars>=25", "a/b", 24, false, false),
+      ("!stars<25", "a/b", 25, false, true),
+      ("!stars<25", "a/b", 24, false, false),
+      ("stars>10,stars<20", "a/b", 15, false, true),
+      ("stars>10,stars<20", "a/b", 20, false, false),
+      ("forks=3,issues<=2,prs>0", "a/b", 0, false, true),
+      ("!prs=1", "a/b", 0, false, false),
+      ("stars>=25,vladkens/wavo", "vladkens/wavo", 1, false, true), // explicit include wins
+      ("stars>=25,vladkens/wavo", "a/b", 30, false, true),
+      ("stars>=25,!a/b", "a/b", 30, false, false), // explicit exclude wins
+      ("stars>=25,!fork", "a/b", 30, true, false),
+      ("stars>=25,!fork", "a/c", 30, false, true),
+      ("stars>=25,!fork,a/b", "a/b", 1, true, true),
+      ("a/*,stars>=25", "a/b", 30, false, true), // wildcard scopes the conditions
+      ("a/*,stars>=25", "a/b", 1, false, false),
+      ("a/*,stars>=25", "c/d", 30, false, false),
+    ];
+
+    for (rules, name, stars, fork, want) in cases {
+      let r = GhsFilter::show(rules).0;
+      assert_eq!(
+        r.is_shown(&repo(name, stars, fork)),
+        want,
+        "{rules} {name} stars={stars} fork={fork}"
+      );
     }
   }
 

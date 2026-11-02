@@ -179,6 +179,17 @@ Filtering rules:
 - Meta-exclusion rules are: `!fork`, `!archived`
 - Wildcard rules do not work with meta-exclusion rules
 
+### Show repos
+
+`GHS_SHOW` hides repos from the home page list only: data is still collected, and repo pages, badges and the API are unchanged. It takes the `GHS_FILTER` rules plus conditions on the current counts: `stars`, `forks`, `issues` and `prs` with `>`, `>=`, `<`, `<=` or `=`. All conditions must hold (`!` negates one), an explicit `owner/repo` shows a repo anyway, and `owner/*` limits the conditions to that owner. The hidden repos can be shown with the link below the list.
+
+```sh
+GHS_SHOW=stars>=25 # show repos with at least 25 stars
+GHS_SHOW=stars>=25,vladkens/wavo # and always show `wavo`
+GHS_SHOW=stars>=25,!fork # repos with at least 25 stars, no forks
+GHS_SHOW=vladkens/*,!issues=0 # vladkens repos with open issues
+```
+
 ### API endpoint
 
 You have the ability to get collected data by `ghstats` via API. At the moment there is only one method available to get all repos list – if you need other data – open PR, please. `GHS_API_TOKEN` environment variable must be set for the API to work. All API calls if protected by `x-api-token` header, which should be same with `GHS_API_TOKEN` variable. CORS is enabled for all hosts, so you can access API from personal pages.

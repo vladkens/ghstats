@@ -5,7 +5,7 @@ use axum::extract::{OriginalUri, Path, Query, State};
 use axum::http::HeaderMap;
 use chrono::{DateTime, Datelike, Days, NaiveDate, Utc};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use thousands::Separable;
 use url::form_urlencoded::Serializer;
 
@@ -1423,7 +1423,13 @@ fn sort_index(rows: &mut [IndexRow], sort: &RepoSort, dir: &Direction) {
   });
 }
 
-fn index_url(qs: &RepoFilter, sort: &RepoSort, dir: &str, period: Period) -> String {
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct ShowQuery {
+  all: String,
+}
+
+fn index_url(qs: &RepoFilter, all: bool, sort: &RepoSort, dir: &str, period: Period) -> String {
   let mut query = Serializer::new(String::new());
   query.append_pair("sort", &sort.to_string());
   query.append_pair("direction", dir);
@@ -1436,6 +1442,10 @@ fn index_url(qs: &RepoFilter, sort: &RepoSort, dir: &str, period: Period) -> Str
     query.append_pair("owner", owner);
   }
 
+  if all {
+    query.append_pair("all", "1");
+  }
+
   format!("/?{}", query.finish())
 }
 
@@ -1446,8 +1456,14 @@ pub async fn index(
   headers: HeaderMap,
 ) -> HtmlRes {
   let qs: Query<RepoFilter> = Query::try_from_uri(&uri)?;
+  let all = Query::<ShowQuery>::try_from_uri(&uri)?.all == "1";
   let (p, today) = (qs.period, today());
-  let repos = state.get_repos_filtered(&qs).await?;
+  let mut repos = state.get_repos_filtered(&qs).await?;
+  let hidden = repos.iter().filter(|x| !state.show.is_shown(x)).count();
+  if !all {
+    repos.retain(|x| state.show.is_shown(x));
+  }
+
   let owners = state.get_owners().await?;
 
   let mut pers: HashMap<String, RepoPeriod> =
@@ -1479,7 +1495,7 @@ pub async fn index(
 
   let sort_url = |col: &RepoSort| {
     let dir = next_dir(sort == *col, &dir, *col == RepoSort::Name);
-    index_url(&qs, col, dir, p)
+    index_url(&qs, all, col, dir, p)
   };
 
   let head = |col: &IndexCol| {
@@ -1497,10 +1513,21 @@ pub async fn index(
     }
   };
 
-  let period_url = |x: Period| index_url(&qs, &qs.sort, &qs.direction.to_string(), x);
+  let period_url = |x: Period| index_url(&qs, all, &qs.sort, &qs.direction.to_string(), x);
+  let show_url = index_url(&qs, !all, &qs.sort, &qs.direction.to_string(), p);
+  let hidden_n = format!("{hidden} repo{}", if hidden == 1 { "" } else { "s" });
 
   let table_html = html!(
     table id="repos_table" class="data idx" {
+      @if hidden > 0 {
+        caption class="muted" {
+          @if all { "Showing " } (hidden_n) " hidden by GHS_SHOW · "
+          a href=(show_url) hx-get=(show_url) hx-target="#repos_table" hx-swap="outerHTML"
+            hx-push-url="true"
+          { @if all { "hide" } @else { "show" } }
+        }
+      }
+
       colgroup {
         @for col in &cols { col class=(col.class); }
       }
@@ -1539,6 +1566,7 @@ pub async fn index(
       input type="hidden" id="filter_sort" name="sort" value=(qs.sort) hx-swap-oob=[oob] {}
       input type="hidden" id="filter_direction" name="direction" value=(qs.direction) hx-swap-oob=[oob] {}
       input type="hidden" id="filter_period" name="period" value=(p) hx-swap-oob=[oob] {}
+      input type="hidden" id="filter_all" name="all" value="1" disabled[!all] hx-swap-oob=[oob] {}
     )
   };
 
@@ -1547,7 +1575,7 @@ pub async fn index(
     return Ok(html!((table_html)(filter_inputs(true))(nav)));
   }
 
-  let include = "#filter_sort, #filter_direction, #filter_period";
+  let include = "#filter_sort, #filter_direction, #filter_period, #filter_all";
   let html = html!(
     div class="toolbar" {
       (filter_inputs(false))
@@ -2068,6 +2096,36 @@ mod tests {
 
     let rp = db.get_periods(Some("o/r"), Period(30), today()).await.unwrap().remove(0);
     assert_eq!(rp.cmp_days, 30 - 11);
+  }
+
+  #[tokio::test]
+  async fn index_hides_repos_by_show_rules() {
+    let db = DbClient::new(&db_path("show")).await.unwrap();
+    let other = Repo { id: 2, full_name: "o/b".into(), ..test_repo(30) };
+    for repo in [test_repo(5), other] {
+      db.insert_repo(&repo).await.unwrap();
+      db.insert_stats(&repo, &format!("{}T00:00:00Z", ago(0)), &[]).await.unwrap();
+    }
+
+    let mut state = AppState::for_test(db, GhsFilter::new(""));
+    state.show = GhsFilter::show("stars>=25").0;
+    let state = Arc::new(state);
+
+    let page = get(&state, "/?period=7d", None).await.unwrap().into_string();
+    assert!(page.contains("href=\"/o/b\"") && !page.contains("href=\"/o/r\""));
+    let url = "/?sort=views_count&amp;direction=desc&amp;period=7d&amp;all=1";
+    assert!(page.contains(&format!("1 repo hidden by GHS_SHOW · <a href=\"{url}\"")));
+    assert!(page.contains("id=\"filter_all\" name=\"all\" value=\"1\" disabled"));
+
+    let frag = get(&state, "/?period=7d&all=1", Some("repos_table")).await.unwrap().into_string();
+    assert!(frag.contains("href=\"/o/b\"") && frag.contains("href=\"/o/r\""));
+    let url = "/?sort=views_count&amp;direction=desc&amp;period=7d\"";
+    assert!(frag.contains(&format!("Showing 1 repo hidden by GHS_SHOW · <a href=\"{url}")));
+    assert!(frag.contains("period=30d&amp;all=1"), "period links keep all");
+    assert!(frag.contains("name=\"all\" value=\"1\" hx-swap-oob"), "search sends all");
+
+    let frag = get(&state, "/?q=o/b", Some("repos_table")).await.unwrap().into_string();
+    assert!(!frag.contains("hidden by GHS_SHOW"), "nothing hidden among the matches");
   }
 
   #[tokio::test]

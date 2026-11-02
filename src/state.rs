@@ -62,6 +62,7 @@ pub struct AppState {
   pub db: DbClient,
   pub gh: GhClient,
   pub filter: GhsFilter,
+  pub show: GhsFilter,
   pub include_private: bool,
   pub version_check: bool,
   pub last_release: Mutex<String>,
@@ -97,6 +98,11 @@ impl AppState {
     let filter = GhsFilter::new(&filter);
     tracing::info!("{:?}", filter);
 
+    let (show, ignored) = GhsFilter::show(&std::env::var("GHS_SHOW").unwrap_or_default());
+    for rule in ignored {
+      tracing::warn!("GHS_SHOW: ignored invalid rule '{}'", rule);
+    }
+
     let include_private = env_bool("GHS_INCLUDE_PRIVATE");
     let version_check = !env_bool("GHS_DISABLE_VERSION_CHECK");
 
@@ -107,6 +113,7 @@ impl AppState {
       db,
       gh,
       filter,
+      show,
       include_private,
       version_check,
       last_release,
@@ -204,6 +211,7 @@ impl AppState {
       db,
       gh: GhClient::new("test-token".to_string()).unwrap(),
       filter,
+      show: GhsFilter::new(""),
       include_private: false,
       version_check: false,
       last_release: Mutex::new(env!("CARGO_PKG_VERSION").to_string()),
