@@ -1,0 +1,118 @@
+name: main
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A running main run is never cut off, but a newer push replaces a still-pending one; a release commit gets its own group, so it is never replaced; PR runs cancel each other.
+concurrency:
+  group: ${{ github.workflow }}-${{ startsWith(github.event.head_commit.message, 'release:') && github.sha || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - run: rustup toolchain install stable --profile minimal --component clippy
+      - uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'pull_request' }}
+      - run: rustup toolchain install nightly --profile minimal --component rustfmt
+      - run: make check
+      - run: make test
+
+  # No secrets, no write token. Runs on every PR: checks release PRs and builds the image without pushing it.
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      tag: ${{ steps.check.outputs.tag }}
+      notes: ${{ steps.check.outputs.notes }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: commit
+        uses: vladkens/actions/release-commit@v1
+      - id: check
+        if: steps.commit.outputs.release == 'true'
+        uses: vladkens/actions/release-check@v1
+        with:
+          releasers: ${{ github.repository_owner }}
+      - id: pr-check
+        if: "github.event_name == 'pull_request' && startsWith(github.event.pull_request.title, 'release: v')"
+        uses: vladkens/actions/release-check@v1
+
+      # A broken Dockerfile shows before the merge.
+      - if: github.event_name == 'pull_request'
+        uses: docker/setup-qemu-action@v4
+      - if: github.event_name == 'pull_request'
+        uses: docker/setup-buildx-action@v4
+      - if: github.event_name == 'pull_request'
+        uses: docker/build-push-action@v7
+        with:
+          push: false
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+
+  # Writes packages: pushes the image to ghcr.io.
+  docker:
+    if: github.ref == 'refs/heads/main'
+    needs: [test, build]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-qemu-action@v4
+      - uses: docker/setup-buildx-action@v4
+
+      - uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Collect Docker tags
+        id: docker-tags
+        env:
+          TAG: ${{ needs.build.outputs.tag }}
+        run: |
+          image="ghcr.io/${GITHUB_REPOSITORY}"
+          {
+            echo "tags<<EOF"
+            echo "${image}:main"
+            if [ -n "$TAG" ]; then
+              echo "${image}:${TAG}"
+              echo "${image}:latest"
+            fi
+
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - uses: docker/build-push-action@v7
+        with:
+          push: true
+          platforms: linux/amd64,linux/arm64
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          tags: ${{ steps.docker-tags.outputs.tags }}
+
+  # Writes contents: tags the release commit and creates its GitHub release.
+  release:
+    if: needs.build.outputs.tag != ''
+    needs: [build, docker]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: vladkens/actions/github-release@v1
+        with:
+          tag: ${{ needs.build.outputs.tag }}
+          notes: ${{ needs.build.outputs.notes }}
