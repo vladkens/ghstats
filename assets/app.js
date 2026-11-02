@@ -320,8 +320,10 @@
       pts.push({ x, y: s });
     }
 
+    // carry a fresh value to today; a stale one ends the line, the server sends the gap after it
     const today = parse(D.today);
-    if (pts.length && pts.at(-1).x < today) pts.push({ x: today, y: pts.at(-1).y });
+    const last = pts.at(-1);
+    if (last && last.x < today && today - last.x <= 3 * DAY) pts.push({ x: today, y: last.y });
     return { pts, gaps };
   };
 

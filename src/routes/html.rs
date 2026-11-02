@@ -311,18 +311,23 @@ fn outages(dat: &RepoDaily) -> Vec<(NaiveDate, NaiveDate)> {
 }
 
 /// Days without stars: traffic outages, plus runs of more than 3 days between real stars rows that
-/// end after daily collection runs; before that (the first traffic day + BACKFILL_DAYS) star
-/// history has rows only on days with new stars.
+/// end after daily collection runs; before that (tracking start + BACKFILL_DAYS) star history has
+/// rows only on days with new stars. Stars more than 3 days old leave a gap up to today.
 fn star_gaps(
-  first: Option<NaiveDate>,
+  tracking: Option<NaiveDate>,
   outages: &[(NaiveDate, NaiveDate)],
   stars: &[NaiveDate],
+  today: NaiveDate,
 ) -> Vec<(NaiveDate, NaiveDate)> {
   let mut all = outages.to_vec();
-  if let Some(first) = first {
-    let from = first + Days::new(BACKFILL_DAYS);
+  if let Some(start) = tracking {
+    let from = start + Days::new(BACKFILL_DAYS);
     let runs = stars.windows(2).filter(|x| x[1] > from && (x[1] - x[0]).num_days() > 3);
     all.extend(runs.map(|x| (x[0], x[1])));
+  }
+
+  if let Some(last) = stars.last().filter(|x| (today - **x).num_days() > 3) {
+    all.push((*last, today));
   }
 
   all.sort();
@@ -559,7 +564,8 @@ pub async fn repo_page(
   let has_clones = daily.days.iter().flatten().any(|x| x[0] > 0);
   let first = daily.start.as_deref().and_then(|x| x.parse::<NaiveDate>().ok());
   let star_days: Vec<NaiveDate> = stars.iter().filter_map(|x| x.0.parse().ok()).collect();
-  let gaps = star_gaps(first, &outages(&daily), &star_days);
+  let tracking = db.get_tracking_start(&repo).await?;
+  let gaps = star_gaps(tracking, &outages(&daily), &star_days, today);
 
   let mut tiles = vec![];
   if has_views {
@@ -1017,13 +1023,19 @@ mod tests {
     let stars =
       ["2025-12-01", "2026-01-10", "2026-01-14", "2026-01-15", "2026-01-17", "2026-01-21"];
     let stars = stars.map(day);
-    assert_eq!(star_gaps(first, &[], &stars), vec![(day("2026-01-17"), day("2026-01-21"))]);
-    assert!(star_gaps(None, &[], &stars).is_empty());
+    let today = day("2026-01-23");
+    assert_eq!(star_gaps(first, &[], &stars, today), vec![(day("2026-01-17"), day("2026-01-21"))]);
+    assert!(star_gaps(None, &[], &stars, today).is_empty());
+
+    // stale stars: the line ends at the last real row and the gap runs to today
+    let gaps = star_gaps(None, &[], &stars, day("2026-02-10"));
+    assert_eq!(gaps, vec![(day("2026-01-21"), day("2026-02-10"))]);
 
     // rows stop after Apr 1 and resume May 17 with backfilled traffic but no stars until Jun 1
     let stars = ["2026-03-31", "2026-04-01", "2026-06-01", "2026-06-02"].map(day);
     let outage = [(day("2026-04-01"), day("2026-05-17"))];
-    assert_eq!(star_gaps(first, &outage, &stars), vec![(day("2026-04-01"), day("2026-06-01"))]);
+    let gaps = star_gaps(first, &outage, &stars, day("2026-06-02"));
+    assert_eq!(gaps, vec![(day("2026-04-01"), day("2026-06-01"))]);
   }
 
   #[test]
@@ -1255,7 +1267,7 @@ mod tests {
     let rows = db.get_star_rows("o/r").await.unwrap();
     let stars: Vec<NaiveDate> = rows.iter().map(|x| x.date[..10].parse().unwrap()).collect();
     assert_eq!(outages(&dat), vec![(day("2026-04-01"), day("2026-05-17"))]);
-    let gaps = star_gaps(dat.start.as_deref().map(day), &outages(&dat), &stars);
+    let gaps = star_gaps(dat.start.as_deref().map(day), &outages(&dat), &stars, day("2026-06-02"));
     assert_eq!(gaps, vec![(day("2026-04-01"), day("2026-06-01"))]);
     assert_eq!(rows.len(), 34);
 
@@ -1297,10 +1309,64 @@ mod tests {
 
     let rows = db.get_star_rows("o/r").await.unwrap();
     let stars: Vec<NaiveDate> = rows.iter().map(|x| x.date[..10].parse().unwrap()).collect();
-    assert!(star_gaps(Some(ago(40)), &outages(&dat), &stars).is_empty());
+    assert!(star_gaps(Some(ago(40)), &outages(&dat), &stars, today).is_empty());
 
     // compared ago 31..2: 6 backfill days + 24 rows; previous ago 61..32: the 9 backfill days
     let rp = db.get_periods(Some("o/r"), Period(30), today).await.unwrap().remove(0);
     assert_eq!((rp.cmp_days, rp.prev_days), (30, 9));
+  }
+
+  #[tokio::test]
+  async fn backfill_ends_at_the_last_row() {
+    let db = DbClient::new(&db_path("dead")).await.unwrap();
+    let today = today();
+    let ago = |x: u64| today - Days::new(x);
+    db.insert_repo(&test_repo(5)).await.unwrap();
+
+    // one sync 10 days ago (its backfill has traffic on 3 days), nothing collected since
+    db.insert_views(&test_repo(5), &views(&[(ago(20), 10), (ago(15), 10), (ago(10), 10)]))
+      .await
+      .unwrap();
+
+    let dat = db.get_daily("o/r", today).await.unwrap();
+    assert!(dat.days[..11].iter().all(|x| x.is_some()));
+    assert!(dat.days[11..].iter().all(|x| x.is_none()), "no zeros invented after the last row");
+    assert!(outages(&dat).is_empty());
+
+    // compared ago 8..2: nothing collected; previous ago 15..9: the backfill up to ago 10
+    let rp = db.get_periods(Some("o/r"), Period(7), today).await.unwrap().remove(0);
+    assert_eq!((rp.cmp_days, rp.prev_days), (0, 6));
+    let days = rp.cmp_days.min(rp.prev_days);
+    assert!(Change::new(rp.cmp_views, rp.prev_views, days, Period(7), today).is_none());
+  }
+
+  #[tokio::test]
+  async fn tracking_starts_without_traffic_at_first_sync() {
+    let db = DbClient::new(&db_path("notraffic")).await.unwrap();
+    let today = today();
+    let ago = |x: u64| today - Days::new(x);
+    let other =
+      |stars| crate::gh_client::Repo { id: 2, full_name: "o/b".into(), ..test_repo(stars) };
+
+    // ghstats has seen traffic since 100 days ago, on another repo
+    db.insert_repo(&test_repo(1)).await.unwrap();
+    db.insert_views(&test_repo(1), &views(&[(ago(100), 10)])).await.unwrap();
+
+    // no traffic ever: sparse stargazer history, then daily stats with a 10-day hole
+    db.insert_repo(&other(3)).await.unwrap();
+    let history =
+      [("2017-05-01T00:00:00Z".to_string(), 1, 1), ("2018-03-01T00:00:00Z".to_string(), 2, 1)];
+    db.insert_stars(2, &history).await.unwrap();
+    for x in (0..=100).filter(|x| !(31..=40).contains(x)) {
+      db.insert_stats(&other(3), &format!("{}T00:00:00Z", ago(x)), &[]).await.unwrap();
+    }
+
+    let tracking = db.get_tracking_start("o/b").await.unwrap();
+    assert_eq!(tracking, Some(ago(100)));
+    assert_eq!(db.get_tracking_start("o/r").await.unwrap(), Some(ago(100)));
+
+    let rows = db.get_star_rows("o/b").await.unwrap();
+    let stars: Vec<NaiveDate> = rows.iter().map(|x| x.date[..10].parse().unwrap()).collect();
+    assert_eq!(star_gaps(tracking, &[], &stars, today), vec![(ago(41), ago(30))]);
   }
 }

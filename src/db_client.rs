@@ -190,7 +190,7 @@ impl RepoPeriod {
 }
 
 /// Daily traffic from the first day with traffic to `today`; `None` is a day without a row, except
-/// in the first `BACKFILL_DAYS`, where a missing row is a day without traffic.
+/// in the first `BACKFILL_DAYS` up to the last row, where a missing row is a day without traffic.
 #[derive(Clone, Debug, Default, Serialize)]
 pub struct RepoDaily {
   pub start: Option<String>,
@@ -579,6 +579,29 @@ impl DbClient {
 
   /// Rows with a real stars value; unlike `get_stars`, days left at zero (such as GitHub's traffic
   /// backfill after an outage) are skipped instead of forward-filled.
+  /// When daily rows start: the first traffic day; without traffic, the repo's first row but not
+  /// before ghstats saw any traffic, as earlier rows are stargazer history (days with new stars).
+  pub async fn get_tracking_start(&self, repo: &str) -> Res<Option<NaiveDate>> {
+    let qs = "
+    SELECT COALESCE(
+      (
+        SELECT MIN(substr(x.date, 1, 10)) FROM repo_stats x
+        WHERE x.repo_id = r.id AND (x.clones_count > 0 OR x.views_count > 0)
+      ),
+      MAX(
+        (SELECT MIN(substr(x.date, 1, 10)) FROM repo_stats x WHERE x.repo_id = r.id),
+        (SELECT MIN(substr(x.date, 1, 10)) FROM repo_stats x WHERE x.clones_count > 0 OR x.views_count > 0)
+      )
+    ) FROM repos r
+    WHERE r.hidden = FALSE AND r.name = $1;
+    ";
+
+    let db = self.db.lock().unwrap();
+    let day: Option<String> =
+      db.query_row(qs, params![repo], |row| row.get(0)).optional()?.flatten();
+    Ok(day.and_then(|x| x.parse().ok()))
+  }
+
   pub async fn get_star_rows(&self, repo: &str) -> Res<Vec<RepoStars>> {
     let qs = "
     SELECT date, stars FROM repo_stats rs
@@ -607,14 +630,17 @@ impl DbClient {
     };
 
     // $1 start, $2 cmp_start, $3 cmp_end (exclusive), $4 prev_start; stars from non-zero rows only;
-    // collected days: every day of the backfill [first, full), then days with a row
+    // collected days: every day of the backfill [first, full) (cut at the last row), then days with
+    // a row
     let qs = "
     WITH ft AS (
-      SELECT repo_id, MIN(substr(date, 1, 10)) AS first,
-        date(MIN(substr(date, 1, 10)), '+15 day') AS full
-      FROM repo_stats
-      WHERE clones_count > 0 OR views_count > 0
-      GROUP BY repo_id
+      SELECT repo_id, first, MIN(date(first, '+15 day'), date(last, '+1 day')) AS full
+      FROM (
+        SELECT repo_id, MAX(substr(date, 1, 10)) AS last,
+          MIN(IIF(clones_count > 0 OR views_count > 0, substr(date, 1, 10), NULL)) AS first
+        FROM repo_stats
+        GROUP BY repo_id
+      )
     )
     SELECT
       r.name,
@@ -683,9 +709,13 @@ impl DbClient {
       return Ok(RepoDaily::default());
     };
 
+    // the backfill ends early when nothing was collected after it
+    let last = rows.last().and_then(|x| x.0.parse::<NaiveDate>().ok()).unwrap_or(start);
+    let backfill = ((last - start).num_days() + 1).min(BACKFILL_DAYS as i64) as usize;
+
     let len = (today - start).num_days().max(0) as usize + 1;
     let mut days = vec![None; len];
-    for x in days.iter_mut().take(BACKFILL_DAYS as usize) {
+    for x in days.iter_mut().take(backfill) {
       *x = Some([0; 4]);
     }
 
@@ -1289,8 +1319,8 @@ mod tests {
     assert_eq!(dat.start.as_deref(), Some("2024-01-10"));
     assert_eq!(
       dat.days.iter().map(|x| x.map(|v| v[2])).collect::<Vec<_>>(),
-      vec![Some(20), Some(30), Some(0), Some(40), Some(0), Some(5), Some(0)],
-      "missing days in the backfill are days without traffic"
+      vec![Some(20), Some(30), Some(0), Some(40), Some(0), Some(5), None],
+      "missing days in the backfill are days without traffic, up to the last row"
     );
 
     // 3d: shown 14..16; compared 12..14 vs 9..11 (9 is before traffic starts); all in the backfill
