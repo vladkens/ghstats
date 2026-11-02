@@ -414,11 +414,13 @@ fn repo_downloads_from_row(row: &Row<'_>) -> rusqlite::Result<RepoDownloads> {
 }
 
 /// Release asset snapshots since `:since` of visible repos matching `cond`, with `delta` against
-/// the asset's previous snapshot: a gap goes to the later date and a decrease is clamped to 0. A
-/// first snapshot counts in full when the asset became downloadable (the later of its `created_at`
-/// and the release's `published_at`) that day or the day before, so first-day downloads, drafts
-/// published later and re-uploads into an old release count; otherwise the asset predates tracking
-/// and is only the baseline (NULL)
+/// the asset's previous snapshot: a gap goes to the later date and a decrease is clamped to 0.
+///
+/// An asset's first snapshot counts in full when the asset became downloadable (the later of its
+/// `created_at` and the release's `published_at`) on or after the repo's previous snapshot date: it
+/// appeared after that day's last fetch, also across a sync outage. On the repo's first snapshot
+/// the bar is the day before instead, so first-day downloads count but older assets are only the
+/// baseline (NULL), as is an asset public before the previous snapshot yet missing from it.
 fn downloads_cte(cond: &str) -> String {
   #[rustfmt::skip]
   let qs = format!("
@@ -431,7 +433,10 @@ fn downloads_cte(cond: &str) -> String {
       -- multi-argument MAX is NULL when any argument is, so each side falls back to the other
       WHEN substr(MAX(
         COALESCE(ra.created_at, ra.published_at), COALESCE(ra.published_at, ra.created_at)
-      ), 1, 10) >= date(substr(ra.date, 1, 10), '-1 day') THEN 0
+      ), 1, 10) >= COALESCE((
+        SELECT substr(MAX(q.date), 1, 10) FROM repo_release_assets q
+        WHERE q.repo_id = ra.repo_id AND q.date < ra.date
+      ), date(substr(ra.date, 1, 10), '-1 day')) THEN 0
     END)) AS delta
     FROM repos r
     INNER JOIN repo_release_assets ra ON ra.repo_id = r.id
@@ -1287,6 +1292,36 @@ mod tests {
     let daily = db.get_downloads_daily("owner/repo").await?;
     let daily = daily.iter().map(|x| (x.date.clone(), x.downloads)).collect::<Vec<_>>();
     assert_eq!(daily, vec![(days_ago(3), 9)]);
+
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn assets_published_during_a_sync_gap_count_in_full() -> Res {
+    let db = test_db("downloads-gap").await?;
+    let repo = sample_repo(1, "owner/repo");
+    db.insert_repo(&repo).await?;
+
+    // tracked on day 10, no syncs on days 9..7, next snapshot on day 6
+    let at = |n, time: &str| days_ago(n).replace("00:00:00", time);
+    let old = "2024-01-01T00:00:00Z";
+    db.insert_release_assets(&repo, &days_ago(10), &[release(1, "v1.0", old, &[(10, "a", 100)])])
+      .await?;
+
+    let rels = [
+      release(1, "v1.0", old, &[(10, "a", 110)]),
+      // published during the outage: counts in full
+      release(2, "v1.1", &at(9, "12:00:00"), &[(20, "b", 20)]),
+      // public on the previous snapshot's day but missing from it, so it came after that fetch
+      created(release(3, "late", old, &[(30, "c", 4)]), &at(10, "20:00:00")),
+      // public before the previous snapshot yet missing from it: unknown history, baseline only
+      created(release(4, "odd", old, &[(40, "d", 5)]), &at(12, "08:00:00")),
+    ];
+    db.insert_release_assets(&repo, &days_ago(6), &rels).await?;
+
+    let daily = db.get_downloads_daily("owner/repo").await?;
+    let daily = daily.iter().map(|x| (x.date.clone(), x.downloads)).collect::<Vec<_>>();
+    assert_eq!(daily, vec![(days_ago(6), 34)]);
 
     Ok(())
   }
