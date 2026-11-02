@@ -564,8 +564,7 @@ pub async fn repo_page(
   let has_clones = daily.days.iter().flatten().any(|x| x[0] > 0);
   let first = daily.start.as_deref().and_then(|x| x.parse::<NaiveDate>().ok());
   let star_days: Vec<NaiveDate> = stars.iter().filter_map(|x| x.0.parse().ok()).collect();
-  let tracking = db.get_tracking_start(&repo).await?;
-  let gaps = star_gaps(tracking, &outages(&daily), &star_days, today);
+  let gaps = star_gaps(first, &outages(&daily), &star_days, today);
 
   let mut tiles = vec![];
   if has_views {
@@ -1341,32 +1340,63 @@ mod tests {
   }
 
   #[tokio::test]
-  async fn tracking_starts_without_traffic_at_first_sync() {
+  async fn without_traffic_only_stale_stars_leave_a_gap() {
     let db = DbClient::new(&db_path("notraffic")).await.unwrap();
     let today = today();
     let ago = |x: u64| today - Days::new(x);
-    let other =
-      |stars| crate::gh_client::Repo { id: 2, full_name: "o/b".into(), ..test_repo(stars) };
-
-    // ghstats has seen traffic since 100 days ago, on another repo
-    db.insert_repo(&test_repo(1)).await.unwrap();
-    db.insert_views(&test_repo(1), &views(&[(ago(100), 10)])).await.unwrap();
+    db.insert_repo(&test_repo(3)).await.unwrap();
 
     // no traffic ever: sparse stargazer history, then daily stats with a 10-day hole
-    db.insert_repo(&other(3)).await.unwrap();
     let history =
       [("2017-05-01T00:00:00Z".to_string(), 1, 1), ("2018-03-01T00:00:00Z".to_string(), 2, 1)];
-    db.insert_stars(2, &history).await.unwrap();
+    db.insert_stars(1, &history).await.unwrap();
     for x in (0..=100).filter(|x| !(31..=40).contains(x)) {
-      db.insert_stats(&other(3), &format!("{}T00:00:00Z", ago(x)), &[]).await.unwrap();
+      db.insert_stats(&test_repo(3), &format!("{}T00:00:00Z", ago(x)), &[]).await.unwrap();
     }
 
-    let tracking = db.get_tracking_start("o/b").await.unwrap();
-    assert_eq!(tracking, Some(ago(100)));
-    assert_eq!(db.get_tracking_start("o/r").await.unwrap(), Some(ago(100)));
-
-    let rows = db.get_star_rows("o/b").await.unwrap();
+    let dat = db.get_daily("o/r", today).await.unwrap();
+    assert!(dat.start.is_none());
+    let rows = db.get_star_rows("o/r").await.unwrap();
     let stars: Vec<NaiveDate> = rows.iter().map(|x| x.date[..10].parse().unwrap()).collect();
-    assert_eq!(star_gaps(tracking, &[], &stars, today), vec![(ago(41), ago(30))]);
+    assert!(star_gaps(None, &outages(&dat), &stars, today).is_empty(), "no tracking start known");
+    assert_eq!(
+      star_gaps(None, &[], &stars, today + Days::new(5)),
+      vec![(today, today + Days::new(5))]
+    );
+  }
+
+  #[tokio::test]
+  async fn current_stars_come_from_the_latest_row() {
+    let db = DbClient::new(&db_path("zero")).await.unwrap();
+    let today = today();
+    let ago = |x: u64| today - Days::new(x);
+    db.insert_repo(&test_repo(20)).await.unwrap();
+    db.insert_stats(&test_repo(20), &format!("{}T00:00:00Z", ago(10)), &[]).await.unwrap();
+    db.insert_stats(&test_repo(0), &format!("{today}T00:00:00Z"), &[]).await.unwrap();
+
+    let rp = db.get_periods(Some("o/r"), Period(7), today).await.unwrap().remove(0);
+    assert_eq!((rp.stars, rp.stars_start, rp.stars_gain()), (0, 20, -20));
+
+    let state = Arc::new(AppState::for_test(db, GhsFilter::new("")));
+    let uri = "/o/r?period=7d".parse().unwrap();
+    let page = repo_page(
+      State(state.clone()),
+      Path(("o".into(), "r".into())),
+      OriginalUri(uri),
+      HeaderMap::new(),
+    )
+    .await
+    .unwrap()
+    .into_string();
+    assert!(page.contains("<h2>Stars</h2><div class=\"value\">0</div>"));
+    assert!(page.contains("−20 in 7d"));
+
+    let mut headers = HeaderMap::new();
+    headers.insert("hx-target", "repos_table".parse().unwrap());
+    let uri = "/?period=7d".parse().unwrap();
+    let frag = index(State(state), OriginalUri(uri), headers).await.unwrap().into_string();
+    assert!(frag.contains(
+      "<td class=\"c-stars\"><span class=\"v\">0</span><small class=\"muted\">−20</small></td>"
+    ));
   }
 }

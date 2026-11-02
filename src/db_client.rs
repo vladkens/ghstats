@@ -178,7 +178,8 @@ pub struct RepoPeriod {
   /// backfill, then days with a row
   pub cmp_days: i64,
   pub prev_days: i64,
-  /// latest stars and stars before the period, from real (non-zero) rows only
+  /// stars of the latest row (as the repos list shows them) and the last real (non-zero) value
+  /// before the period
   pub stars: i64,
   pub stars_start: i64,
 }
@@ -579,29 +580,6 @@ impl DbClient {
 
   /// Rows with a real stars value; unlike `get_stars`, days left at zero (such as GitHub's traffic
   /// backfill after an outage) are skipped instead of forward-filled.
-  /// When daily rows start: the first traffic day; without traffic, the repo's first row but not
-  /// before ghstats saw any traffic, as earlier rows are stargazer history (days with new stars).
-  pub async fn get_tracking_start(&self, repo: &str) -> Res<Option<NaiveDate>> {
-    let qs = "
-    SELECT COALESCE(
-      (
-        SELECT MIN(substr(x.date, 1, 10)) FROM repo_stats x
-        WHERE x.repo_id = r.id AND (x.clones_count > 0 OR x.views_count > 0)
-      ),
-      MAX(
-        (SELECT MIN(substr(x.date, 1, 10)) FROM repo_stats x WHERE x.repo_id = r.id),
-        (SELECT MIN(substr(x.date, 1, 10)) FROM repo_stats x WHERE x.clones_count > 0 OR x.views_count > 0)
-      )
-    ) FROM repos r
-    WHERE r.hidden = FALSE AND r.name = $1;
-    ";
-
-    let db = self.db.lock().unwrap();
-    let day: Option<String> =
-      db.query_row(qs, params![repo], |row| row.get(0)).optional()?.flatten();
-    Ok(day.and_then(|x| x.parse().ok()))
-  }
-
   pub async fn get_star_rows(&self, repo: &str) -> Res<Vec<RepoStars>> {
     let qs = "
     SELECT date, stars FROM repo_stats rs
@@ -629,7 +607,8 @@ impl DbClient {
       None => ["0000"; 4].map(String::from),
     };
 
-    // $1 start, $2 cmp_start, $3 cmp_end (exclusive), $4 prev_start; stars from non-zero rows only;
+    // $1 start, $2 cmp_start, $3 cmp_end (exclusive), $4 prev_start; current stars from the latest
+    // row like TOTAL_QUERY, stars before the period from non-zero rows only;
     // collected days: every day of the backfill [first, full) (cut at the last row), then days with
     // a row
     let qs = "
@@ -659,7 +638,7 @@ impl DbClient {
         MIN(julianday($2), julianday(ft.full)) - MAX(julianday($4), julianday(ft.first))
       ), 0) AS INTEGER) AS prev_days,
       COALESCE((
-        SELECT x.stars FROM repo_stats x WHERE x.repo_id = r.id AND x.stars > 0
+        SELECT x.stars FROM repo_stats x WHERE x.repo_id = r.id
         ORDER BY x.date DESC LIMIT 1
       ), 0) AS stars,
       COALESCE((
@@ -1313,6 +1292,8 @@ mod tests {
     )
     .await?;
     db.insert_stars(1, &[("2024-01-14T00:00:00Z".to_string(), 8, 5)]).await?;
+    let synced = Repo { stargazers_count: 8, ..sample_repo(1, "owner/repo") };
+    db.insert_stats(&synced, "2024-01-15T00:00:00Z", &[]).await?;
 
     let today = NaiveDate::from_ymd_opt(2024, 1, 16).unwrap();
     let dat = db.get_daily("owner/repo", today).await?;
@@ -1333,10 +1314,8 @@ mod tests {
     let stars = db.get_star_rows("owner/repo").await?;
     assert_eq!(
       stars.iter().map(|x| (&x.date[..10], x.stars)).collect::<Vec<_>>(),
-      vec![("2024-01-01", 3), ("2024-01-14", 8)]
+      vec![("2024-01-01", 3), ("2024-01-14", 8), ("2024-01-15", 8)]
     );
-    let filled = db.get_stars("owner/repo").await?;
-    assert!(filled.iter().any(|x| x.date.starts_with("2024-01-15") && x.stars == 8));
 
     let all = db.get_periods(None, Period(-1), today).await?;
     assert_eq!(all.len(), 1);
