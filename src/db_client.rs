@@ -211,9 +211,12 @@ fn migrate(db: &Connection) -> Res {
     let mig_ver = idx as i32 + 1;
     if version < mig_ver {
       tracing::info!("running migration to v{}", mig_ver);
-      func(db)?;
-      let qs = format!("PRAGMA user_version = {}", mig_ver);
-      db.execute_batch(&qs)?;
+
+      // ALTER TABLE isn't idempotent: a half-applied migration would fail on every restart
+      let tx = db.unchecked_transaction()?;
+      func(&tx).with_context(|| format!("migration to v{mig_ver} failed"))?;
+      tx.execute_batch(&format!("PRAGMA user_version = {mig_ver}"))?;
+      tx.commit()?;
     }
   }
 
@@ -1116,6 +1119,33 @@ mod tests {
     assert_eq!(version, 1);
     assert_eq!(repos, 1);
     assert_eq!(backups_of(&path), vec![format!("{}.v1.bak", file_name(&path))]);
+
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn failed_migration_leaves_no_partial_changes() -> Res {
+    let path = db_at_version("migration-failed", 1)?;
+    let conn = Connection::open(&path)?;
+    // migrate_v2 adds hidden last, so stars_synced and fork are added before it fails
+    conn.execute("ALTER TABLE repos ADD COLUMN hidden BOOLEAN DEFAULT FALSE", [])?;
+
+    assert!(DbClient::new(&path).await.is_err());
+
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let columns: i32 = conn.query_row(
+      "SELECT COUNT(*) FROM pragma_table_info('repos') WHERE name IN ('stars_synced', 'fork')",
+      [],
+      |row| row.get(0),
+    )?;
+    assert_eq!(version, 1);
+    assert_eq!(columns, 0);
+
+    conn.execute("ALTER TABLE repos DROP COLUMN hidden", [])?;
+    DbClient::new(&path).await?;
+
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    assert_eq!(version, 3);
 
     Ok(())
   }

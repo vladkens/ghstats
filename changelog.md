@@ -6,6 +6,7 @@
 - Added `GHS_DISABLE_VERSION_CHECK` to turn off the check for new ghstats releases (#30, by @utoni)
 - Star history is backfilled from GitHub's star history API, which works for repositories you don't administer and needs far fewer requests (#27)
 - The database is backed up next to itself before schema migrations (keeps the last 3)
+- Schema migrations run in a transaction, so a failed upgrade leaves the database unchanged
 
 ### Fixes
 
