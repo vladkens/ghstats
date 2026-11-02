@@ -1,4 +1,5 @@
 mod api;
+pub(crate) mod assets;
 mod badge;
 mod html;
 
@@ -42,6 +43,10 @@ pub fn badge_routes() -> Router<Arc<AppState>> {
   Router::new()
     .route("/badge/{metric}", get(badge::total_badge))
     .route("/badge/{owner}/{repo}/{metric}", get(badge::repo_badge))
+}
+
+pub fn asset_routes() -> Router<Arc<AppState>> {
+  Router::new().route("/assets/vendor/{file}", get(assets::vendor_file))
 }
 
 pub fn html_routes() -> Router<Arc<AppState>> {
