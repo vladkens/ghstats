@@ -78,6 +78,23 @@ pub struct StarsWeek {
   pub days: Vec<u32>,
 }
 
+#[derive(Debug, Deserialize, Serialize)]
+pub struct ReleaseAsset {
+  pub id: u64,
+  pub name: String,
+  pub download_count: u64,
+  pub created_at: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Serialize)]
+pub struct Release {
+  pub id: u64,
+  pub tag_name: String,
+  pub draft: bool,
+  pub published_at: Option<String>,
+  pub assets: Vec<ReleaseAsset>,
+}
+
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum Page<T> {
@@ -276,6 +293,13 @@ impl GhClient {
     let ver = dat["tag_name"].as_str().unwrap().to_string();
     let ver = ver.trim_start_matches("v").to_string();
     Ok(ver)
+  }
+
+  // https://docs.github.com/en/rest/releases/releases?apiVersion=2022-11-28#list-releases
+  pub async fn get_releases(&self, repo: &str) -> Res<Vec<Release>> {
+    let url = format!("{}/repos/{}/releases", self.base_url, repo);
+    let dat: Vec<Release> = self.with_pagination(self.client.get(url)).await?;
+    Ok(dat.into_iter().filter(|x| !x.draft).collect())
   }
 
   /// Weeks from the current one back to the repo creation, plus the number of requests made
