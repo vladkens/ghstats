@@ -12,7 +12,7 @@ use crate::types::Res;
 
 // MARK: Types
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Debug, Default, Deserialize, Serialize)]
 pub struct Repo {
   pub id: u64,
   pub full_name: String,
@@ -26,6 +26,23 @@ pub struct Repo {
   // Undocumented; owners can disable pull requests and then /pulls returns 404
   #[serde(default)]
   pub has_pull_requests: Option<bool>,
+  #[serde(default)]
+  pub language: Option<String>,
+  #[serde(default)]
+  pub license: Option<License>,
+  #[serde(default)]
+  pub topics: Vec<String>,
+  #[serde(default)]
+  pub created_at: Option<String>,
+  #[serde(default)]
+  pub pushed_at: Option<String>,
+  #[serde(default)]
+  pub homepage: Option<String>,
+}
+
+#[derive(Debug, Default, Deserialize, Serialize)]
+pub struct License {
+  pub spdx_id: Option<String>,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -91,6 +108,8 @@ pub struct Release {
   pub id: u64,
   pub tag_name: String,
   pub draft: bool,
+  #[serde(default)]
+  pub prerelease: bool,
   pub published_at: Option<String>,
   pub assets: Vec<ReleaseAsset>,
 }

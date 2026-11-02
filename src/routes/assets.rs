@@ -5,7 +5,6 @@ use axum::response::{IntoResponse, Response};
 // Third-party frontend libs, embedded into the binary so pages don't depend on a CDN.
 // Downloaded with `make vendor`; links carry `?v=<app version>` to bust the cache on upgrade.
 const VENDOR: &[(&str, &str, &[u8])] = &[
-  ("pico.min.css", "text/css", include_bytes!("../../assets/vendor/pico.min.css")),
   ("chart.umd.js", "text/javascript", include_bytes!("../../assets/vendor/chart.umd.js")),
   ("luxon.min.js", "text/javascript", include_bytes!("../../assets/vendor/luxon.min.js")),
   (

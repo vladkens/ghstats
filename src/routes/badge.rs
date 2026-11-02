@@ -474,6 +474,7 @@ mod tests {
       fork: false,
       archived: false,
       has_pull_requests: None,
+      ..Default::default()
     }
   }
 

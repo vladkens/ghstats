@@ -26,6 +26,30 @@ pub struct DbHealth {
 pub struct SyncStatus {
   pub last_success: Option<DateTime<Utc>>,
   pub last_error: Option<String>,
+  pub running: bool,
+  pub started: Option<DateTime<Utc>>,
+  pub phase: &'static str,
+  pub phase_started: Option<DateTime<Utc>>,
+  pub done: usize,
+  pub total: usize,
+  /// items of the whole job (planned, grows if a phase is bigger), done in finished phases
+  pub job_total: usize,
+  pub job_done: usize,
+  pub pct: usize,
+}
+
+impl SyncStatus {
+  /// The job's percent never goes back when a phase turns out bigger than planned
+  pub fn advance(&mut self, phase: &'static str, done: usize, total: usize) {
+    if self.phase != phase {
+      self.job_done += self.total;
+      self.phase_started = Some(Utc::now());
+    }
+
+    (self.phase, self.done, self.total) = (phase, done, total);
+    self.job_total = self.job_total.max(self.job_done + total).max(1);
+    self.pct = self.pct.max(((self.job_done + done) * 100 / self.job_total).min(99));
+  }
 }
 
 impl DbHealth {
@@ -108,13 +132,35 @@ impl AppState {
     self.sync_status.lock().unwrap().clone()
   }
 
+  pub fn record_sync_start(&self) {
+    let mut status = self.sync_status.lock().unwrap();
+    let (last_success, last_error) = (status.last_success, status.last_error.take());
+    *status = SyncStatus {
+      running: true,
+      started: Some(Utc::now()),
+      last_success,
+      last_error,
+      ..Default::default()
+    };
+  }
+
+  pub fn record_sync_plan(&self, items: usize) {
+    self.sync_status.lock().unwrap().job_total = items;
+  }
+
+  pub fn record_sync_progress(&self, phase: &'static str, done: usize, total: usize) {
+    self.sync_status.lock().unwrap().advance(phase, done, total);
+  }
+
   pub fn record_sync_success(&self) {
     *self.sync_status.lock().unwrap() =
-      SyncStatus { last_success: Some(Utc::now()), last_error: None };
+      SyncStatus { last_success: Some(Utc::now()), ..Default::default() };
   }
 
   pub fn record_sync_error(&self, error: &anyhow::Error) {
-    self.sync_status.lock().unwrap().last_error = Some(error.to_string());
+    let mut status = self.sync_status.lock().unwrap();
+    status.last_error = Some(error.to_string());
+    status.running = false;
   }
 
   pub async fn get_repos_filtered(&self, qs: &RepoFilter) -> Res<Vec<RepoTotals>> {

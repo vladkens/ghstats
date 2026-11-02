@@ -3,23 +3,12 @@ use std::sync::Arc;
 
 use axum::extract::Request;
 use chrono::DateTime;
+use reqwest::StatusCode;
 
 use crate::db_client::DbClient;
 use crate::gh_client::{GhClient, PullRequest, Repo, StarsWeek};
 use crate::state::AppState;
 use crate::types::Res;
-
-pub fn truncate_middle(text: &str, max_len: usize) -> String {
-  if text.len() <= max_len {
-    return text.to_string();
-  }
-
-  let part_len = (max_len - 3) / 2;
-  let start = &text[..part_len];
-  let end = &text[text.len() - part_len..];
-
-  format!("{}...{}", start, end)
-}
 
 pub fn get_header<'a>(req: &'a Request, name: &'a str) -> Option<&'a str> {
   match req.headers().get(name) {
@@ -38,6 +27,7 @@ async fn check_hidden_repos(db: &DbClient, repos: &[Repo]) -> Res {
 }
 
 pub async fn update_metrics(state: Arc<AppState>) -> Res {
+  state.record_sync_start();
   let result = update_metrics_inner(state.clone()).await;
   match &result {
     Ok(()) => state.record_sync_success(),
@@ -52,6 +42,14 @@ async fn update_metrics_inner(state: Arc<AppState>) -> Res {
   let date = chrono::Utc::now().to_utc().to_rfc3339();
   let date = date.split("T").next().unwrap().to_owned() + "T00:00:00Z";
 
+  // after downtime the star history is fetched again, so the gap gets the stars
+  let yesterday = (chrono::Utc::now() - chrono::Duration::days(1)).date_naive();
+  let was_down = state.db.get_last_stats_date().await?.is_some_and(|x| x < yesterday);
+  // marked before today's rows exist, so an interrupted run still refills the gap next time
+  if was_down {
+    state.db.mark_repos_stars_unsynced().await?;
+  }
+
   let repos = state.gh.get_repos(state.include_private).await?;
   check_hidden_repos(&state.db, &repos).await?;
 
@@ -60,16 +58,26 @@ async fn update_metrics_inner(state: Arc<AppState>) -> Res {
     .filter(|r| state.filter.is_included(&r.full_name, r.fork, r.archived))
     .collect::<Vec<_>>();
 
-  for repo in &repos {
+  let stars = state.db.repos_to_sync().await?.len();
+  state.record_sync_plan(repos.len() + stars);
+
+  let progress = |done| state.record_sync_progress("Updating traffic", done, repos.len());
+  progress(0);
+  for (idx, repo) in repos.iter().enumerate() {
     if let Err(e) = update_repo_metrics(&state.db, &state.gh, repo, &date).await {
       tracing::warn!("failed to update metrics for {}: {:?}", repo.full_name, e);
-      continue;
     }
+
+    progress(idx + 1);
   }
 
   tracing::info!("update_metrics took {:?} for {} repos", stime.elapsed(), repos.len());
   state.db.update_deltas().await?;
-  sync_stars(&state.db, &state.gh).await?;
+
+  sync_stars(&state.db, &state.gh, |done, total| {
+    state.record_sync_progress("Star history", done, total)
+  })
+  .await?;
 
   Ok(())
 }
@@ -80,7 +88,7 @@ async fn get_open_pull_requests(gh: &GhClient, repo: &Repo) -> Res<Vec<PullReque
   }
 
   match gh.get_open_pull_requests(&repo.full_name).await {
-    Err(e) if GhClient::error_status(&e) == Some(reqwest::StatusCode::NOT_FOUND) => {
+    Err(e) if GhClient::error_status(&e) == Some(StatusCode::NOT_FOUND) => {
       tracing::info!("pull requests not available for {}, counting 0", repo.full_name);
       Ok(vec![])
     }
@@ -147,11 +155,13 @@ fn get_stars_history(weeks: &[StarsWeek]) -> Vec<(String, u32, u32)> {
     .collect()
 }
 
-pub async fn sync_stars(db: &DbClient, gh: &GhClient) -> Res {
+pub async fn sync_stars(db: &DbClient, gh: &GhClient, progress: impl Fn(usize, usize)) -> Res {
   let mut requests_made = 0;
 
   let repos = db.repos_to_sync().await?;
-  for repo in repos {
+  let total = repos.len();
+  progress(0, total);
+  for (idx, repo) in repos.into_iter().enumerate() {
     let stime = std::time::Instant::now();
     // tracing::info!("sync_stars for {}", repo.name);
 
@@ -159,13 +169,21 @@ pub async fn sync_stars(db: &DbClient, gh: &GhClient) -> Res {
       Ok(rs) => rs,
       Err(e) => {
         tracing::warn!("failed to get stars for {}: {:?}", repo.name, e);
-        break;
+        // 403/429 is the rate limit and a non-HTTP error is likely the network, so stop for both
+        match GhClient::error_status(&e) {
+          Some(StatusCode::FORBIDDEN | StatusCode::TOO_MANY_REQUESTS) | None => break,
+          Some(_) => {
+            progress(idx + 1, total);
+            continue;
+          }
+        }
       }
     };
 
     let stars = get_stars_history(&weeks);
     db.insert_stars(repo.id, &stars).await?;
     db.mark_repo_stars_synced(repo.id).await?;
+    progress(idx + 1, total);
 
     let stars_count = stars.iter().map(|(_, _, c)| c).sum::<u32>();
     tracing::info!(
@@ -617,6 +635,7 @@ mod tests {
       fork: false,
       archived: false,
       has_pull_requests,
+      ..Default::default()
     }
   }
 
@@ -635,7 +654,7 @@ mod tests {
     assert_eq!(totals.issues, 3);
     assert_eq!(totals.views_count, 2);
     assert!(mock.pulls_calls.lock().unwrap().is_empty());
-    assert!(db.get_repos_downloads(0).await?.is_empty()); // no releases, nothing stored
+    assert!(db.get_repos_downloads().await?.is_empty()); // no releases, nothing stored
 
     server.abort();
     Ok(())
@@ -693,16 +712,16 @@ mod tests {
     // no created_at in the mock, so published_at (day of or before the first snapshot) decides
     let rels = db.get_release_downloads("owner/releases", 0).await?;
     let rels = rels.iter().map(|x| (x.tag.as_str(), x.total, x.period)).collect::<Vec<_>>();
-    assert_eq!(rels, vec![("v1.1-rc", 8, 8), ("v1.0", 44, 44)]);
+    assert_eq!(rels, vec![("v1.0", 44, 44)], "pre-releases are left out");
 
     let assets = db.get_asset_downloads("owner/releases", 0).await?;
     let assets = assets.iter().map(|x| (x.name.as_str(), x.total)).collect::<Vec<_>>();
-    assert_eq!(assets, vec![("app-linux", 49), ("app-mac", 3)]);
+    assert_eq!(assets, vec![("app-linux", 44)]);
 
     update_repo_metrics(&db, &gh, &repo, "2024-01-02T00:00:00Z").await?; // next day, new row
     let daily = db.get_downloads_daily("owner/releases").await?;
     let daily = daily.iter().map(|x| (x.date.as_str(), x.downloads)).collect::<Vec<_>>();
-    assert_eq!(daily, vec![(DATE, 52), ("2024-01-02T00:00:00Z", 2)]);
+    assert_eq!(daily, vec![(DATE, 44), ("2024-01-02T00:00:00Z", 2)]);
 
     server.abort();
     Ok(())
@@ -721,7 +740,7 @@ mod tests {
     let totals = db.get_repo_totals("owner/releases-500").await?.unwrap();
     assert_eq!(totals.issues, 3);
     assert_eq!(totals.views_count, 2);
-    assert!(db.get_repos_downloads(0).await?.is_empty());
+    assert!(db.get_repos_downloads().await?.is_empty());
 
     // a failed fetch is retried on the next sync of the same day
     update_repo_metrics(&db, &gh, &repo, DATE).await?;
@@ -763,7 +782,7 @@ mod tests {
     let db = test_db("stars-ok").await?;
     db.insert_repo(&sample_repo("owner/stars-ok", None)).await?;
 
-    sync_stars(&db, &gh).await?;
+    sync_stars(&db, &gh, |_, _| {}).await?;
 
     assert_eq!(
       *mock.history_calls.lock().unwrap(),
