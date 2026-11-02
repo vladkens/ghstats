@@ -26,6 +26,8 @@ pub struct DbHealth {
 pub struct SyncStatus {
   pub last_success: Option<DateTime<Utc>>,
   pub last_error: Option<String>,
+  pub last_error_at: Option<DateTime<Utc>>,
+  pub running: bool,
 }
 
 impl DbHealth {
@@ -108,13 +110,20 @@ impl AppState {
     self.sync_status.lock().unwrap().clone()
   }
 
+  pub fn record_sync_start(&self) {
+    self.sync_status.lock().unwrap().running = true;
+  }
+
   pub fn record_sync_success(&self) {
     *self.sync_status.lock().unwrap() =
-      SyncStatus { last_success: Some(Utc::now()), last_error: None };
+      SyncStatus { last_success: Some(Utc::now()), ..Default::default() };
   }
 
   pub fn record_sync_error(&self, error: &anyhow::Error) {
-    self.sync_status.lock().unwrap().last_error = Some(error.to_string());
+    let mut status = self.sync_status.lock().unwrap();
+    status.last_error = Some(error.to_string());
+    status.last_error_at = Some(Utc::now());
+    status.running = false;
   }
 
   pub async fn get_repos_filtered(&self, qs: &RepoFilter) -> Res<Vec<RepoTotals>> {

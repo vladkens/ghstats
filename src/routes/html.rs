@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::extract::{OriginalUri, Path, Query, State};
 use axum::http::HeaderMap;
-use chrono::{Datelike, Days, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, Days, NaiveDate, Utc};
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use serde::Serialize;
 use thousands::Separable;
@@ -16,6 +16,7 @@ use crate::db_client::{
   RepoTotals,
 };
 use crate::routes::assets::vendor_url;
+use crate::state::SyncStatus;
 use crate::types::{AppError, HtmlRes, Res};
 
 // MARK: Helpers
@@ -112,6 +113,37 @@ fn period_range(period: Period, today: NaiveDate, first: Option<NaiveDate>) -> S
 
 // MARK: Layout
 
+/// JSON safe inside <script>: strings like "</script>" can't close the tag
+fn script_json(x: &impl Serialize) -> Res<String> {
+  let json = serde_json::to_string(x)?;
+  let json = json.replace('<', "\\u003c").replace('>', "\\u003e").replace('&', "\\u0026");
+  Ok(json.replace('\u{2028}', "\\u2028").replace('\u{2029}', "\\u2029"))
+}
+
+fn ago_time(x: DateTime<Utc>, now: DateTime<Utc>) -> String {
+  match (now - x).num_minutes() {
+    x if x < 1 => "just now".to_string(),
+    x if x < 60 => format!("{x} min ago"),
+    x if x < 60 * 24 => format!("{} h ago", x / 60),
+    x => format!("{} d ago", x / 60 / 24),
+  }
+}
+
+fn sync_label(status: &SyncStatus, now: DateTime<Utc>) -> Markup {
+  let time = |x: DateTime<Utc>| x.format("%Y-%m-%d %H:%M UTC").to_string();
+  let (class, text, title) = match (status.running, &status.last_error, status.last_success) {
+    (true, _, _) => ("sync busy", "Syncing…".to_string(), "Syncing with GitHub".to_string()),
+    (_, Some(err), _) => {
+      let at = status.last_error_at.map(time).unwrap_or_default();
+      ("sync bad", "Sync failed".to_string(), format!("{at}: {err}"))
+    }
+    (_, _, Some(x)) => ("sync ok", format!("Synced {}", ago_time(x, now)), time(x)),
+    _ => ("sync", "Not synced yet".to_string(), "No sync since start".to_string()),
+  };
+
+  html!(span class=(class) title=(title) { i class="dot" {} span class="text" { (text) } })
+}
+
 fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
   let (app_name, app_version) = (env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
@@ -174,6 +206,8 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
                 a href=(format!("https://github.com/vladkens/ghstats/releases/tag/v{last_release}"))
                   target="_blank" title="New release available!" { "🚨" }
               }
+
+              (sync_label(&state.sync_status(), Utc::now()))
 
               a class="ver" href="https://github.com/vladkens/ghstats" target="_blank" {
                 (format!("{} v{}", app_name, app_version))
@@ -994,7 +1028,7 @@ pub async fn repo_page(
       (repo_popular_tables(db, &repo, &qs).await?)
     }
 
-    script { "window.renderRepo(" (PreEscaped(serde_json::to_string(&data)?)) ");" }
+    script { "window.renderRepo(" (PreEscaped(script_json(&data)?)) ");" }
   );
 
   Ok(base(&state, vec![(repo, None)], html))
@@ -1415,6 +1449,26 @@ mod tests {
   }
 
   #[test]
+  fn sync_label_states() {
+    let now = Utc::now();
+    let ok =
+      SyncStatus { last_success: Some(now - chrono::Duration::minutes(5)), ..Default::default() };
+    let failed =
+      SyncStatus { last_error: Some("401".into()), last_error_at: Some(now), ..ok.clone() };
+    let cases = [
+      (SyncStatus::default(), "sync", "Not synced yet"),
+      (SyncStatus { running: true, ..failed.clone() }, "sync busy", "Syncing…"),
+      (ok, "sync ok", "Synced 5 min ago"),
+      (failed, "sync bad", "Sync failed"),
+    ];
+    for (status, class, text) in cases {
+      let html = sync_label(&status, now).into_string();
+      assert!(html.starts_with(&format!("<span class=\"{class}\"")), "{html}");
+      assert!(html.contains(&format!("<span class=\"text\">{text}</span>")), "{html}");
+    }
+  }
+
+  #[test]
   fn change_rules() {
     let (p, today) = (Period(30), day("2026-11-02"));
     let text = |x: Markup| {
@@ -1652,7 +1706,7 @@ mod tests {
 
     let release = |count| Release {
       id: 7,
-      tag_name: "v1.0.0".into(),
+      tag_name: "</script><b>x</b>".into(),
       draft: false,
       published_at: Some(format!("{}T10:00:00Z", ago(40))),
       assets: vec![ReleaseAsset {
@@ -1672,6 +1726,10 @@ mod tests {
     let page = get(&state, "/o/r?period=7d", None).await.unwrap().into_string();
     assert!(page.contains("<h2>Downloads</h2><div class=\"value\">50</div>"));
     assert!(page.contains("id=\"chart_downloads\"") && page.contains("id=\"releases_table\""));
+    assert!(
+      !page.contains("</script><b>") && page.contains("\\u003c/script\\u003e"),
+      "tag stays a string"
+    );
 
     let frag = get(&state, "/?period=7d", Some("repos_table")).await.unwrap().into_string();
     assert!(frag.contains("<span class=\"v\">50</span>"));

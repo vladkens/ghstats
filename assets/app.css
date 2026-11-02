@@ -83,6 +83,12 @@ h1, h2 { margin: 0; color: var(--head); text-wrap: balance; }
 .crumbs > :last-child { overflow-wrap: anywhere; }
 .topbar .meta { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; }
 .ver { font-family: var(--font-mono); font-size: 0.9em; color: var(--muted); }
+.sync { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85em; color: var(--muted); white-space: nowrap; cursor: default; }
+.sync .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--gap-ink); flex: none; }
+.sync.ok .dot { background: var(--good-ink); }
+.sync.busy .dot { background: var(--accent); }
+.sync.bad, .sync.bad .text { color: var(--bad-ink); }
+.sync.bad .dot { background: var(--bad-ink); }
 .ver:hover { color: var(--head); }
 
 .card { background: var(--card); border: 1px solid var(--card-border); border-radius: var(--r); padding: 0.85em 1em 1em; min-width: 0; }
@@ -222,6 +228,7 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; font-v
   .kpis.c4 { --cols: 2; }
 }
 @media (max-width: 760px) {
+  .sync .text { display: none; }
   .toolbar { position: static; height: auto; margin-bottom: 0.75em; }
   .data.idx thead th { top: env(safe-area-inset-top, 0px); }
   .grid2 { grid-template-columns: minmax(0, 1fr); }

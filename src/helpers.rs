@@ -26,6 +26,7 @@ async fn check_hidden_repos(db: &DbClient, repos: &[Repo]) -> Res {
 }
 
 pub async fn update_metrics(state: Arc<AppState>) -> Res {
+  state.record_sync_start();
   let result = update_metrics_inner(state.clone()).await;
   match &result {
     Ok(()) => state.record_sync_success(),

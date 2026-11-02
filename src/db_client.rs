@@ -146,7 +146,10 @@ fn migrate_v5(db: &Connection) -> Res {
     "ALTER TABLE repos ADD COLUMN homepage TEXT DEFAULT NULL;",
     // star history rows are written with FALSE: those days have no traffic data
     "ALTER TABLE repo_stats ADD COLUMN traffic BOOLEAN NOT NULL DEFAULT TRUE;",
-    "UPDATE repo_stats SET traffic = FALSE WHERE clones_count = 0 AND views_count = 0 AND date < (
+    // only rows the old star history could have written: live stats rows have other counts
+    "UPDATE repo_stats SET traffic = FALSE
+    WHERE clones_count = 0 AND views_count = 0
+      AND forks = 0 AND watchers = 0 AND issues = 0 AND prs = 0 AND date < (
       SELECT MIN(x.date) FROM repo_stats x
       WHERE x.repo_id = repo_stats.repo_id AND (x.clones_count > 0 OR x.views_count > 0)
     );",
@@ -1177,6 +1180,11 @@ impl DbClient {
   }
 
   pub async fn insert_stars(&self, repo_id: i64, stars: &[(String, u32, u32)]) -> Res {
+    // an empty response never wipes the history
+    if stars.is_empty() {
+      return Ok(());
+    }
+
     // the new history replaces the old one: counts drop when people unstar, mixing makes dips
     let clear = "DELETE FROM repo_stats WHERE repo_id = $1 AND traffic = FALSE;";
     let qs = "
@@ -2043,17 +2051,26 @@ mod tests {
   async fn v5_keeps_old_rows_as_traffic_and_stores_repo_metadata() -> Res {
     let path = db_at_version("migration-v5", 4)?;
     let conn = Connection::open(&path)?;
-    conn.execute("UPDATE repos SET stars_synced = TRUE", [])?;
-    conn
-      .execute("INSERT INTO repo_stats (repo_id, date) VALUES (1, '2026-01-01T00:00:00Z')", [])?;
+    // an old star history row, a live stats row before the first traffic day, then traffic
+    conn.execute_batch(
+      "UPDATE repos SET stars_synced = TRUE;
+      INSERT INTO repo_stats (repo_id, date, stars) VALUES (1, '2026-01-01T00:00:00Z', 1);
+      INSERT INTO repo_stats (repo_id, date, stars, watchers) VALUES (1, '2026-01-02T00:00:00Z', 1, 1);
+      INSERT INTO repo_stats (repo_id, date, views_count) VALUES (1, '2026-01-05T00:00:00Z', 3);",
+    )?;
 
     let db = DbClient::new(&path).await?;
-    let (synced, traffic): (bool, bool) = conn.query_row(
-      "SELECT stars_synced, traffic FROM repos r JOIN repo_stats rs ON rs.repo_id = r.id",
-      [],
-      |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    assert_eq!((synced, traffic), (false, true), "star history re-runs, old rows count as traffic");
+    let synced: bool = conn.query_row("SELECT stars_synced FROM repos", [], |row| row.get(0))?;
+    assert!(!synced, "star history re-runs");
+
+    db.insert_stars(1, &[("2025-12-01T00:00:00Z".into(), 1, 1)]).await?;
+    db.insert_stars(1, &[]).await?;
+    let rows: Vec<(String, bool)> = conn
+      .prepare("SELECT substr(date, 1, 10), traffic FROM repo_stats ORDER BY date")?
+      .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+      .collect::<rusqlite::Result<_>>()?;
+    let want = [("2025-12-01", false), ("2026-01-02", true), ("2026-01-05", true)];
+    assert_eq!(rows, want.map(|(d, t)| (d.to_string(), t)), "history replaced, live rows kept");
 
     let repo: Repo = serde_json::from_value(serde_json::json!({
       "id": 1, "full_name": "owner/repo", "description": null, "stargazers_count": 1,
