@@ -65,6 +65,8 @@ services:
       - ./data:/app/data
 ```
 
+The database is stored in `/app/data/ghstats.db` (`DB_PATH` changes it); before a schema migration on upgrade, `ghstats` copies it next to itself as `ghstats.db.vN.bak` and keeps the last 3 copies.
+
 ## Why ghstats?
 
 - **Own your history**: keep traffic data for months or years instead of losing it

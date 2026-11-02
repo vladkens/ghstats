@@ -1,5 +1,7 @@
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
+use anyhow::Context;
 use rusqlite::{Connection, OptionalExtension, Row, params};
 use serde::{Deserialize, Serialize};
 use serde_variant::to_variant_name;
@@ -95,9 +97,95 @@ fn migrate_v3(db: &Connection) -> Res {
   Ok(())
 }
 
+const BACKUPS_TO_KEEP: usize = 3;
+
+fn backup_path(db_path: &str, version: i32) -> String {
+  format!("{db_path}.v{version}.bak")
+}
+
+fn backup_db(db: &Connection, version: i32) -> Res {
+  // in-memory and temporary databases have no file to back up
+  let Some(db_path) = db.path().filter(|x| !x.is_empty()) else {
+    return Ok(());
+  };
+
+  let path = backup_path(db_path, version);
+
+  // migrations aren't transactional: after a failed attempt the db can be half-migrated,
+  // so the backup from the first attempt is the only clean copy
+  if Path::new(&path).exists() {
+    tracing::info!("backup already exists: {}", path);
+    return Ok(());
+  }
+
+  // VACUUM INTO refuses to overwrite a file, and the .tmp may be a leftover of a crash
+  let tmp_path = format!("{path}.tmp");
+  if Path::new(&tmp_path).exists() {
+    std::fs::remove_file(&tmp_path)
+      .with_context(|| format!("failed to remove old backup {tmp_path}"))?;
+  }
+
+  db.execute("VACUUM INTO ?1", [&tmp_path])
+    .with_context(|| format!("failed to back up database to {tmp_path}"))?;
+  std::fs::rename(&tmp_path, &path)
+    .with_context(|| format!("failed to rename backup {tmp_path} to {path}"))?;
+
+  tracing::info!("database backed up to {}", path);
+  prune_backups(db_path, version);
+  Ok(())
+}
+
+fn prune_backups(db_path: &str, current_version: i32) {
+  let db_path = Path::new(db_path);
+  let Some(name) = db_path.file_name().and_then(|x| x.to_str()) else {
+    return;
+  };
+
+  let dir = db_path.parent().unwrap_or(Path::new("."));
+  let entries = match std::fs::read_dir(dir) {
+    Ok(entries) => entries,
+    Err(e) => {
+      tracing::warn!("failed to list backups in {}: {}", dir.display(), e);
+      return;
+    }
+  };
+
+  let prefix = format!("{name}.v");
+  let mut backups: Vec<(i32, PathBuf)> = entries
+    .filter_map(|entry| entry.ok())
+    .filter_map(|entry| {
+      let file_name = entry.file_name();
+      let version = file_name.to_str()?.strip_prefix(&prefix)?.strip_suffix(".bak")?;
+      if version.is_empty() || !version.chars().all(|c| c.is_ascii_digit()) {
+        return None;
+      }
+
+      Some((version.parse().ok()?, entry.path()))
+    })
+    .filter(|(version, _)| *version != current_version)
+    .collect();
+
+  backups.sort_by_key(|x| std::cmp::Reverse(x.0));
+
+  // the current version's backup is always kept and counts toward the limit
+  for (_, path) in backups.into_iter().skip(BACKUPS_TO_KEEP - 1) {
+    if let Err(e) = std::fs::remove_file(&path) {
+      tracing::warn!("failed to remove old backup {}: {}", path.display(), e);
+    }
+  }
+}
+
 fn migrate(db: &Connection) -> Res {
   let migrations: Vec<fn(&Connection) -> Res> = vec![migrate_v1, migrate_v2, migrate_v3];
   let version: i32 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+
+  if version > 0
+    && version < migrations.len() as i32
+    && let Err(e) = backup_db(db, version)
+  {
+    tracing::error!("{e:#}; migrations not run, database left untouched");
+    return Err(e);
+  }
 
   for (idx, func) in migrations.iter().enumerate() {
     let mig_ver = idx as i32 + 1;
@@ -958,6 +1046,137 @@ mod tests {
       paths.iter().map(|x| (&x.name, x.count, x.uniques)).collect::<Vec<_>>(),
       vec![(&"/".to_string(), 7, 4),]
     );
+
+    Ok(())
+  }
+
+  fn db_at_version(test_name: &str, version: i32) -> Res<String> {
+    let path = db_path(test_name);
+    let conn = Connection::open(&path)?;
+    let migrations: Vec<fn(&Connection) -> Res> = vec![migrate_v1, migrate_v2];
+    for func in migrations.iter().take(version as usize) {
+      func(&conn)?;
+    }
+
+    conn.execute("INSERT INTO repos (id, name) VALUES (1, 'owner/repo')", [])?;
+    conn.execute_batch(&format!("PRAGMA user_version = {version}"))?;
+    Ok(path)
+  }
+
+  fn file_name(path: &str) -> String {
+    Path::new(path).file_name().unwrap().to_string_lossy().into_owned()
+  }
+
+  fn backups_of(path: &str) -> Vec<String> {
+    let prefix = format!("{}.v", file_name(path));
+    let mut names: Vec<String> = std::fs::read_dir(Path::new(path).parent().unwrap())
+      .unwrap()
+      .filter_map(|entry| entry.ok())
+      .map(|entry| entry.file_name().to_string_lossy().into_owned())
+      .filter(|name| name.starts_with(&prefix))
+      .collect();
+
+    names.sort();
+    names
+  }
+
+  #[tokio::test]
+  async fn old_schema_is_backed_up_before_migration() -> Res {
+    let path = db_at_version("backup-old", 1)?;
+    std::fs::write(format!("{}.tmp", backup_path(&path, 1)), "leftover from a crash")?;
+
+    let db = DbClient::new(&path).await?;
+    let version: i32 =
+      db.db.lock().unwrap().query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    assert_eq!(version, 3);
+
+    let backup = Connection::open(backup_path(&path, 1))?;
+    let version: i32 = backup.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    let repos: i32 = backup.query_row("SELECT COUNT(*) FROM repos", [], |row| row.get(0))?;
+    assert_eq!(version, 1);
+    assert_eq!(repos, 1);
+    assert_eq!(backups_of(&path), vec![format!("{}.v1.bak", file_name(&path))]);
+
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn existing_backup_is_kept() -> Res {
+    let path = db_at_version("backup-existing", 1)?;
+    std::fs::write(backup_path(&path, 1), "backup from the first attempt")?;
+
+    DbClient::new(&path).await?;
+
+    assert_eq!(std::fs::read_to_string(backup_path(&path, 1))?, "backup from the first attempt");
+    assert_eq!(backups_of(&path), vec![format!("{}.v1.bak", file_name(&path))]);
+
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn failed_backup_leaves_db_unmigrated() -> Res {
+    let path = db_at_version("backup-failed", 1)?;
+    std::fs::create_dir(format!("{}.tmp", backup_path(&path, 1)))?;
+
+    assert!(DbClient::new(&path).await.is_err());
+
+    let conn = Connection::open(&path)?;
+    let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
+    assert_eq!(version, 1);
+
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn fresh_current_and_memory_dbs_are_not_backed_up() -> Res {
+    let path = db_path("backup-fresh");
+    drop(DbClient::new(&path).await?);
+    assert!(backups_of(&path).is_empty());
+
+    drop(DbClient::new(&path).await?);
+    assert!(backups_of(&path).is_empty());
+
+    DbClient::new(":memory:").await?;
+    backup_db(&Connection::open_in_memory()?, 1)?;
+
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn backup_retention_keeps_newest_three() -> Res {
+    let path = db_at_version("backup-retention", 2)?;
+    for name in ["v1.bak", "v10.bak", "v11.bak", "vx.bak"] {
+      std::fs::write(format!("{path}.{name}"), "")?;
+    }
+
+    DbClient::new(&path).await?;
+
+    let expected: Vec<String> = ["v10.bak", "v11.bak", "v2.bak", "vx.bak"]
+      .iter()
+      .map(|name| format!("{}.{name}", file_name(&path)))
+      .collect();
+    assert_eq!(backups_of(&path), expected);
+
+    Ok(())
+  }
+
+  #[test]
+  fn prune_sorts_numerically_and_keeps_current() -> Res {
+    let path = db_path("prune");
+    let names = |suffixes: &[&str]| -> Vec<String> {
+      suffixes.iter().map(|x| format!("{}.{x}", file_name(&path))).collect()
+    };
+
+    for name in names(&["v9.bak", "v10.bak", "v11.bak", "v100.bak", "v+1.bak", "v.bak"]) {
+      std::fs::write(std::env::temp_dir().join(name), "")?;
+    }
+
+    prune_backups(&path, 100);
+    assert_eq!(backups_of(&path), names(&["v+1.bak", "v.bak", "v10.bak", "v100.bak", "v11.bak"]));
+
+    std::fs::write(format!("{path}.v9.bak"), "")?;
+    prune_backups(&path, 9);
+    assert_eq!(backups_of(&path), names(&["v+1.bak", "v.bak", "v100.bak", "v11.bak", "v9.bak"]));
 
     Ok(())
   }
