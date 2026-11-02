@@ -126,10 +126,6 @@ impl TokenSource {
 
 // MARK: GhClient
 
-pub fn error_status(err: &anyhow::Error) -> Option<StatusCode> {
-  err.downcast_ref::<reqwest::Error>().and_then(|e| e.status())
-}
-
 pub struct GhClient {
   client: reqwest::Client,
   token: TokenSource,
@@ -182,6 +178,10 @@ impl GhClient {
 
   async fn send(&self, req: RequestBuilder) -> Res<reqwest::Response> {
     self.execute(req.build()?).await
+  }
+
+  pub fn error_status(err: &anyhow::Error) -> Option<StatusCode> {
+    err.downcast_ref::<reqwest::Error>().and_then(|e| e.status())
   }
 
   async fn with_pagination<T: DeserializeOwned>(&self, req: RequestBuilder) -> Res<Vec<T>> {

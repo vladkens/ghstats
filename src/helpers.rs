@@ -5,7 +5,7 @@ use axum::extract::Request;
 use chrono::DateTime;
 
 use crate::db_client::DbClient;
-use crate::gh_client::{GhClient, PullRequest, Repo, StarsWeek, error_status};
+use crate::gh_client::{GhClient, PullRequest, Repo, StarsWeek};
 use crate::state::AppState;
 use crate::types::Res;
 
@@ -80,7 +80,7 @@ async fn get_open_pull_requests(gh: &GhClient, repo: &Repo) -> Res<Vec<PullReque
   }
 
   match gh.get_open_pull_requests(&repo.full_name).await {
-    Err(e) if error_status(&e) == Some(reqwest::StatusCode::NOT_FOUND) => {
+    Err(e) if GhClient::error_status(&e) == Some(reqwest::StatusCode::NOT_FOUND) => {
       tracing::info!("pull requests not available for {}, counting 0", repo.full_name);
       Ok(vec![])
     }
@@ -463,6 +463,7 @@ mod tests {
     Path((owner, repo)): Path<(String, String)>,
   ) -> Response {
     gh.pulls_calls.lock().unwrap().push(format!("{owner}/{repo}"));
+
     match repo.as_str() {
       "pulls-404" => StatusCode::NOT_FOUND.into_response(),
       "pulls-500" => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -503,6 +504,7 @@ mod tests {
       .lock()
       .unwrap()
       .push(format!("{owner}/{repo}?per_page={per_page}&page={page}"));
+
     if repo == "stars-403" {
       return StatusCode::FORBIDDEN.into_response();
     }
