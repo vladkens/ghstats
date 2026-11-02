@@ -881,6 +881,14 @@ impl DbClient {
       }
     }
 
+    // today's row keeps only the last fetch: deleted or replaced assets drop out of the totals
+    let ids = releases.iter().flat_map(|x| &x.assets).map(|x| x.id.to_string()).collect::<Vec<_>>();
+    let qs = format!(
+      "DELETE FROM repo_release_assets WHERE repo_id = $1 AND date = $2 AND asset_id NOT IN ({});",
+      ids.join(",")
+    );
+    tx.execute(&qs, params![repo.id as i64, date])?;
+
     let qs = "UPDATE repos SET releases_synced_at = $1 WHERE id = $2;";
     tx.execute(qs, params![date, repo.id as i64])?;
 
@@ -1279,6 +1287,51 @@ mod tests {
     let daily = db.get_downloads_daily("owner/repo").await?;
     let daily = daily.iter().map(|x| (x.date.clone(), x.downloads)).collect::<Vec<_>>();
     assert_eq!(daily, vec![(days_ago(3), 9)]);
+
+    Ok(())
+  }
+
+  #[tokio::test]
+  async fn same_day_refetch_keeps_only_the_last_fetch() -> Res {
+    let db = test_db("downloads-refetch").await?;
+    let repo = sample_repo(1, "owner/repo");
+    db.insert_repo(&repo).await?;
+
+    let (d4, d3) = (days_ago(4), days_ago(3));
+    let rel = |assets: &[(u64, &str, u64)]| release(1, "v1.0", "2024-01-01T00:00:00Z", assets);
+    db.insert_release_assets(&repo, &d4, &[rel(&[(10, "a", 10), (11, "b", 20), (12, "c", 30)])])
+      .await?;
+    db.insert_release_assets(&repo, &d3, &[rel(&[(10, "a", 12), (11, "b", 25), (12, "c", 31)])])
+      .await?;
+
+    // later the same day: b is deleted, c is re-uploaded under a new id
+    let mut last = rel(&[(10, "a", 13)]);
+    last.assets.extend(created(rel(&[(13, "c", 1)]), &d3.replace("T00", "T15")).assets);
+    db.insert_release_assets(&repo, &d3, &[last]).await?;
+
+    let daily = db.get_downloads_daily("owner/repo").await?;
+    let daily = daily.iter().map(|x| (x.date.as_str(), x.downloads)).collect::<Vec<_>>();
+    assert_eq!(daily, vec![(d3.as_str(), 4)]);
+
+    let rels = db.get_release_downloads("owner/repo", 0).await?;
+    assert_eq!(rels.iter().map(|x| (x.total, x.period)).collect::<Vec<_>>(), vec![(14, 4)]);
+
+    let assets = db.get_asset_downloads("owner/repo", 0).await?;
+    let assets = assets.iter().map(|x| (x.name.as_str(), x.total, x.period)).collect::<Vec<_>>();
+    assert_eq!(assets, vec![("a", 13, 3), ("c", 1, 1)]);
+
+    let repos = db.get_repos_downloads(0).await?;
+    assert_eq!(
+      repos.iter().map(|x| (x.id, x.total, x.period)).collect::<Vec<_>>(),
+      vec![(1, 14, 4)]
+    );
+
+    // an empty fetch later the same day: nothing is current
+    db.insert_release_assets(&repo, &d3, &[]).await?;
+    assert!(db.get_repos_downloads(0).await?.is_empty());
+    assert!(db.get_release_downloads("owner/repo", 0).await?.is_empty());
+    assert!(db.get_asset_downloads("owner/repo", 0).await?.is_empty());
+    assert!(db.get_downloads_daily("owner/repo").await?.is_empty());
 
     Ok(())
   }
