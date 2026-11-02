@@ -321,23 +321,6 @@ impl Period {
   }
 }
 
-/// GitHub's traffic for today and yesterday is still incomplete, so changes compare two equal
-/// windows that end this many days before today.
-pub const CMP_LAG: u64 = 2;
-
-/// On the first sync GitHub returns the last 14 days of traffic, only days that had any, so a
-/// missing row in the first days after the first traffic day means no traffic, not an outage.
-pub const BACKFILL_DAYS: u64 = 15;
-
-/// Shown period `[start, today]`, compared `[cmp_start, cmp_end)` vs `[prev_start, cmp_start)`
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Windows {
-  pub start: NaiveDate,
-  pub cmp_start: NaiveDate,
-  pub cmp_end: NaiveDate,
-  pub prev_start: NaiveDate,
-}
-
 impl std::fmt::Display for Period {
   fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
     write!(f, "{}", self.label().to_lowercase())
@@ -354,6 +337,23 @@ impl<'de> Deserialize<'de> for Period {
   fn deserialize<D: Deserializer<'de>>(de: D) -> Result<Self, D::Error> {
     Ok(Self::parse(&String::deserialize(de)?))
   }
+}
+
+/// GitHub's traffic for today and yesterday is still incomplete, so changes compare two equal
+/// windows that end this many days before today.
+pub const CMP_LAG: u64 = 2;
+
+/// On the first sync GitHub returns the last 14 days of traffic, only days that had any, so a
+/// missing row in the first days after the first traffic day means no traffic, not an outage.
+pub const BACKFILL_DAYS: u64 = 15;
+
+/// Shown period `[start, today]`, compared `[cmp_start, cmp_end)` vs `[prev_start, cmp_start)`
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Windows {
+  pub start: NaiveDate,
+  pub cmp_start: NaiveDate,
+  pub cmp_end: NaiveDate,
+  pub prev_start: NaiveDate,
 }
 
 #[derive(Debug, Deserialize, Serialize, Default)]
@@ -577,6 +577,23 @@ impl DbClient {
     Ok(items)
   }
 
+  /// Rows with a real stars value; unlike `get_stars`, days left at zero (such as GitHub's traffic
+  /// backfill after an outage) are skipped instead of forward-filled.
+  pub async fn get_star_rows(&self, repo: &str) -> Res<Vec<RepoStars>> {
+    let qs = "
+    SELECT date, stars FROM repo_stats rs
+    INNER JOIN repos r ON r.id = rs.repo_id
+    WHERE r.hidden = FALSE AND r.name = $1 AND rs.stars > 0
+    ORDER BY rs.date ASC;
+    ";
+
+    let db = self.db.lock().unwrap();
+    let mut stmt = db.prepare(qs)?;
+    let items =
+      stmt.query_map(params![repo], repo_stars_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
+    Ok(items)
+  }
+
   /// Period totals for one repo (`Some(name)`) or all of them, for the period ending `today`
   pub async fn get_periods(
     &self,
@@ -584,9 +601,9 @@ impl DbClient {
     period: Period,
     today: NaiveDate,
   ) -> Res<Vec<RepoPeriod>> {
-    let dates = match period.windows(today) {
+    let [start, cmp_start, cmp_end, prev_start] = match period.windows(today) {
       Some(x) => [x.start, x.cmp_start, x.cmp_end, x.prev_start].map(|x| x.to_string()),
-      None => ["0000".to_string(), "0000".to_string(), "0000".to_string(), "0000".to_string()],
+      None => ["0000"; 4].map(String::from),
     };
 
     // $1 start, $2 cmp_start, $3 cmp_end (exclusive), $4 prev_start; stars from non-zero rows only;
@@ -630,29 +647,11 @@ impl DbClient {
     GROUP BY r.id;
     ";
 
-    let [start, cmp_start, cmp_end, prev_start] = dates;
     let db = self.db.lock().unwrap();
     let mut stmt = db.prepare(qs)?;
     let items = stmt
       .query_map(params![start, cmp_start, cmp_end, prev_start, repo], repo_period_from_row)?
       .collect::<rusqlite::Result<Vec<_>>>()?;
-    Ok(items)
-  }
-
-  /// Rows with a real stars value; unlike `get_stars`, days left at zero (such as GitHub's traffic
-  /// backfill after an outage) are skipped instead of forward-filled.
-  pub async fn get_star_rows(&self, repo: &str) -> Res<Vec<RepoStars>> {
-    let qs = "
-    SELECT date, stars FROM repo_stats rs
-    INNER JOIN repos r ON r.id = rs.repo_id
-    WHERE r.hidden = FALSE AND r.name = $1 AND rs.stars > 0
-    ORDER BY rs.date ASC;
-    ";
-
-    let db = self.db.lock().unwrap();
-    let mut stmt = db.prepare(qs)?;
-    let items =
-      stmt.query_map(params![repo], repo_stars_from_row)?.collect::<rusqlite::Result<Vec<_>>>()?;
     Ok(items)
   }
 
@@ -1314,6 +1313,7 @@ mod tests {
     assert_eq!((all[0].views, all[0].prev_views, all[0].prev_days), (95, 0, 0));
 
     assert!(db.get_daily("owner/missing", today).await?.days.is_empty());
+
     Ok(())
   }
 }

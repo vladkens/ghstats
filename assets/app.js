@@ -98,6 +98,7 @@
         a = null;
       }
     });
+
     if (a != null) out.push([a, list.length - 1]);
     return out;
   };
@@ -125,7 +126,11 @@
   const bandsPlugin = {
     id: 'bands',
     beforeDatasetsDraw(chart, _args, o) {
-      const { ctx, chartArea: ca, scales: { x } } = chart;
+      const {
+        ctx,
+        chartArea: ca,
+        scales: { x },
+      } = chart;
       if (!o || !x) return;
 
       const half = o.category ? Math.abs(x.getPixelForValue(1) - x.getPixelForValue(0)) / 2 : 0;
@@ -294,6 +299,7 @@
       if (m % step === 0) out.push({ value: t });
       t = Date.UTC(new Date(t).getUTCFullYear(), m + 1, 1);
     }
+
     return out;
   };
 

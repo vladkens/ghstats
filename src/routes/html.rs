@@ -17,9 +17,6 @@ use crate::db_client::{
 use crate::routes::assets::vendor_url;
 use crate::types::{AppError, HtmlRes};
 
-const UNIQUE_TIP: &str =
-  "Sum of GitHub's daily unique counts: someone who comes back on three days counts three times.";
-
 // MARK: Helpers
 
 fn get_hx_target(headers: &HeaderMap) -> Option<&str> {
@@ -105,7 +102,88 @@ fn period_range(period: Period, today: NaiveDate, first: Option<NaiveDate>) -> S
   }
 }
 
-// MARK: Change
+// MARK: Layout
+
+fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
+  let (app_name, app_version) = (env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+
+  let last_release = state.last_release.lock().unwrap().clone();
+  let is_new_release = last_release != app_version;
+
+  let title = match navs.len() {
+    0 => app_name,
+    _ => &format!("{} · {}", navs.last().unwrap().0, app_name),
+  };
+
+  let favicon = include_str!("../../assets/favicon.svg")
+    .replace("\n", "")
+    .replace("\"", "%22")
+    .replace("#", "%23");
+  let favicon = format!("data:image/svg+xml,{}", favicon);
+
+  html!(
+    (DOCTYPE)
+    html {
+      head {
+        meta charset="utf-8";
+        meta name="viewport" content="width=device-width, initial-scale=1";
+        title { (title) }
+
+        link rel="icon" type="image/svg+xml" href=(PreEscaped(favicon)) {}
+        script src=(vendor_url("chart.umd.js")) {}
+        script src=(vendor_url("luxon.min.js")) {}
+        script src=(vendor_url("chartjs-adapter-luxon.umd.min.js")) {}
+        script src=(vendor_url("htmx.min.js")) {}
+        script { "htmx.config.historyCacheSize = 0;" }
+        script { (PreEscaped(include_str!("../../assets/app.js"))) }
+        style { (PreEscaped(include_str!("../../assets/app.css"))) }
+      }
+      body {
+        div class="wrap" {
+          header class="topbar" {
+            nav class="crumbs" aria-label="Breadcrumb" {
+              @if navs.is_empty() {
+                span { "Repos" }
+              } @else {
+                a href="/" { "Repos" }
+              }
+
+              @for (name, url) in &navs {
+                span class="sep" { "›" }
+                @match url {
+                  Some(url) => a href=(url) { (name) },
+                  None => span { (name) },
+                }
+              }
+            }
+
+            div class="meta" {
+              @for (name, url) in &get_custom_links() {
+                a href=(url) target="_blank" { (name) }
+              }
+
+              @if is_new_release {
+                a href=(format!("https://github.com/vladkens/ghstats/releases/tag/v{last_release}"))
+                  target="_blank" title="New release available!" { "🚨" }
+              }
+
+              a class="ver" href="https://github.com/vladkens/ghstats" target="_blank" {
+                (format!("{} v{}", app_name, app_version))
+              }
+            }
+          }
+
+          main { (inner) }
+        }
+      }
+    }
+  )
+}
+
+// MARK: Tiles and change
+
+const UNIQUE_TIP: &str =
+  "Sum of GitHub's daily unique counts: someone who comes back on three days counts three times.";
 
 /// "Oct 25–31", "Sep 28–Oct 4" or "Nov 1, 2025–Oct 31, 2026"
 fn short_range(from: NaiveDate, to: NaiveDate) -> String {
@@ -196,79 +274,111 @@ impl Change {
   }
 }
 
-// MARK: Layout
+fn tile(title: &str, value: i64, sub: Markup, change: Option<Markup>) -> Markup {
+  html!(
+    div class="card kpi" {
+      h2 { (title) }
+      div class="value" { (num(value)) }
+      div class="sub" { (sub) }
+      @if let Some(x) = change { (x) }
+    }
+  )
+}
 
-fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
-  let (app_name, app_version) = (env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
+fn traffic_tile(
+  title: &str,
+  total: i64,
+  uniques: i64,
+  change: Option<Change>,
+  p: Period,
+) -> Markup {
+  let sub = html!(abbr title=(UNIQUE_TIP) { (num(uniques.min(total))) " unique" });
+  tile(title, total, sub, change.map(|x| x.tile(p)))
+}
 
-  let last_release = state.last_release.lock().unwrap().clone();
-  let is_new_release = last_release != app_version;
+// MARK: Charts data
 
-  let title = match navs.len() {
-    0 => app_name,
-    _ => &format!("{} · {}", navs.last().unwrap().0, app_name),
+/// Runs of 3+ days without a row, as (last day before, first day after)
+fn outages(dat: &RepoDaily) -> Vec<(NaiveDate, NaiveDate)> {
+  let Some(start) = dat.start.as_deref().and_then(|x| x.parse::<NaiveDate>().ok()) else {
+    return vec![];
   };
 
-  let favicon = include_str!("../../assets/favicon.svg")
-    .replace("\n", "")
-    .replace("\"", "%22")
-    .replace("#", "%23");
-  let favicon = format!("data:image/svg+xml,{}", favicon);
+  let day = |idx: usize| start + Days::new(idx as u64);
+  let have: Vec<usize> =
+    dat.days.iter().enumerate().filter(|x| x.1.is_some()).map(|x| x.0).collect();
+  have.windows(2).filter(|x| x[1] - x[0] > 3).map(|x| (day(x[0]), day(x[1]))).collect()
+}
 
+/// Days without stars: traffic outages, plus runs of more than 3 days between real stars rows that
+/// end after daily collection runs; before that (the first traffic day + BACKFILL_DAYS) star
+/// history has rows only on days with new stars.
+fn star_gaps(
+  first: Option<NaiveDate>,
+  outages: &[(NaiveDate, NaiveDate)],
+  stars: &[NaiveDate],
+) -> Vec<(NaiveDate, NaiveDate)> {
+  let mut all = outages.to_vec();
+  if let Some(first) = first {
+    let from = first + Days::new(BACKFILL_DAYS);
+    let runs = stars.windows(2).filter(|x| x[1] > from && (x[1] - x[0]).num_days() > 3);
+    all.extend(runs.map(|x| (x[0], x[1])));
+  }
+
+  all.sort();
+  let mut out: Vec<(NaiveDate, NaiveDate)> = vec![];
+  for (a, b) in all {
+    match out.last_mut() {
+      Some(last) if a <= last.1 => last.1 = last.1.max(b),
+      _ => out.push((a, b)),
+    }
+  }
+
+  out
+}
+
+/// "+162 in 30d", approximate when the day before the period falls inside a stars gap or the
+/// latest stars value is stale
+fn stars_gain(
+  rp: &RepoPeriod,
+  p: Period,
+  today: NaiveDate,
+  gaps: &[(NaiveDate, NaiveDate)],
+  last: Option<NaiveDate>,
+) -> Option<(String, bool)> {
+  let before = p.windows(today)?.start - Days::new(1);
+  let inside = gaps.iter().any(|(a, b)| *a < before && before < *b);
+  let stale = last.is_some_and(|x| (today - x).num_days() > 3);
+  Some((format!("{} in {}", signed(rp.stars_gain()), p.label()), inside || stale))
+}
+
+const STARS_APPROX: &str =
+  "Stars weren't collected on some days around the start or end of this period";
+
+#[derive(Serialize)]
+struct ChartData<'a> {
+  today: String,
+  period: i32,
+  daily: &'a RepoDaily,
+  stars: &'a [(&'a str, i32)],
+  gaps: &'a [(NaiveDate, NaiveDate)],
+  /// label of the shaded period on the stars chart, e.g. "+162 in 30d"
+  window_label: Option<String>,
+}
+
+fn traffic_card(title: &str, canvas_id: &str) -> Markup {
   html!(
-    (DOCTYPE)
-    html {
-      head {
-        meta charset="utf-8";
-        meta name="viewport" content="width=device-width, initial-scale=1";
-        title { (title) }
-
-        link rel="icon" type="image/svg+xml" href=(PreEscaped(favicon)) {}
-        script src=(vendor_url("chart.umd.js")) {}
-        script src=(vendor_url("luxon.min.js")) {}
-        script src=(vendor_url("chartjs-adapter-luxon.umd.min.js")) {}
-        script src=(vendor_url("htmx.min.js")) {}
-        script { "htmx.config.historyCacheSize = 0;" }
-        script { (PreEscaped(include_str!("../../assets/app.js"))) }
-        style { (PreEscaped(include_str!("../../assets/app.css"))) }
-      }
-      body {
-        div class="wrap" {
-          header class="topbar" {
-            nav class="crumbs" aria-label="Breadcrumb" {
-              @if navs.is_empty() {
-                span { "Repos" }
-              } @else {
-                a href="/" { "Repos" }
-              }
-
-              @for (name, url) in &navs {
-                span class="sep" { "›" }
-                @match url {
-                  Some(url) => a href=(url) { (name) },
-                  None => span { (name) },
-                }
-              }
-            }
-
-            div class="meta" {
-              @for (name, url) in &get_custom_links() {
-                a href=(url) target="_blank" { (name) }
-              }
-
-              @if is_new_release {
-                a href=(format!("https://github.com/vladkens/ghstats/releases/tag/v{last_release}"))
-                  target="_blank" title="New release available!" { "🚨" }
-              }
-
-              a class="ver" href="https://github.com/vladkens/ghstats" target="_blank" {
-                (format!("{} v{}", app_name, app_version))
-              }
-            }
-          }
-
-          main { (inner) }
+    section class="card" {
+      div class="chart-h" {
+        h2 { (title) }
+        div class="legend" {
+          span { i class="sw total" {} "Total" }
+          span { i class="sw unique" {} "Unique" }
+          span class="gap-key" hidden { i class="sw hatch" {} "No data" }
         }
+      }
+      div class="chart" {
+        canvas id=(canvas_id) role="img" aria-label=(format!("{title}: total and unique")) {}
       }
     }
   )
@@ -412,112 +522,6 @@ async fn repo_popular_tables(db: &DbClient, repo: &str, qs: &PopularFilter) -> H
 
 // MARK: Repo page
 
-/// Runs of 3+ days without a row, as (last day before, first day after)
-fn outages(dat: &RepoDaily) -> Vec<(NaiveDate, NaiveDate)> {
-  let Some(start) = dat.start.as_deref().and_then(|x| x.parse::<NaiveDate>().ok()) else {
-    return vec![];
-  };
-
-  let day = |idx: usize| start + Days::new(idx as u64);
-  let have: Vec<usize> =
-    dat.days.iter().enumerate().filter(|x| x.1.is_some()).map(|x| x.0).collect();
-  have.windows(2).filter(|x| x[1] - x[0] > 3).map(|x| (day(x[0]), day(x[1]))).collect()
-}
-
-/// Days without stars: traffic outages, plus runs of more than 3 days between real stars rows that
-/// end after daily collection runs; before that (the first traffic day + BACKFILL_DAYS) star
-/// history has rows only on days with new stars.
-fn star_gaps(
-  first: Option<NaiveDate>,
-  outages: &[(NaiveDate, NaiveDate)],
-  stars: &[NaiveDate],
-) -> Vec<(NaiveDate, NaiveDate)> {
-  let mut all = outages.to_vec();
-  if let Some(first) = first {
-    let from = first + Days::new(BACKFILL_DAYS);
-    let runs = stars.windows(2).filter(|x| x[1] > from && (x[1] - x[0]).num_days() > 3);
-    all.extend(runs.map(|x| (x[0], x[1])));
-  }
-
-  all.sort();
-  let mut out: Vec<(NaiveDate, NaiveDate)> = vec![];
-  for (a, b) in all {
-    match out.last_mut() {
-      Some(last) if a <= last.1 => last.1 = last.1.max(b),
-      _ => out.push((a, b)),
-    }
-  }
-
-  out
-}
-
-/// "+162 in 30d", approximate when the day before the period falls inside a stars gap or the
-/// latest stars value is stale
-fn stars_gain(
-  rp: &RepoPeriod,
-  p: Period,
-  today: NaiveDate,
-  gaps: &[(NaiveDate, NaiveDate)],
-  last: Option<NaiveDate>,
-) -> Option<(String, bool)> {
-  let before = p.windows(today)?.start - Days::new(1);
-  let inside = gaps.iter().any(|(a, b)| *a < before && before < *b);
-  let stale = last.is_some_and(|x| (today - x).num_days() > 3);
-  Some((format!("{} in {}", signed(rp.stars_gain()), p.label()), inside || stale))
-}
-
-const STARS_APPROX: &str =
-  "Stars weren't collected on some days around the start or end of this period";
-
-#[derive(Serialize)]
-struct ChartData<'a> {
-  today: String,
-  period: i32,
-  daily: &'a RepoDaily,
-  stars: &'a [(&'a str, i32)],
-  gaps: &'a [(NaiveDate, NaiveDate)],
-  /// label of the shaded period on the stars chart, e.g. "+162 in 30d"
-  window_label: Option<String>,
-}
-
-fn tile(title: &str, value: i64, sub: Markup, change: Option<Markup>) -> Markup {
-  html!(
-    div class="card kpi" {
-      h2 { (title) }
-      div class="value" { (num(value)) }
-      div class="sub" { (sub) }
-      @if let Some(x) = change { (x) }
-    }
-  )
-}
-
-fn traffic_tile(
-  title: &str,
-  total: i64,
-  uniques: i64,
-  change: Option<Change>,
-  p: Period,
-) -> Markup {
-  let sub = html!(abbr title=(UNIQUE_TIP) { (num(uniques.min(total))) " unique" });
-  tile(title, total, sub, change.map(|x| x.tile(p)))
-}
-
-fn traffic_card(title: &str, canvas_id: &str) -> Markup {
-  html!(
-    section class="card" {
-      div class="chart-h" {
-        h2 { (title) }
-        div class="legend" {
-          span { i class="sw total" {} "Total" }
-          span { i class="sw unique" {} "Unique" }
-          span class="gap-key" hidden { i class="sw hatch" {} "No data" }
-        }
-      }
-      div class="chart" { canvas id=(canvas_id) role="img" aria-label=(format!("{title}: total and unique")) {} }
-    }
-  )
-}
-
 pub async fn repo_page(
   State(state): State<Arc<AppState>>,
   Path((owner, repo)): Path<(String, String)>,
@@ -639,7 +643,9 @@ pub async fn repo_page(
               div class="legend" { span { i class="sw hatch" {} "No data" } }
             }
           }
-          div class="chart short" { canvas id="chart_stars" role="img" aria-label="Stars over time" {} }
+          div class="chart short" {
+            canvas id="chart_stars" role="img" aria-label="Stars over time" {}
+          }
         }
       }
 
@@ -652,7 +658,7 @@ pub async fn repo_page(
   Ok(base(&state, vec![(repo, None)], html))
 }
 
-// MARK: Index
+// MARK: Index page
 
 struct IndexRow<'a> {
   repo: &'a RepoTotals,
@@ -892,6 +898,7 @@ mod tests {
   use std::time::{SystemTime, UNIX_EPOCH};
 
   use super::*;
+  use crate::gh_client::{Repo, RepoReferrer, RepoViews, TrafficDaily};
   use crate::helpers::GhsFilter;
 
   fn db_path(name: &str) -> String {
@@ -900,6 +907,34 @@ mod tests {
       .join(format!("ghstats-html-{name}-{}-{nanos}.db", std::process::id()))
       .to_string_lossy()
       .into_owned()
+  }
+
+  fn test_repo(stars: u32) -> Repo {
+    Repo {
+      id: 1,
+      full_name: "o/r".into(),
+      description: None,
+      stargazers_count: stars,
+      forks_count: 0,
+      watchers_count: 0,
+      open_issues_count: 0,
+      fork: false,
+      archived: false,
+      has_pull_requests: None,
+    }
+  }
+
+  fn views(days: &[(NaiveDate, u32)]) -> RepoViews {
+    let views = days
+      .iter()
+      .map(|(d, c)| TrafficDaily {
+        timestamp: format!("{d}T00:00:00Z"),
+        count: *c,
+        uniques: *c / 2,
+      })
+      .collect();
+
+    RepoViews { count: 0, uniques: 0, views }
   }
 
   #[tokio::test]
@@ -1070,21 +1105,8 @@ mod tests {
 
   #[tokio::test]
   async fn repo_page_renders_only_blocks_with_data() {
-    use crate::gh_client::{Repo, RepoReferrer};
-
     let db = DbClient::new(&db_path("blocks")).await.unwrap();
-    let repo = Repo {
-      id: 1,
-      full_name: "o/r".into(),
-      description: None,
-      stargazers_count: 5,
-      forks_count: 0,
-      watchers_count: 0,
-      open_issues_count: 0,
-      fork: false,
-      archived: false,
-      has_pull_requests: None,
-    };
+    let repo = test_repo(5);
     db.insert_repo(&repo).await.unwrap();
     db.insert_stats(&repo, &format!("{}T00:00:00Z", today()), &[]).await.unwrap();
     db.insert_referrers(
@@ -1142,34 +1164,6 @@ mod tests {
     assert!(frag.contains("id=\"period_nav\""));
     assert!(frag.contains("href=\"/?sort=views_count&amp;direction=desc&amp;period=7d&amp;q=x\""));
     assert!(frag.contains("No repos match"));
-  }
-
-  fn test_repo(stars: u32) -> crate::gh_client::Repo {
-    crate::gh_client::Repo {
-      id: 1,
-      full_name: "o/r".into(),
-      description: None,
-      stargazers_count: stars,
-      forks_count: 0,
-      watchers_count: 0,
-      open_issues_count: 0,
-      fork: false,
-      archived: false,
-      has_pull_requests: None,
-    }
-  }
-
-  fn views(days: &[(NaiveDate, u32)]) -> crate::gh_client::RepoViews {
-    let views = days
-      .iter()
-      .map(|(d, c)| crate::gh_client::TrafficDaily {
-        timestamp: format!("{d}T00:00:00Z"),
-        count: *c,
-        uniques: *c / 2,
-      })
-      .collect();
-
-    crate::gh_client::RepoViews { count: 0, uniques: 0, views }
   }
 
   #[tokio::test]

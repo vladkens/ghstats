@@ -93,9 +93,16 @@ h1, h2 { margin: 0; color: var(--head); text-wrap: balance; }
 .repo-head h1 a { color: var(--head); }
 .repo-head p { margin: 0; max-width: 75ch; }
 .periodbar {
-  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 5;
-  display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px;
-  padding-block: 0.5em; background: var(--bg); border-bottom: 1px solid var(--line);
+  position: sticky;
+  top: env(safe-area-inset-top, 0px);
+  z-index: 5;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 12px;
+  padding-block: 0.5em;
+  background: var(--bg);
+  border-bottom: 1px solid var(--line);
 }
 .periodbar .range { font-size: 0.9em; color: var(--muted); }
 .periodbar .seg { margin-left: auto; }
