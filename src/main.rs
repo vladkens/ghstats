@@ -12,6 +12,7 @@ use tracing::Level;
 use types::Res;
 
 mod db_client;
+mod filter;
 mod gh_client;
 mod helpers;
 mod routes;
