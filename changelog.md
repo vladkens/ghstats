@@ -1,17 +1,31 @@
-## Unreleased
+## v0.11.0 – 2026-11-04
 
 ### Features
 
-- Release asset download counts are now saved daily (not shown in the UI yet)
-- Frontend libraries are now embedded into the binary and served by `ghstats` itself instead of being loaded from unpkg.com (#31)
+- Redesigned the web UI: one period switch (7d, 30d, 90d, 1y, All) for tiles, charts and tables, a repo info card, change vs the previous period, gaps shown as hatched bands, and sticky headers; Pico CSS is no longer used (#37)
+- Added release download stats: daily snapshots of release asset downloads, a Downloads tile, chart and releases table, and a Downloads column on the home page (#36, #37)
+- Added a sync status in the header that shows progress during a long sync (#37)
+- Added `GHS_SHOW` to hide repos from the public pages while still collecting them, e.g. `GHS_SHOW='stars:>=25 OR age:<3m'` (#41)
+- Added a query syntax for `GHS_FILTER` and `GHS_SHOW` with `OR`, `!`, parentheses, ranges and durations; old comma values like `!fork,vladkens/*` keep working (#41)
 - Added `GHS_DISABLE_VERSION_CHECK` to turn off the check for new ghstats releases (#30, by @utoni)
-- Star history is backfilled from GitHub's star history API, which works for repositories you don't administer and needs far fewer requests (#27)
-- Schema migrations run in one transaction, so a failed upgrade leaves the database unchanged
+- Embedded the frontend libraries into the binary, so pages no longer load anything from unpkg.com (#32)
 
 ### Fixes
 
-- Pages now start with `<!DOCTYPE html>` and use valid void `meta` tags (#30, by @utoni)
-- Repositories with pull requests disabled are synced again instead of being skipped (#27)
+- Fixed sync skipping repositories that have pull requests disabled (#34)
+- Fixed the star history backfill for repositories you don't administer by using GitHub's star history API, which also needs far fewer requests (#34)
+- Fixed missing stars after downtime: the star history is fetched again to fill the gap (#37)
+- Fixed pages to start with `<!DOCTYPE html>` and use valid void `meta` tags (#30, by @utoni)
+
+### Improvements
+
+- Schema migrations run in one transaction, so a failed upgrade leaves the database unchanged (#35)
+- After upgrading, the first sync fetches the star history of every repo once more to fill old gaps (#37)
+- In old comma `GHS_FILTER` values any glob now works (e.g. `vladkens/apigen-*`), and a list of only `!owner/repo` rules means everything except them; an invalid value is logged and ignored (#41)
+- `/api/repos` falls back to the default order for an unknown `sort` or `direction` instead of returning an error (#37)
+- The new-release notice shows only when a newer release exists, and `main` Docker images report their `git describe` version (#38)
+
+**Full Changelog**: https://github.com/vladkens/ghstats/compare/v0.10.0...v0.11.0
 
 ---
 
