@@ -23,6 +23,10 @@ pub struct Repo {
   pub open_issues_count: u32,
   pub fork: bool,
   pub archived: bool,
+  #[serde(default)]
+  pub private: bool,
+  #[serde(default)]
+  pub is_template: bool,
   // Undocumented; owners can disable pull requests and then /pulls returns 404
   #[serde(default)]
   pub has_pull_requests: Option<bool>,
@@ -128,13 +132,6 @@ impl<T> Page<T> {
       Self::Repositories { repositories } => repositories,
     }
   }
-}
-
-#[derive(Deserialize)]
-struct InstallationRepo {
-  #[serde(flatten)]
-  repo: Repo,
-  private: bool,
 }
 
 enum TokenSource {
@@ -257,14 +254,8 @@ impl GhClient {
     if self.token.read().await?.starts_with("ghs_") {
       let url = format!("{}/installation/repositories", self.base_url);
       let req = self.client.get(url);
-      let dat: Vec<InstallationRepo> = self.with_pagination(req).await?;
-      return Ok(
-        dat
-          .into_iter()
-          .filter(|item| include_private || !item.private)
-          .map(|item| item.repo)
-          .collect(),
-      );
+      let dat: Vec<Repo> = self.with_pagination(req).await?;
+      return Ok(dat.into_iter().filter(|x| include_private || !x.private).collect());
     }
 
     let visibility = if include_private { "all" } else { "public" };

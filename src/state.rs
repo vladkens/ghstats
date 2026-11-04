@@ -2,8 +2,9 @@ use std::sync::Mutex;
 use std::time::Instant;
 
 use chrono::{DateTime, Utc};
+use serde::Deserialize;
 
-use crate::db_client::{DbClient, RepoFilter, RepoTotals};
+use crate::db_client::{DbClient, RepoFilter, RepoSort, RepoTotals};
 use crate::filter::{Filter, Repo};
 use crate::gh_client::GhClient;
 use crate::types::Res;
@@ -106,6 +107,20 @@ fn read_filter(input: &str) -> Filter {
   parse_or_all("GHS_FILTER", &query, false)
 }
 
+// a sort key of the home page URL, e.g. `stars` or `views_count`
+fn read_sort(input: &str) -> RepoSort {
+  let input = input.trim();
+  if input.is_empty() {
+    return RepoSort::default();
+  }
+
+  let de = serde::de::value::StrDeserializer::<serde::de::value::Error>::new(input);
+  RepoSort::deserialize(de).unwrap_or_else(|_| {
+    tracing::error!("invalid GHS_SORT, ignored: {input:?}");
+    RepoSort::default()
+  })
+}
+
 fn env_bool(key: &str) -> bool {
   let val = std::env::var(key).unwrap_or_else(|_| "false".to_string()).to_lowercase();
   val == "true" || val == "1"
@@ -160,6 +175,7 @@ pub struct AppState {
   pub show: Filter,
   pub include_private: bool,
   pub version_check: bool,
+  pub default_sort: RepoSort,
   pub last_release: Mutex<String>,
   db_health: Mutex<DbHealth>,
   sync_status: Mutex<SyncStatus>,
@@ -196,6 +212,7 @@ impl AppState {
 
     let include_private = env_bool("GHS_INCLUDE_PRIVATE");
     let version_check = !env_bool("GHS_DISABLE_VERSION_CHECK");
+    let default_sort = read_sort(&std::env::var("GHS_SORT").unwrap_or_default());
 
     let last_release = Mutex::new(env!("CARGO_PKG_VERSION").to_string());
     let db_health = Mutex::new(DbHealth::new(Ok(())));
@@ -207,6 +224,7 @@ impl AppState {
       show,
       include_private,
       version_check,
+      default_sort,
       last_release,
       db_health,
       sync_status,
@@ -330,6 +348,7 @@ impl AppState {
       show: Filter::parse("", true).unwrap(),
       include_private: false,
       version_check: false,
+      default_sort: RepoSort::default(),
       last_release: Mutex::new(env!("CARGO_PKG_VERSION").to_string()),
       db_health: Mutex::new(DbHealth::new(Ok(()))),
       sync_status: Mutex::new(SyncStatus::default()),
@@ -340,6 +359,14 @@ impl AppState {
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn ghs_sort_reads_url_keys() {
+    assert_eq!(read_sort(""), RepoSort::Views);
+    assert_eq!(read_sort(" stars "), RepoSort::Stars);
+    assert_eq!(read_sort("clones_count"), RepoSort::Clones);
+    assert_eq!(read_sort("bogus"), RepoSort::Views, "invalid falls back to the default");
+  }
 
   // the GHS_FILTER matcher before the query syntax, kept to check the translation
   struct GhsFilter {
