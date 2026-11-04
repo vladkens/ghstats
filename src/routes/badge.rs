@@ -154,7 +154,7 @@ pub async fn repo_badge(
     .db
     .get_repo_totals(&repo)
     .await?
-    .filter(|totals| state.filter.is_included(&totals.name, totals.fork, totals.archived))
+    .filter(|totals| state.is_included(&totals.name, totals.fork, totals.archived))
     .ok_or_else(|| AppError::status(StatusCode::NOT_FOUND))?;
 
   render_badge(&state, BadgeScope { repos: vec![totals], total: false }, metric, query).await
@@ -447,7 +447,6 @@ mod tests {
   use super::*;
   use crate::db_client::DbClient;
   use crate::gh_client::{Repo, RepoClones, RepoViews, TrafficDaily};
-  use crate::helpers::GhsFilter;
 
   fn db_path(test_name: &str) -> String {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -459,7 +458,7 @@ mod tests {
 
   async fn test_state(test_name: &str, filter: &str) -> Arc<AppState> {
     let db = DbClient::new(&db_path(test_name)).await.unwrap();
-    Arc::new(AppState::for_test(db, GhsFilter::new(filter)))
+    Arc::new(AppState::for_test(db, filter))
   }
 
   fn sample_repo(id: u64, name: &str, stars: u32) -> Repo {

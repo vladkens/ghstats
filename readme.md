@@ -147,64 +147,47 @@ GHS_CUSTOM_LINKS="Blog|https://medium.com/@vladkens,Github|https://github.com/vl
 
 By default, `ghstats` asks GitHub for the latest `ghstats` release on the metrics schedule (hourly by default) and shows a notice in the UI when a newer one is available. Set `GHS_DISABLE_VERSION_CHECK=true` to turn this request off.
 
-### Filter repos
+### Filtering
 
-You can filter repos for display (and data collection). You can select a specific org/user or a specific list of repositories. This is configured via the `GHS_FILTER` environment variable. You can use negation in the rules to remove a specific repo or org/user using the `!` symbol. By default, all repos are shown.
+Two variables pick the repos, both written in one query syntax like GitHub search:
 
-_Note: Statistics on previously downloaded repos remain in database, but they are hidden from display._
-
-Usage examples:
-
-```sh
-GHS_FILTER=vladkens/macmon,vladkens/ghstats # show only this two repo
-GHS_FILTER=vladkens/*,foo-org/bar # show all vladkens repos and one repo from `foo-org`
-GHS_FILTER=vladkens/*,!vladkens/apigen-ts # show all vladkens repos except `apigen-ts`
-GHS_FILTER=*,!vladkens/apigen-ts,!foo-org/bar # show all repos expect two
-
-GHS_FILTER=*,!fork # show all repos expect forks
-GHS_FILTER=vladkens/*,!fork # show all vladkens repos expect forks
-GHS_FILTER=*,vladkens/some-fork,!fork # show all repos expect forks and keep `some-fork`
-
-GHS_FILTER=*,!archived # show all repos expect archived
-```
-
-Filtering rules:
-
-- If no filter provided all repos will be shown (implicitly `*`)
-- There are two kind of rules: direct (`foo/bar`, `foo/*`) and meta (`*`, `!fork`, `!archived`)
-- Direct rule can be wildcard (`foo/*` – include all repos of `foo` org / user)
-- Direct rules are applied first, then meta
-- If no direct rules specified, all repos included by default (implicitly `*`)
-- If at least one direct rule – all repos excluded by default (pass `*` explicitly to include all)
-- Meta-exclusion rules are: `!fork`, `!archived`
-- Wildcard rules do not work with meta-exclusion rules
-
-### Show repos
-
-`GHS_SHOW` picks the repos shown on the public pages and hides the rest from the home list and their repo pages (a hidden repo's page is a 404), while their data is still collected and badges and the API are unchanged.
+- `GHS_FILTER` picks the repos `ghstats` collects and shows anywhere (pages, API, badges); repos outside it aren't synced, and the stats they already have stay in the database, hidden
+- `GHS_SHOW` picks which of the collected repos are shown on the public pages: the rest are hidden from the home list and their repo pages (a hidden repo's page is a 404), while their data is still collected and badges and the API are unchanged
 
 ```sh
+GHS_FILTER='vladkens/*' # only vladkens repos
+GHS_FILTER='vladkens/macmon OR vladkens/ghstats' # only these two repos
+GHS_FILTER='vladkens/* OR foo-org/bar' # vladkens repos and one repo from `foo-org`
+GHS_FILTER='vladkens/* !vladkens/apigen-ts' # vladkens repos except `apigen-ts`
+GHS_FILTER='!vladkens/apigen-ts !foo-org/bar' # all repos except two
+GHS_FILTER='!fork' # all repos except forks
+GHS_FILTER='vladkens/* !fork' # vladkens repos except forks
+GHS_FILTER='!fork OR vladkens/some-fork' # all repos except forks, but keep `some-fork`
+GHS_FILTER='!fork !archived' # all repos except forks and archived
+
 GHS_SHOW='stars:>=25 OR age:<3m' # 25+ stars or created in the last 3 months
-GHS_SHOW='(stars:>=25 OR age:<3m) fork:false' # the same without forks
+GHS_SHOW='(stars:>=25 OR age:<3m) !fork' # the same without forks
 GHS_SHOW='stars:>=25 OR vladkens/wavo' # and always show `wavo`
 GHS_SHOW='vladkens/* stars:10..100' # vladkens repos with 10 to 100 stars
 ```
 
-The syntax is like GitHub search:
+The syntax:
 
-- A term is `field:value`; a word without `field:` matches the repo name, so `vladkens/*` is `repo:vladkens/*`
-- Numbers and durations take `25`, `>25`, `>=25`, `<25`, `<=25` and inclusive ranges `10..50`, `10..*`, `*..50`; numbers may end in `k` (`1.5k` is 1500) and take no thousands separators, since a comma means AND: write `stars:>=1k` or `stars:>=1000`, not `1,000`
+- A term is `field:value`; a word without `field:` matches the repo name, so `vladkens/*` is `repo:vladkens/*`, except the words `fork` and `archived` (any case), which are `fork:true` and `archived:true`, so `!fork` drops forks
+- Numbers and durations take `25`, `>25`, `>=25`, `<25`, `<=25` and inclusive ranges `10..50`, `10..*`, `*..50`; numbers may end in `k` (`1.5k` is 1500) and take no thousands separators: write `1k` or `1000`
 - Durations are `90d`, `2w`, `3m` (30 days each) or `1y` (365 days)
-- Terms separated by spaces, commas or `AND` must all match; `OR` (uppercase) matches either side; `!` negates a term or a group; `( ... )` groups
+- Terms separated by spaces or `AND` must all match; `OR` (uppercase) matches either side; `!` negates a term or a group; `( ... )` groups
 - `!` binds tightest, then AND, then OR: `a OR b c` is `a OR (b c)`
-- Empty shows all repos; an invalid value stops `ghstats` at startup with the error and its position
+- Empty means all repos; an invalid value is logged as an error at startup and the variable is ignored
 
 | Field | Value | Example |
 | --- | --- | --- |
-| `repo` | name with `*` wildcards, any case | `repo:vladkens/*` |
-| `stars`, `forks`, `issues`, `prs` | current count | `stars:>=1k` |
-| `age` | time since the repo was created on GitHub (unknown until the next sync, then terms on it don't match) | `age:<3m` |
+| `repo` | `owner/name` with `*` wildcards on either side, any case; a value without exactly one `/` like `vladkens` is an error | `repo:vladkens/*`, `*/ghstats` |
 | `fork`, `archived` | `true` or `false` | `fork:false` |
+| `stars`, `forks`, `issues`, `prs` (`GHS_SHOW` only) | current count | `stars:>=1k` |
+| `age` (`GHS_SHOW` only) | time since the repo was created on GitHub (unknown until the next sync, then terms on it don't match) | `age:<3m` |
+
+Old comma values of `GHS_FILTER` like `!fork,vladkens/*` keep working, with two deliberate improvements: globs like `vladkens/apigen-*` work (the old rules took only `owner/*`), and a list of only `!owner/repo` excludes means all repos except them (before it collected nothing).
 
 ### API endpoint
 

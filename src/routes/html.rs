@@ -1085,9 +1085,7 @@ pub async fn repo_page(
     None => return AppError::not_found(),
   };
 
-  if !state.filter.is_included(&totals.name, totals.fork, totals.archived)
-    || !state.is_shown(&totals)
-  {
+  if !state.is_included(&totals.name, totals.fork, totals.archived) || !state.is_shown(&totals) {
     return AppError::not_found();
   }
 
@@ -1605,8 +1603,6 @@ mod tests {
   use super::*;
   use crate::filter::Filter;
   use crate::gh_client::{Repo, RepoReferrer, RepoViews, TrafficDaily};
-  use crate::helpers::GhsFilter;
-  use crate::state::SHOW_FIELDS;
 
   fn db_path(name: &str) -> String {
     let nanos = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
@@ -1678,7 +1674,7 @@ mod tests {
   #[tokio::test]
   async fn base_starts_with_doctype() {
     let db = DbClient::new(&db_path("base")).await.unwrap();
-    let state = Arc::new(AppState::for_test(db, GhsFilter::new("")));
+    let state = Arc::new(AppState::for_test(db, ""));
     let page = base(&state, vec![], html!()).into_string();
 
     assert!(page.starts_with("<!DOCTYPE html><html><head><meta charset=\"utf-8\">"));
@@ -2030,7 +2026,7 @@ mod tests {
     let refs = [RepoReferrer { referrer: "google.com".into(), count: 3, uniques: 2 }];
     db.insert_referrers(&test_repo(0), &format!("{}T00:00:00Z", ago(0)), &refs).await.unwrap();
     db.update_deltas().await.unwrap();
-    let state = Arc::new(AppState::for_test(db, GhsFilter::new("")));
+    let state = Arc::new(AppState::for_test(db, ""));
 
     let page = get(&state, "/o/r?period=7d", None).await.unwrap().into_string();
     assert!(page.contains("<h2>Stars</h2><div class=\"value\">0</div>"), "stars of the latest row");
@@ -2060,7 +2056,7 @@ mod tests {
     let db = DbClient::new(&db_path("excluded")).await.unwrap();
     db.insert_repo(&test_repo(5)).await.unwrap();
     db.insert_stats(&test_repo(5), &format!("{}T00:00:00Z", today()), &[]).await.unwrap();
-    let state = Arc::new(AppState::for_test(db, GhsFilter::new("other/*")));
+    let state = Arc::new(AppState::for_test(db, "other/*"));
 
     for target in [None, Some("refs_table"), Some("path_table")] {
       let res = get(&state, "/o/r", target).await.unwrap_err();
@@ -2084,8 +2080,8 @@ mod tests {
       db.insert_stats(repo, &format!("{}T00:00:00Z", ago(0)), &[]).await.unwrap();
     }
 
-    let mut state = AppState::for_test(db, GhsFilter::new(""));
-    state.show = Filter::parse("stars:>=25 OR age:<3m", &SHOW_FIELDS).unwrap();
+    let mut state = AppState::for_test(db, "");
+    state.show = Filter::parse("stars:>=25 OR age:<3m", true).unwrap();
     let state = Arc::new(state);
 
     let page = get(&state, "/", None).await.unwrap().into_string();
@@ -2165,7 +2161,7 @@ mod tests {
     let rel = release(8, "v0.1.0", 30);
     db.insert_release_assets(&other(5), &format!("{}T00:00:00Z", ago(0)), &[rel]).await.unwrap();
 
-    let state = Arc::new(AppState::for_test(db, GhsFilter::new("")));
+    let state = Arc::new(AppState::for_test(db, ""));
     let page = get(&state, "/o/r?period=7d", None).await.unwrap().into_string();
     assert!(page.contains("<h2>Downloads</h2><div class=\"value\">50</div>"));
     assert!(page.contains("id=\"chart_downloads\"") && page.contains("id=\"releases_table\""));
@@ -2193,7 +2189,7 @@ mod tests {
 
     // only o/b visible: no real 7d number yet, so no column; at All its total, sortable
     let db = DbClient::new(&path).await.unwrap();
-    let state = Arc::new(AppState::for_test(db, GhsFilter::new("o/b")));
+    let state = Arc::new(AppState::for_test(db, "o/b"));
     let url = "/?period=7d&sort=downloads&direction=asc";
     let frag = get(&state, url, Some("repos_table")).await.unwrap().into_string();
     assert!(!frag.contains("Downloads"));
