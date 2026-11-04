@@ -181,14 +181,30 @@ Filtering rules:
 
 ### Show repos
 
-`GHS_SHOW` hides repos from the home page list only: data is still collected, and repo pages, badges and the API are unchanged. It takes the `GHS_FILTER` rules plus conditions on the current counts: `stars`, `forks`, `issues` and `prs` with `>`, `>=`, `<`, `<=` or `=`. All conditions must hold (`!` negates one), an explicit `owner/repo` shows a repo anyway, and `owner/*` limits the conditions to that owner. The hidden repos can be shown with the link below the list.
+`GHS_SHOW` picks the repos shown on the public pages and hides the rest from the home list and their repo pages (a hidden repo's page is a 404), while their data is still collected and badges and the API are unchanged.
 
 ```sh
-GHS_SHOW=stars>=25 # show repos with at least 25 stars
-GHS_SHOW=stars>=25,vladkens/wavo # and always show `wavo`
-GHS_SHOW=stars>=25,!fork # repos with at least 25 stars, no forks
-GHS_SHOW=vladkens/*,!issues=0 # vladkens repos with open issues
+GHS_SHOW='stars:>=25 OR age:<3m' # 25+ stars or created in the last 3 months
+GHS_SHOW='(stars:>=25 OR age:<3m) fork:false' # the same without forks
+GHS_SHOW='stars:>=25 OR vladkens/wavo' # and always show `wavo`
+GHS_SHOW='vladkens/* stars:10..100' # vladkens repos with 10 to 100 stars
 ```
+
+The syntax is like GitHub search:
+
+- A term is `field:value`; a word without `field:` matches the repo name, so `vladkens/*` is `repo:vladkens/*`
+- Numbers and durations take `25`, `>25`, `>=25`, `<25`, `<=25` and inclusive ranges `10..50`, `10..*`, `*..50`; numbers may end in `k` (`1.5k` is 1500) and take no thousands separators, since a comma means AND: write `stars:>=1k` or `stars:>=1000`, not `1,000`
+- Durations are `90d`, `2w`, `3m` (30 days each) or `1y` (365 days)
+- Terms separated by spaces, commas or `AND` must all match; `OR` (uppercase) matches either side; `!` negates a term or a group; `( ... )` groups
+- `!` binds tightest, then AND, then OR: `a OR b c` is `a OR (b c)`
+- Empty shows all repos; an invalid value stops `ghstats` at startup with the error and its position
+
+| Field | Value | Example |
+| --- | --- | --- |
+| `repo` | name with `*` wildcards, any case | `repo:vladkens/*` |
+| `stars`, `forks`, `issues`, `prs` | current count | `stars:>=1k` |
+| `age` | time since the repo was created on GitHub (unknown until the next sync, then terms on it don't match) | `age:<3m` |
+| `fork`, `archived` | `true` or `false` | `fork:false` |
 
 ### API endpoint
 

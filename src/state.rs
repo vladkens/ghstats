@@ -4,12 +4,43 @@ use std::time::Instant;
 use chrono::{DateTime, Utc};
 
 use crate::db_client::{DbClient, RepoFilter, RepoTotals};
+use crate::filter::{Filter, Kind, Schema, Value};
 use crate::gh_client::GhClient;
 use crate::helpers::GhsFilter;
 use crate::types::Res;
 
 pub const DB_HEALTH_INTERVAL_SECS: u64 = 60 * 60;
 pub const DB_NOT_WRITABLE_MESSAGE: &str = "SQLite database is not writable. ghstats Docker images run as a non-root user, so existing bind-mounted data directories may need an ownership fix. For docker run: docker run --rm -u root -v ./data:/app/data ghcr.io/vladkens/ghstats:latest chown -R appuser:appgroup /app/data. For Docker Compose: docker compose run --rm --user root ghstats chown -R appuser:appgroup /app/data";
+
+pub const SHOW_FIELDS: Schema = Schema {
+  fields: &[
+    ("repo", Kind::Glob),
+    ("stars", Kind::Int),
+    ("forks", Kind::Int),
+    ("issues", Kind::Int),
+    ("prs", Kind::Int),
+    ("age", Kind::Duration),
+    ("fork", Kind::Bool),
+    ("archived", Kind::Bool),
+  ],
+  default: "repo",
+};
+
+fn show_value<'a>(x: &'a RepoTotals, field: &str, now: DateTime<Utc>) -> Option<Value<'a>> {
+  let value = match field {
+    "repo" => Value::Str(&x.name),
+    "stars" => Value::Num(x.stars.into()),
+    "forks" => Value::Num(x.forks.into()),
+    "issues" => Value::Num(x.issues.into()),
+    "prs" => Value::Num(x.prs.into()),
+    "age" => Value::Num((now - x.created_at.as_deref()?.parse::<DateTime<Utc>>().ok()?).num_days()),
+    "fork" => Value::Bool(x.fork),
+    "archived" => Value::Bool(x.archived),
+    _ => return None,
+  };
+
+  Some(value)
+}
 
 fn env_bool(key: &str) -> bool {
   let val = std::env::var(key).unwrap_or_else(|_| "false".to_string()).to_lowercase();
@@ -62,7 +93,7 @@ pub struct AppState {
   pub db: DbClient,
   pub gh: GhClient,
   pub filter: GhsFilter,
-  pub show: GhsFilter,
+  pub show: Filter,
   pub include_private: bool,
   pub version_check: bool,
   pub last_release: Mutex<String>,
@@ -78,6 +109,16 @@ impl AppState {
       tracing::error!("either GITHUB_TOKEN or GITHUB_TOKEN_FILE must be provided");
       std::process::exit(1);
     }
+
+    // the dashboard is public, so a broken GHS_SHOW must not fall back to showing everything
+    let show = std::env::var("GHS_SHOW").unwrap_or_default();
+    let show = match Filter::parse(&show, &SHOW_FIELDS) {
+      Ok(x) => x,
+      Err(e) => {
+        tracing::error!("invalid GHS_SHOW: {}", e);
+        std::process::exit(1);
+      }
+    };
 
     let db_path = std::env::var("DB_PATH").unwrap_or("./data/ghstats.db".to_string());
     tracing::info!("db_path: {}", db_path);
@@ -97,11 +138,6 @@ impl AppState {
     let filter = std::env::var("GHS_FILTER").unwrap_or_default();
     let filter = GhsFilter::new(&filter);
     tracing::info!("{:?}", filter);
-
-    let (show, ignored) = GhsFilter::show(&std::env::var("GHS_SHOW").unwrap_or_default());
-    for rule in ignored {
-      tracing::warn!("GHS_SHOW: ignored invalid rule '{}'", rule);
-    }
 
     let include_private = env_bool("GHS_INCLUDE_PRIVATE");
     let version_check = !env_bool("GHS_DISABLE_VERSION_CHECK");
@@ -192,12 +228,24 @@ impl AppState {
     Ok(repos)
   }
 
+  pub fn is_shown(&self, x: &RepoTotals) -> bool {
+    let now = Utc::now();
+    self.show.matches(|field| show_value(x, field, now))
+  }
+
+  // the public pages: GHS_SHOW hides repos there, the API and badges still see them
+  pub async fn get_repos_shown(&self, qs: &RepoFilter) -> Res<Vec<RepoTotals>> {
+    let mut repos = self.get_repos_filtered(qs).await?;
+    repos.retain(|x| self.is_shown(x));
+    Ok(repos)
+  }
+
   pub async fn get_owners(&self) -> Res<Vec<String>> {
     let filter = RepoFilter::default();
     let repos = self.db.get_repos(&filter).await?;
     let mut owners: Vec<String> = repos
       .iter()
-      .filter(|x| self.filter.is_included(&x.name, x.fork, x.archived))
+      .filter(|x| self.filter.is_included(&x.name, x.fork, x.archived) && self.is_shown(x))
       .filter_map(|x| x.name.split('/').next().map(|s| s.to_string()))
       .collect();
     owners.sort();
@@ -211,7 +259,7 @@ impl AppState {
       db,
       gh: GhClient::new("test-token".to_string()).unwrap(),
       filter,
-      show: GhsFilter::new(""),
+      show: Filter::parse("", &SHOW_FIELDS).unwrap(),
       include_private: false,
       version_check: false,
       last_release: Mutex::new(env!("CARGO_PKG_VERSION").to_string()),

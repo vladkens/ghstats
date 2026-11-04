@@ -213,6 +213,8 @@ pub struct RepoTotals {
   pub clones_uniques: i32,
   pub views_count: i32,
   pub views_uniques: i32,
+  #[serde(skip)] // only for GHS_SHOW, the API shape stays
+  pub created_at: Option<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -589,6 +591,7 @@ fn repo_totals_from_row(row: &Row<'_>) -> rusqlite::Result<RepoTotals> {
     clones_uniques: row.get("clones_uniques")?,
     views_count: row.get("views_count")?,
     views_uniques: row.get("views_uniques")?,
+    created_at: row.get("created_at")?,
   })
 }
 
