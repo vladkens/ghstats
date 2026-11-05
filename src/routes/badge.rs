@@ -72,13 +72,13 @@ impl Metric {
 }
 
 #[derive(Clone, Copy)]
-enum Period {
+pub(super) enum Period {
   Days(i64),
   Tracked,
 }
 
 impl Period {
-  fn parse(value: &str) -> Result<Self, AppError> {
+  pub(super) fn parse(value: &str) -> Result<Self, AppError> {
     match value {
       "7d" => Ok(Self::Days(7)),
       "30d" => Ok(Self::Days(30)),

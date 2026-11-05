@@ -30,6 +30,7 @@ or public stats pages where GitHub's built-in traffic tab is too short-lived.
 - Repo filtering by owner, exact name, forks, and archived status
 - JSON API for exposing collected stats to personal sites or other tools
 - Embeddable SVG badges for repository, portfolio, and service metrics
+- Embeddable SVG cards with your top repositories and account totals
 - Small self-hosted deployment: one Rust binary, one SQLite database, one Docker image
 
 ## Quick start
@@ -155,8 +156,8 @@ The home page is sorted by views by default. Set `GHS_SORT` to another column to
 
 Two variables pick the repos, both written in one query syntax like GitHub search:
 
-- `GHS_FILTER` picks the repos `ghstats` collects and shows anywhere (pages, API, badges); repos outside it aren't synced, and the stats they already have stay in the database, hidden
-- `GHS_SHOW` picks which of the collected repos are shown on the public pages: the rest are hidden from the home list and their repo pages (a hidden repo's page is a 404), while their data is still collected and badges and the API are unchanged
+- `GHS_FILTER` picks the repos `ghstats` collects and shows anywhere (pages, API, badges, cards); repos outside it aren't synced, and the stats they already have stay in the database, hidden
+- `GHS_SHOW` picks which of the collected repos are shown on the public pages: the rest are hidden from the home list, their repo pages (a hidden repo's page is a 404) and the cards, while their data is still collected and badges and the API are unchanged
 
 ```sh
 GHS_FILTER='vladkens/*' # only vladkens repos
@@ -284,6 +285,38 @@ Markdown example:
 ```
 
 Badge URLs cannot send `GHS_API_TOKEN`. If the instance contains private repository data, protect the instance with a reverse proxy or exclude those repositories with `GHS_FILTER` before publishing badge URLs.
+
+### Card endpoints
+
+`ghstats` can also render SVG cards for a GitHub profile README or a personal site:
+
+| Card       | Endpoint           | Shows                                                                       |
+| ---------- | ------------------ | --------------------------------------------------------------------------- |
+| Top stars  | `/card/stars.svg`  | Top 5 repositories by current stars, with the change in the period          |
+| Top forks  | `/card/forks.svg`  | Top 5 repositories by current forks, with the change in the period          |
+| Top clones | `/card/clones.svg` | Top 5 repositories by clones in the period                                  |
+| Top views  | `/card/views.svg`  | Top 5 repositories by views in the period                                   |
+| Totals     | `/card/totals.svg` | Stars, forks, views, clones and repositories, with the change in the period |
+
+Examples, rendered by a real instance and saved in [examples](examples):
+
+![Top stars](examples/stars.svg) ![Top forks](examples/forks.svg) ![Top clones](examples/clones.svg) ![Top views](examples/views.svg) ![Totals](examples/totals.svg)
+
+Query parameters:
+
+- `period`: `7d`, `30d` (default), `90d` or `tracked`, as for badges. With `tracked` the top lists use all collected history and no change is shown
+- `theme`: `auto` (default) follows the viewer's light or dark mode, `light` and `dark` fix the colors
+- `brand`: `brand=1` (default) keeps the `ghstats` wordmark in the background, `brand=0` removes it
+
+Any other value of these parameters is a 400 error.
+
+Cards are public and show repository names. They follow both `GHS_FILTER` and `GHS_SHOW` and never show private repositories, also with `GHS_INCLUDE_PRIVATE=true`: there is no option to include them, and the totals count the same set of repositories. Cards are cached for an hour.
+
+GitHub loads images through its own proxy, so the server must be reachable from the internet for a card to show up in a README:
+
+```md
+![Top stars](https://ghstats.example.com/card/stars.svg?period=30d)
+```
 
 ## 🤝 Contributing
 

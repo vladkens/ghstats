@@ -1,6 +1,7 @@
 mod api;
 pub(crate) mod assets;
 mod badge;
+mod card;
 mod html;
 
 use std::sync::Arc;
@@ -43,6 +44,10 @@ pub fn badge_routes() -> Router<Arc<AppState>> {
   Router::new()
     .route("/badge/{metric}", get(badge::total_badge))
     .route("/badge/{owner}/{repo}/{metric}", get(badge::repo_badge))
+}
+
+pub fn card_routes() -> Router<Arc<AppState>> {
+  Router::new().route("/card/{name}", get(card::card))
 }
 
 pub fn asset_routes() -> Router<Arc<AppState>> {
