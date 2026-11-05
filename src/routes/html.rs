@@ -237,11 +237,7 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
         div class="wrap" {
           header class="topbar" {
             nav class="crumbs" aria-label="Breadcrumb" {
-              @if navs.is_empty() {
-                span { "Repos" }
-              } @else {
-                a href="/" { "Repos" }
-              }
+              a href="/" { "Repos" }
 
               @for (name, url) in &navs {
                 span class="sep" { "›" }
@@ -549,11 +545,34 @@ fn lang_color(lang: &str) -> &'static str {
   }
 }
 
+/// Visibility first, then the states that change how a repo is used
+fn repo_badges(repo: &RepoTotals) -> Markup {
+  let kinds = [
+    (repo.private, "Private"),
+    (repo.is_template, "Template"),
+    (repo.archived, "Archived"),
+    (repo.fork, "Fork"),
+  ];
+
+  html!(
+    @if kinds.iter().any(|x| x.0) {
+      span class="badges" {
+        @for (_, label) in kinds.iter().filter(|x| x.0) { span class="badge" { (label) } }
+      }
+    }
+  )
+}
+
+fn lang_label(lang: &str) -> Markup {
+  html!(span class="lang" { i class="dot" style=(format!("background:{}", lang_color(lang))) {} (lang) })
+}
+
 const TOPICS_SHOWN: usize = 6;
 
 fn info_card(totals: &RepoTotals, meta: &RepoMeta, today: NaiveDate) -> Markup {
   let date = |x: &Option<String>| x.as_deref().and_then(|x| x.get(..10)?.parse::<NaiveDate>().ok());
   let created = date(&meta.created_at);
+  let pushed = date(&meta.pushed_at);
   let homepage =
     meta.homepage.as_deref().filter(|x| x.starts_with("https://") || x.starts_with("http://"));
   let more = meta.topics.get(TOPICS_SHOWN..).unwrap_or_default();
@@ -566,18 +585,18 @@ fn info_card(totals: &RepoTotals, meta: &RepoMeta, today: NaiveDate) -> Markup {
             (totals.name) span class="ext" aria-hidden="true" { "↗" }
           }
         }
+        (repo_badges(totals))
         @if let Some(desc) = totals.description.as_deref().filter(|x| !x.is_empty()) {
           p class="desc" title=(desc) { (desc) }
         }
       }
 
-      @if meta.language.is_some() || meta.license.is_some() || created.is_some() {
+      @if meta.language.is_some() || meta.license.is_some() || created.is_some() || pushed.is_some() {
         div class="facts" {
-          @if let Some(x) = &meta.language {
-            span class="lang" { i class="dot" style=(format!("background:{}", lang_color(x))) {} (x) }
-          }
+          @if let Some(x) = &meta.language { (lang_label(x)) }
           @if let Some(x) = &meta.license { span { (x) } }
           @if let Some(x) = created { span title=(day_title(x)) { "created " (ago(x, today)) } }
+          @if let Some(x) = pushed { span title=(day_title(x)) { "pushed " (ago(x, today)) } }
         }
       }
 
@@ -1234,10 +1253,21 @@ struct IndexCol {
 
 fn index_cols(downloads: bool) -> Vec<IndexCol> {
   let name: IndexCell = |x, _| {
-    let (owner, name) = x.repo.name.split_once('/').unwrap_or(("", &x.repo.name));
-    html!(a href=(format!("/{}", x.repo.name)) title=(x.repo.name) {
-      span class="owner" { (owner) "/" } (name)
-    })
+    let repo = x.repo;
+    let (owner, name) = repo.name.split_once('/').unwrap_or(("", &repo.name));
+    let desc = repo.description.as_deref().filter(|x| !x.is_empty());
+    html!(
+      div class="repo-line" {
+        a href=(format!("/{}", repo.name)) title=(repo.name) { span class="owner" { (owner) "/" } (name) }
+        (repo_badges(repo))
+      }
+      @if repo.language.is_some() || desc.is_some() {
+        div class="repo-sub" {
+          @if let Some(x) = &repo.language { (lang_label(x)) }
+          @if let Some(x) = desc { span class="desc" title=(x) { (x) } }
+        }
+      }
+    )
   };
 
   let views: IndexCell = |x, p| {
@@ -1341,6 +1371,56 @@ fn two_lines(value: i64, p: Period, second: Result<Markup, &str>) -> Markup {
       @match second {
         Ok(x) => (x),
         Err(why) => small class="muted" title=(why) { "—" },
+      }
+    }
+  )
+}
+
+fn plural(n: usize, one: &str, many: &str) -> String {
+  format!("{} {}", num(n as i64), if n == 1 { one } else { many })
+}
+
+/// Totals of the listed repos; swapped out of band with the table so it follows the filters
+fn index_summary(rows: &[IndexRow], p: Period, oob: bool) -> Markup {
+  let sum = |f: fn(&IndexRow) -> i64| rows.iter().map(f).sum::<i64>();
+  let private = rows.iter().filter(|x| x.repo.private).count();
+  let templates = rows.iter().filter(|x| x.repo.is_template).count();
+
+  let mut mix = Vec::new();
+  if private > 0 {
+    mix.push(plural(private, "private", "private"));
+  }
+
+  if templates > 0 {
+    mix.push(plural(templates, "template", "templates"));
+  }
+
+  let gains: Vec<i64> = rows.iter().filter_map(|x| x.per.stars_gain()).collect();
+  let stars_sub = match (p.days(), gains.is_empty()) {
+    (Some(_), false) => format!("{} in {}", signed(gains.iter().sum()), p.label()),
+    _ => "all time".to_string(),
+  };
+
+  let cells = [
+    ("Repos", rows.len() as i64, mix.join(" · ")),
+    ("Stars", sum(|x| x.per.stars), stars_sub),
+    (
+      "Forks",
+      sum(|x| x.repo.forks as i64),
+      plural(sum(|x| x.repo.issues as i64) as usize, "open issue", "open issues"),
+    ),
+    ("Views", sum(|x| x.per.views), p.title()),
+    ("Clones", sum(|x| x.per.clones), p.title()),
+  ];
+
+  html!(
+    section id="summary" class="summary" aria-label="Totals" hx-swap-oob=[oob.then_some("true")] {
+      @for (label, value, sub) in &cells {
+        div class="sum" {
+          h2 { (label) }
+          div class="value" { (num(*value)) }
+          div class="sub" { (sub) }
+        }
       }
     }
   )
@@ -1472,9 +1552,10 @@ pub async fn index(
   let has_dl = rows.iter().any(|x| x.dl.as_ref().is_some_and(|x| x.value.is_ok()));
   let cols = index_cols(has_dl);
 
+  let req_sort = qs.sort.unwrap_or(state.default_sort);
   // a downloads sort without the column shows the default order; the URL keeps it for other periods
-  let (sort, dir) = match (qs.sort, has_dl) {
-    (RepoSort::Downloads, false) => (RepoSort::Views, Direction::Desc),
+  let (sort, dir) = match (req_sort, has_dl) {
+    (RepoSort::Downloads, false) => (RepoSort::default(), Direction::Desc),
     x => (x.0, qs.direction),
   };
 
@@ -1505,7 +1586,7 @@ pub async fn index(
     }
   };
 
-  let period_url = |x: Period| index_url(&qs, &qs.sort, &qs.direction.to_string(), x);
+  let period_url = |x: Period| index_url(&qs, &req_sort, &qs.direction.to_string(), x);
 
   let table_html = html!(
     table id="repos_table" class="data idx" {
@@ -1544,7 +1625,7 @@ pub async fn index(
   let filter_inputs = |oob: bool| {
     let oob = oob.then_some("true");
     html!(
-      input type="hidden" id="filter_sort" name="sort" value=(qs.sort) hx-swap-oob=[oob] {}
+      input type="hidden" id="filter_sort" name="sort" value=(req_sort) hx-swap-oob=[oob] {}
       input type="hidden" id="filter_direction" name="direction" value=(qs.direction) hx-swap-oob=[oob] {}
       input type="hidden" id="filter_period" name="period" value=(p) hx-swap-oob=[oob] {}
     )
@@ -1552,11 +1633,13 @@ pub async fn index(
 
   if let Some("repos_table") = get_hx_target(&headers) {
     let nav = period_nav(p, true, "#repos_table", period_url);
-    return Ok(html!((table_html)(filter_inputs(true))(nav)));
+    return Ok(html!((table_html)(filter_inputs(true))(nav)(index_summary(&rows, p, true))));
   }
 
   let include = "#filter_sort, #filter_direction, #filter_period";
   let html = html!(
+    (index_summary(&rows, p, false))
+
     div class="toolbar" {
       (filter_inputs(false))
 
@@ -1575,16 +1658,19 @@ pub async fn index(
         }
       }
 
-      input type="search" name="q" value=(cur_q)
-        placeholder="Search repos…"
-        aria-label="Search repos"
-        hx-get="/"
-        hx-trigger="keyup changed delay:300ms, search"
-        hx-target="#repos_table"
-        hx-swap="outerHTML"
-        hx-include=(format!("[name='owner'], {include}"))
-        hx-replace-url="true"
-      {}
+      div class="search" {
+        input type="search" name="q" value=(cur_q)
+          placeholder="Search repos…"
+          aria-label="Search repos"
+          hx-get="/"
+          hx-trigger="keyup changed delay:300ms, search"
+          hx-target="#repos_table"
+          hx-swap="outerHTML"
+          hx-include=(format!("[name='owner'], {include}"))
+          hx-replace-url="true"
+        {}
+        button type="button" aria-label="Clear search" data-clear { "×" }
+      }
 
       (period_nav(p, false, "#repos_table", period_url))
     }
@@ -2125,6 +2211,81 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn index_search_has_a_clear_button() {
+    let db = DbClient::new(&db_path("clear")).await.unwrap();
+    db.insert_repo(&test_repo(5)).await.unwrap();
+    let state = Arc::new(AppState::for_test(db, ""));
+
+    // right after the input: the CSS and the click handler find each other by that
+    let button =
+      "</input><button type=\"button\" aria-label=\"Clear search\" data-clear>×</button>";
+    for uri in ["/", "/?q=o/r"] {
+      let page = get(&state, uri, None).await.unwrap().into_string();
+      assert!(page.contains(button), "{uri}");
+    }
+
+    let page = get(&state, "/?q=o/r", None).await.unwrap().into_string();
+    assert!(page.contains("name=\"q\" value=\"o/r\" placeholder=\"Search repos…\""));
+
+    let frag = get(&state, "/?q=o/r", Some("repos_table")).await.unwrap().into_string();
+    assert!(!frag.contains("data-clear"), "a table swap leaves the toolbar alone");
+  }
+
+  #[tokio::test]
+  async fn index_sorts_by_stars_and_shows_repo_kinds() {
+    let db = DbClient::new(&db_path("kinds")).await.unwrap();
+    let private = Repo { id: 2, full_name: "o/private".into(), private: true, ..test_repo(30) };
+    let template = Repo {
+      id: 3,
+      full_name: "o/template".into(),
+      is_template: true,
+      description: Some("starter kit".into()),
+      language: Some("Rust".into()),
+      ..test_repo(50)
+    };
+    for repo in [test_repo(5), private, template] {
+      db.insert_repo(&repo).await.unwrap();
+      db.insert_stats(&repo, &format!("{}T00:00:00Z", ago(0)), &[]).await.unwrap();
+    }
+
+    let mut state = AppState::for_test(db, "");
+    state.default_sort = RepoSort::Stars;
+    let state = Arc::new(state);
+    let page = get(&state, "/", None).await.unwrap().into_string();
+    assert!(
+      page.contains("<nav class=\"crumbs\" aria-label=\"Breadcrumb\"><a href=\"/\">Repos</a>")
+    );
+
+    let at = |x: &str| page.find(&format!("href=\"/{x}\"")).unwrap();
+    assert!(at("o/template") < at("o/private") && at("o/private") < at("o/r"), "stars desc");
+    assert!(page.contains("<span class=\"badge\">Private</span>"));
+    assert!(page.contains("<span class=\"badges\"><span class=\"badge\">Template</span></span>"));
+    assert!(!page.contains(">Public<"), "public is the unlabelled default");
+    assert_eq!(page.matches("class=\"badges\"").count(), 2, "no wrapper without badges");
+    assert!(page.contains("<span class=\"desc\" title=\"starter kit\">starter kit</span>"));
+    assert!(page.contains("<div class=\"sub\">1 private · 1 template</div>"));
+    assert!(page.contains("<h2>Stars</h2><div class=\"value\">85</div>"));
+
+    let frag = get(&state, "/?q=private", Some("repos_table")).await.unwrap().into_string();
+    assert!(
+      frag.contains("id=\"summary\" class=\"summary\" aria-label=\"Totals\" hx-swap-oob=\"true\"")
+    );
+    assert!(frag.contains("<div class=\"sub\">1 private</div>"), "follows the search");
+
+    let frag = get(&state, "/?q=template", Some("repos_table")).await.unwrap().into_string();
+    assert!(frag.contains("<div class=\"sub\">1 template</div>"));
+
+    let frag = get(&state, "/?q=o/r", Some("repos_table")).await.unwrap().into_string();
+    assert!(frag.contains("<h2>Repos</h2><div class=\"value\">1</div><div class=\"sub\"></div>"));
+
+    let page = get(&state, "/o/private", None).await.unwrap().into_string();
+    assert!(page.contains("<span class=\"badges\"><span class=\"badge\">Private</span></span>"));
+
+    let page = get(&state, "/o/r", None).await.unwrap().into_string();
+    assert!(!page.contains("class=\"badges\"") && !page.contains(">Public<"));
+  }
+
+  #[tokio::test]
   async fn downloads_render_only_with_release_assets() {
     use crate::gh_client::{Release, ReleaseAsset};
 
@@ -2193,7 +2354,9 @@ mod tests {
     let url = "/?period=7d&sort=downloads&direction=asc";
     let frag = get(&state, url, Some("repos_table")).await.unwrap().into_string();
     assert!(!frag.contains("Downloads"));
-    assert!(frag.contains("aria-sort=\"descending\"><button type=\"button\" hx-get=\"/?sort=views_count&amp;direction=asc"));
+    assert!(frag.contains(
+      "aria-sort=\"descending\"><button type=\"button\" hx-get=\"/?sort=views_count&amp;direction=asc"
+    ));
     assert!(frag.contains("name=\"sort\" value=\"downloads\""), "kept for other periods");
     let frag =
       get(&state, "/?period=all&sort=downloads", Some("repos_table")).await.unwrap().into_string();

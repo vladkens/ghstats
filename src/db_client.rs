@@ -165,8 +165,21 @@ fn migrate_v5(db: &Connection) -> Res {
   Ok(())
 }
 
+fn migrate_v6(db: &Connection) -> Res {
+  let queries = vec![
+    "ALTER TABLE repos ADD COLUMN private BOOLEAN NOT NULL DEFAULT FALSE;",
+    "ALTER TABLE repos ADD COLUMN is_template BOOLEAN NOT NULL DEFAULT FALSE;",
+  ];
+
+  for qs in queries {
+    db.execute(qs, [])?;
+  }
+
+  Ok(())
+}
+
 const MIGRATIONS: &[fn(&Connection) -> Res] =
-  &[migrate_v1, migrate_v2, migrate_v3, migrate_v4, migrate_v5];
+  &[migrate_v1, migrate_v2, migrate_v3, migrate_v4, migrate_v5, migrate_v6];
 
 fn migrate(db: &Connection) -> Res {
   let version: i32 = db.query_row("PRAGMA user_version", [], |row| row.get(0))?;
@@ -203,6 +216,9 @@ pub struct RepoTotals {
   pub description: Option<String>,
   pub fork: bool,
   pub archived: bool,
+  pub private: bool,
+  pub is_template: bool,
+  pub language: Option<String>,
   pub date: String,
   pub stars: i32,
   pub forks: i32,
@@ -351,8 +367,8 @@ pub enum RepoSort {
   Prs,
   #[serde(rename = "clones_count")]
   Clones,
-  #[serde(rename = "views_count")]
   #[default]
+  #[serde(rename = "views_count")]
   Views,
   /// release downloads, sorted in Rust (no such column in SQL)
   Downloads,
@@ -488,8 +504,9 @@ fn lenient_opt<'de, D: Deserializer<'de>, T: serde::de::DeserializeOwned>(
 #[derive(Debug, Deserialize, Serialize, Default)]
 #[serde(default)]
 pub struct RepoFilter {
-  #[serde(deserialize_with = "lenient")]
-  pub sort: RepoSort,
+  /// unset means the default order: `GHS_SORT` on the home page, views elsewhere
+  #[serde(deserialize_with = "lenient_opt")]
+  pub sort: Option<RepoSort>,
   #[serde(deserialize_with = "lenient")]
   pub direction: Direction,
   pub q: Option<String>,
@@ -581,6 +598,9 @@ fn repo_totals_from_row(row: &Row<'_>) -> rusqlite::Result<RepoTotals> {
     description: row.get("description")?,
     fork: row.get("fork")?,
     archived: row.get("archived")?,
+    private: row.get("private")?,
+    is_template: row.get("is_template")?,
+    language: row.get("language")?,
     date: row.get("date")?,
     stars: row.get("stars")?,
     forks: row.get("forks")?,
@@ -823,7 +843,7 @@ impl DbClient {
   }
 
   pub async fn get_repos(&self, filter: &RepoFilter) -> Res<Vec<RepoTotals>> {
-    let sort = match filter.sort {
+    let sort = match filter.sort.unwrap_or_default() {
       RepoSort::Downloads => RepoSort::Views,
       x => x,
     };
@@ -1197,15 +1217,17 @@ impl DbClient {
   pub async fn insert_repo(&self, repo: &Repo) -> Res {
     let qs = "
     INSERT INTO repos (
-      id, name, description, archived, fork,
+      id, name, description, archived, fork, private, is_template,
       language, license, topics, created_at, pushed_at, homepage
     )
-    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
     ON CONFLICT(id) DO UPDATE SET
       name = excluded.name,
       description = excluded.description,
       archived = excluded.archived,
       fork = excluded.fork,
+      private = excluded.private,
+      is_template = excluded.is_template,
       language = excluded.language,
       license = excluded.license,
       topics = excluded.topics,
@@ -1228,6 +1250,8 @@ impl DbClient {
         &repo.description,
         repo.archived,
         repo.fork,
+        repo.private,
+        repo.is_template,
         &repo.language,
         license,
         topics,
@@ -1558,7 +1582,7 @@ mod tests {
 
     let conn = db.db.lock().unwrap();
     let version: i32 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-    assert_eq!(version, 5);
+    assert_eq!(version, 6);
 
     let mut stmt = conn.prepare(
       "
@@ -1693,7 +1717,7 @@ mod tests {
 
     let repos = db
       .get_repos(&RepoFilter {
-        sort: RepoSort::Stars,
+        sort: Some(RepoSort::Stars),
         direction: Direction::Desc,
         ..RepoFilter::default()
       })
@@ -2162,7 +2186,7 @@ mod tests {
 
     conn.execute("ALTER TABLE repo_stats DROP COLUMN prs", [])?;
     DbClient::new(&path).await?;
-    assert_eq!(user_version(&conn)?, 5);
+    assert_eq!(user_version(&conn)?, 6);
 
     Ok(())
   }

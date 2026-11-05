@@ -460,6 +460,16 @@
     for (const k of Object.keys(params)) if (params[k] === '') delete params[k];
   });
 
+  // keyup, not search: htmx's "changed" would skip retyping the text that was cleared
+  document.addEventListener('click', e => {
+    const input = e.target.closest('[data-clear]')?.previousElementSibling;
+    if (!input) return;
+
+    input.value = '';
+    input.focus();
+    input.dispatchEvent(new Event('keyup'));
+  });
+
   // MARK: Tables
 
   // tables opened with "Show all" stay open across htmx sort swaps

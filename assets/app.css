@@ -134,6 +134,7 @@ body { overflow-anchor: none; }
 .facts { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; font-size: 0.9em; color: var(--muted); }
 .facts .lang { display: inline-flex; align-items: center; gap: 6px; color: var(--ink); }
 .facts .dot { width: 10px; height: 10px; border-radius: 50%; flex: none; }
+.info h1 + .badges { margin-top: 0.4em; }
 .topics { display: flex; flex-wrap: wrap; gap: 6px; }
 .topic { font-size: 0.8em; line-height: 1.6; padding: 0 0.6em; border-radius: 99px; background: var(--topic-bg); color: var(--accent); }
 .topic.more { background: transparent; color: var(--muted); padding: 0 0.2em; cursor: help; }
@@ -149,7 +150,7 @@ body { overflow-anchor: none; }
 .kpis.c3 { --cols: 3; }
 .kpis.c4 { --cols: 4; }
 .kpi { display: grid; gap: 0.1em; align-content: start; }
-.kpi h2 { margin: 0; font-size: 1em; font-weight: 600; color: var(--muted); }
+.kpi h2, .sum h2 { margin: 0; font-size: 1em; font-weight: 600; color: var(--muted); }
 .kpi .value { font-size: 1.6em; font-weight: 650; color: var(--head); line-height: 1.2; overflow-wrap: anywhere; }
 .kpi .sub { font-size: 0.9em; }
 .kpi .sub, .kpi .change { min-height: 1.5em; }
@@ -205,13 +206,34 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; }
   background: var(--bg); border-bottom: 0; box-shadow: inset 0 -2px 0 var(--line);
 }
 .toolbar select, .toolbar input { font: inherit; font-size: 0.9em; color: var(--ink); background: var(--card); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 0.3em 0.6em; }
-.toolbar input { flex: 1 1 220px; min-width: 0; }
+.search { position: relative; display: flex; flex: 1 1 220px; min-width: 0; }
+.search input { flex: 1; min-width: 0; padding-right: 2em; }
+/* Chromium's own X shows only while focused and Firefox has none: one button for all */
+.search input::-webkit-search-cancel-button { display: none; }
+.search button { position: absolute; inset: 0 0 0 auto; width: 2em; padding: 0; border: 0; background: none; font: inherit; color: var(--muted); cursor: pointer; }
+.search button:hover { color: var(--head); }
+.search input:placeholder-shown + button { display: none; }
 .toolbar select {
   appearance: none; -webkit-appearance: none; line-height: 1.5; padding-right: 2em; cursor: pointer;
   background: var(--card) var(--chevron) no-repeat right 0.6em center / 10px 6px;
 }
 .toolbar .seg { margin-left: auto; }
 .idx td { vertical-align: middle; height: 3.5em; }
+.repo-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.repo-line > a { overflow: hidden; text-overflow: ellipsis; }
+.repo-sub { display: flex; align-items: center; gap: 10px; font-size: 0.85em; color: var(--muted); min-width: 0; }
+.repo-sub .desc { overflow: hidden; text-overflow: ellipsis; }
+.repo-sub .lang { display: inline-flex; align-items: center; gap: 6px; flex: none; }
+.repo-sub .dot { width: 8px; height: 8px; border-radius: 50%; flex: none; }
+.badges { display: inline-flex; flex-wrap: wrap; gap: 4px; flex: none; }
+.badge { font-size: 0.75em; line-height: 1.6; padding: 0 0.5em; border: 1px solid var(--line-strong); border-radius: var(--r); color: var(--muted); white-space: nowrap; }
+
+/* with the space the sticky toolbar leaves above its controls this makes 1em */
+.summary { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin-bottom: calc(0.32em + 1px); background: var(--card); border: 1px solid var(--card-border); border-radius: var(--r); }
+.sum { display: grid; gap: 0.15em; align-content: start; padding: 0.75em 1em; min-width: 0; }
+.sum + .sum { border-left: 1px solid var(--line); }
+.sum .value { font-size: 1.5em; font-weight: 650; color: var(--head); }
+.sum .sub { min-height: 1.5em; font-size: 0.85em; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .data.idx th:first-child, .data.idx td:first-child { padding-left: 0; }
 .data.idx th:last-child, .data.idx td:last-child { padding-right: 0; }
 .per { display: inline-block; width: 0.8em; height: 0.8em; vertical-align: -0.05em; color: var(--muted); cursor: help; }
@@ -230,9 +252,13 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; }
 @media (max-width: 900px) {
   .opt { display: none; }
   .kpis.c4 { --cols: 2; }
+  .summary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .sum:nth-child(4) { border-left: 0; }
+  .sum:nth-child(n + 4) { border-top: 1px solid var(--line); }
 }
 @media (max-width: 760px) {
   .sync .text { display: none; }
+  .summary { margin-bottom: 1em; }
   .toolbar { position: static; height: auto; margin-bottom: 0.75em; }
   .data.idx thead th { top: env(safe-area-inset-top, 0px); }
   .grid2 { grid-template-columns: minmax(0, 1fr); }
@@ -245,7 +271,11 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; }
 }
 @media (max-width: 520px) {
   body { font-size: 14px; }
-  .idx .per, .idx .owner { display: none; }
+  .idx .per, .idx .owner, .repo-sub .desc { display: none; }
+  .summary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .sum:nth-child(n) { border-left: 0; border-top: 1px solid var(--line); }
+  .sum:first-child { grid-column: 1 / -1; border-top: 0; }
+  .sum:nth-child(odd):not(:first-child) { border-left: 1px solid var(--line); }
   .data th, .data td { padding-left: 0.5em; padding-right: 0.5em; }
   .data th:first-child, .data td:first-child { padding-left: 0.75em; }
   .data th:last-child, .data td:last-child { padding-right: 0.75em; }

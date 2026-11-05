@@ -147,6 +147,10 @@ GHS_CUSTOM_LINKS="Blog|https://medium.com/@vladkens,Github|https://github.com/vl
 
 By default, `ghstats` asks GitHub for the latest `ghstats` release on the metrics schedule (hourly by default) and shows a notice in the UI when a newer one is available. Set `GHS_DISABLE_VERSION_CHECK=true` to turn this request off.
 
+### Default sort
+
+The home page is sorted by views by default. Set `GHS_SORT` to another column to change that, e.g. `GHS_SORT=stars`. The values are the `sort` keys of the home page URL: `stars`, `forks`, `issues`, `prs`, `views_count`, `clones_count`, `downloads`. Sorting by a column header still works as before.
+
 ### Filtering
 
 Two variables pick the repos, both written in one query syntax like GitHub search:
