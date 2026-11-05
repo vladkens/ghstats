@@ -107,7 +107,7 @@ fn read_filter(input: &str) -> Filter {
   parse_or_all("GHS_FILTER", &query, false)
 }
 
-// a sort key of the home page URL, e.g. `stars` or `views_count`
+// a sort key of a numeric column shown on the home page, e.g. `stars` or `views_count`
 fn read_sort(input: &str) -> RepoSort {
   let input = input.trim();
   if input.is_empty() {
@@ -115,10 +115,13 @@ fn read_sort(input: &str) -> RepoSort {
   }
 
   let de = serde::de::value::StrDeserializer::<serde::de::value::Error>::new(input);
-  RepoSort::deserialize(de).unwrap_or_else(|_| {
-    tracing::error!("invalid GHS_SORT, ignored: {input:?}");
-    RepoSort::default()
-  })
+  match RepoSort::deserialize(de) {
+    Ok(x) if !matches!(x, RepoSort::Name | RepoSort::Watchers) => x,
+    _ => {
+      tracing::warn!("invalid GHS_SORT, ignored: {input:?}");
+      RepoSort::default()
+    }
+  }
 }
 
 fn env_bool(key: &str) -> bool {
@@ -366,6 +369,8 @@ mod tests {
     assert_eq!(read_sort(" stars "), RepoSort::Stars);
     assert_eq!(read_sort("clones_count"), RepoSort::Clones);
     assert_eq!(read_sort("bogus"), RepoSort::Views, "invalid falls back to the default");
+    assert_eq!(read_sort("name"), RepoSort::Views, "name is for the column header only");
+    assert_eq!(read_sort("watchers"), RepoSort::Views, "the home table has no watchers column");
   }
 
   // the GHS_FILTER matcher before the query syntax, kept to check the translation

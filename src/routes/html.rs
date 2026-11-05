@@ -237,11 +237,7 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
         div class="wrap" {
           header class="topbar" {
             nav class="crumbs" aria-label="Breadcrumb" {
-              @if navs.is_empty() {
-                span { "Repos" }
-              } @else {
-                a href="/" { "Repos" }
-              }
+              a href="/" { "Repos" }
 
               @for (name, url) in &navs {
                 span class="sep" { "›" }
@@ -552,16 +548,17 @@ fn lang_color(lang: &str) -> &'static str {
 /// Visibility first, then the states that change how a repo is used
 fn repo_badges(repo: &RepoTotals) -> Markup {
   let kinds = [
-    (repo.private, "Private", "badge private"),
-    (!repo.private, "Public", "badge"),
-    (repo.is_template, "Template", "badge"),
-    (repo.archived, "Archived", "badge archived"),
-    (repo.fork, "Fork", "badge"),
+    (repo.private, "Private"),
+    (repo.is_template, "Template"),
+    (repo.archived, "Archived"),
+    (repo.fork, "Fork"),
   ];
 
   html!(
-    span class="badges" {
-      @for (_, label, class) in kinds.iter().filter(|x| x.0) { span class=(class) { (label) } }
+    @if kinds.iter().any(|x| x.0) {
+      span class="badges" {
+        @for (_, label) in kinds.iter().filter(|x| x.0) { span class="badge" { (label) } }
+      }
     }
   )
 }
@@ -1389,8 +1386,11 @@ fn index_summary(rows: &[IndexRow], p: Period, oob: bool) -> Markup {
   let private = rows.iter().filter(|x| x.repo.private).count();
   let templates = rows.iter().filter(|x| x.repo.is_template).count();
 
-  let mut mix =
-    vec![plural(rows.len() - private, "public", "public"), plural(private, "private", "private")];
+  let mut mix = Vec::new();
+  if private > 0 {
+    mix.push(plural(private, "private", "private"));
+  }
+
   if templates > 0 {
     mix.push(plural(templates, "template", "templates"));
   }
@@ -1658,16 +1658,19 @@ pub async fn index(
         }
       }
 
-      input type="search" name="q" value=(cur_q)
-        placeholder="Search repos…"
-        aria-label="Search repos"
-        hx-get="/"
-        hx-trigger="keyup changed delay:300ms, search"
-        hx-target="#repos_table"
-        hx-swap="outerHTML"
-        hx-include=(format!("[name='owner'], {include}"))
-        hx-replace-url="true"
-      {}
+      div class="search" {
+        input type="search" name="q" value=(cur_q)
+          placeholder="Search repos…"
+          aria-label="Search repos"
+          hx-get="/"
+          hx-trigger="keyup changed delay:300ms, search"
+          hx-target="#repos_table"
+          hx-swap="outerHTML"
+          hx-include=(format!("[name='owner'], {include}"))
+          hx-replace-url="true"
+        {}
+        button type="button" aria-label="Clear search" data-clear { "×" }
+      }
 
       (period_nav(p, false, "#repos_table", period_url))
     }
@@ -2208,6 +2211,27 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn index_search_has_a_clear_button() {
+    let db = DbClient::new(&db_path("clear")).await.unwrap();
+    db.insert_repo(&test_repo(5)).await.unwrap();
+    let state = Arc::new(AppState::for_test(db, ""));
+
+    // right after the input: the CSS and the click handler find each other by that
+    let button =
+      "</input><button type=\"button\" aria-label=\"Clear search\" data-clear>×</button>";
+    for uri in ["/", "/?q=o/r"] {
+      let page = get(&state, uri, None).await.unwrap().into_string();
+      assert!(page.contains(button), "{uri}");
+    }
+
+    let page = get(&state, "/?q=o/r", None).await.unwrap().into_string();
+    assert!(page.contains("name=\"q\" value=\"o/r\" placeholder=\"Search repos…\""));
+
+    let frag = get(&state, "/?q=o/r", Some("repos_table")).await.unwrap().into_string();
+    assert!(!frag.contains("data-clear"), "a table swap leaves the toolbar alone");
+  }
+
+  #[tokio::test]
   async fn index_sorts_by_stars_and_shows_repo_kinds() {
     let db = DbClient::new(&db_path("kinds")).await.unwrap();
     let private = Repo { id: 2, full_name: "o/private".into(), private: true, ..test_repo(30) };
@@ -2228,26 +2252,37 @@ mod tests {
     state.default_sort = RepoSort::Stars;
     let state = Arc::new(state);
     let page = get(&state, "/", None).await.unwrap().into_string();
+    assert!(
+      page.contains("<nav class=\"crumbs\" aria-label=\"Breadcrumb\"><a href=\"/\">Repos</a>")
+    );
+
     let at = |x: &str| page.find(&format!("href=\"/{x}\"")).unwrap();
     assert!(at("o/template") < at("o/private") && at("o/private") < at("o/r"), "stars desc");
-    assert!(page.contains("<span class=\"badge private\">Private</span>"));
-    assert!(
-      page.contains("<span class=\"badge\">Public</span><span class=\"badge\">Template</span>")
-    );
+    assert!(page.contains("<span class=\"badge\">Private</span>"));
+    assert!(page.contains("<span class=\"badges\"><span class=\"badge\">Template</span></span>"));
+    assert!(!page.contains(">Public<"), "public is the unlabelled default");
+    assert_eq!(page.matches("class=\"badges\"").count(), 2, "no wrapper without badges");
     assert!(page.contains("<span class=\"desc\" title=\"starter kit\">starter kit</span>"));
-    assert!(page.contains("<div class=\"sub\">2 public · 1 private · 1 template</div>"));
+    assert!(page.contains("<div class=\"sub\">1 private · 1 template</div>"));
     assert!(page.contains("<h2>Stars</h2><div class=\"value\">85</div>"));
 
     let frag = get(&state, "/?q=private", Some("repos_table")).await.unwrap().into_string();
     assert!(
       frag.contains("id=\"summary\" class=\"summary\" aria-label=\"Totals\" hx-swap-oob=\"true\"")
     );
-    assert!(frag.contains("<div class=\"sub\">0 public · 1 private</div>"), "follows the search");
+    assert!(frag.contains("<div class=\"sub\">1 private</div>"), "follows the search");
+
+    let frag = get(&state, "/?q=template", Some("repos_table")).await.unwrap().into_string();
+    assert!(frag.contains("<div class=\"sub\">1 template</div>"));
+
+    let frag = get(&state, "/?q=o/r", Some("repos_table")).await.unwrap().into_string();
+    assert!(frag.contains("<h2>Repos</h2><div class=\"value\">1</div><div class=\"sub\"></div>"));
 
     let page = get(&state, "/o/private", None).await.unwrap().into_string();
-    assert!(
-      page.contains("<span class=\"badges\"><span class=\"badge private\">Private</span></span>")
-    );
+    assert!(page.contains("<span class=\"badges\"><span class=\"badge\">Private</span></span>"));
+
+    let page = get(&state, "/o/r", None).await.unwrap().into_string();
+    assert!(!page.contains("class=\"badges\"") && !page.contains(">Public<"));
   }
 
   #[tokio::test]
