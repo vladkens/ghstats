@@ -41,21 +41,39 @@ const TOTALS_LABEL_Y: i32 = 52;
 const TOTALS_VALUE_Y: i32 = 75;
 const TOTALS_DELTA_Y: i32 = 93;
 
-const CHART_H: i32 = 200;
-const CHART_L: i32 = 50; // the y labels stay to the left of it
-const CHART_R: i32 = W - PAD;
-const CHART_T: i32 = ROWS_Y;
-const CHART_B: i32 = 172;
-const CHART_TEXT: f32 = 10.0;
-const CHART_POINTS: usize = 120;
-const DOT: f64 = 6.0;
-const X_LABEL_Y: i32 = 188;
+// history cards fill the width of a README, as star-history.com charts do
+const CHART_W: i32 = 800;
+const CHART_H: i32 = 480;
+const CHART_EMPTY_H: i32 = 116;
+const CHART_PAD: i32 = 28;
+const CHART_HEAD_Y: i32 = 46;
+const CHART_L: i32 = 84; // the y labels stay to the left of it
+const CHART_R: i32 = CHART_W - CHART_PAD;
+const CHART_T: i32 = 76;
+const CHART_B: i32 = 420;
+const CHART_TEXT: f32 = 14.0;
+const CHART_POINTS: usize = 200;
+const CHART_REPOS: usize = 4;
+const CHART_TITLE: &str = "Star history";
+const DOT: f64 = 10.0;
+const X_LABEL_Y: i32 = 448;
 const X_LABELS: i64 = 4;
+
+const LEGEND_X: i32 = CHART_L + 12;
+const LEGEND_Y: i32 = CHART_T + 12;
+const LEGEND_PAD: i32 = 12;
+const LEGEND_ROW: i32 = 24;
+const LEGEND_DOT: f64 = 8.0;
+const LEGEND_TEXT: i32 = 16; // from the dot to the name
+const LEGEND_CHAR: i32 = 8; // no text measuring in SVG: a wide guess per char
 
 // the wordmark sits behind the rows, cut off by the bottom edge
 const MARK_SIZE: f32 = 64.0;
 const MARK_RIGHT: i32 = 10;
 const MARK_DROP: i32 = 8;
+const CHART_MARK_SIZE: f32 = 120.0;
+const CHART_MARK_RIGHT: i32 = 19;
+const CHART_MARK_DROP: i32 = 15;
 
 // MARK: Types
 
@@ -172,28 +190,37 @@ pub struct CardQuery {
   period: Option<String>,
   theme: Option<String>,
   brand: Option<String>,
+  repos: Option<String>,
+  log: Option<String>,
+  align: Option<String>,
 }
 
 struct CardOpts {
   period: Period,
   theme: Theme,
   brand: bool,
+  log: bool,
+  align: bool,
+}
+
+fn parse_flag(value: Option<&str>) -> Result<bool, AppError> {
+  match value {
+    None | Some("0") => Ok(false),
+    Some("1") => Ok(true),
+    Some(_) => Err(AppError::status(StatusCode::BAD_REQUEST)),
+  }
 }
 
 impl TryFrom<CardQuery> for CardOpts {
   type Error = AppError;
 
   fn try_from(query: CardQuery) -> Result<Self, AppError> {
-    let brand = match query.brand.as_deref() {
-      None | Some("1") => true,
-      Some("0") => false,
-      Some(_) => return Err(AppError::status(StatusCode::BAD_REQUEST)),
-    };
-
     Ok(Self {
       period: Period::parse(query.period.as_deref().unwrap_or("30d"))?,
       theme: Theme::parse(query.theme.as_deref().unwrap_or("auto"))?,
-      brand,
+      brand: parse_flag(query.brand.as_deref().or(Some("1")))?,
+      log: parse_flag(query.log.as_deref())?,
+      align: parse_flag(query.align.as_deref())?,
     })
   }
 }
@@ -214,6 +241,19 @@ struct Row {
 type CardRepo = (RepoTotals, RepoPeriod);
 type Point = (NaiveDate, i64);
 
+struct Line {
+  name: String,
+  count: i64, // the current one, whatever the period
+  points: Vec<Point>,
+}
+
+impl Line {
+  fn new(name: &str, points: Vec<Point>) -> Self {
+    let count = points.last().map_or(0, |x| x.1);
+    Self { name: name.to_string(), count, points }
+  }
+}
+
 // MARK: Data
 
 pub async fn card(
@@ -223,11 +263,23 @@ pub async fn card(
 ) -> Result<Response, AppError> {
   let card = Card::from_path(&name).ok_or_else(|| AppError::status(StatusCode::NOT_FOUND))?;
   if matches!(card, Card::History) {
+    let names = query.repos.clone();
     let opts = CardOpts::history(query)?;
+    if let Some(names) = names {
+      let names: Vec<&str> = names.split(',').collect();
+      if names.len() > CHART_REPOS {
+        return Err(AppError::status(StatusCode::BAD_REQUEST));
+      }
+
+      let lines = public_lines(&state, &names).await?;
+      return Ok(svg_response(history_card(CHART_TITLE, lines, true, &opts)));
+    }
+
     let repos = public_repos(&state).await?;
     let points = total_points(&state, &repos).await?;
     let title = shared_owner(repos.iter().map(|x| x.name.as_str())).unwrap_or(card.title());
-    return Ok(svg_response(history_card(title, points, &opts)));
+    let lines = vec![Line::new(title, points)];
+    return Ok(svg_response(history_card(title, lines, false, &opts)));
   }
 
   let opts = CardOpts::try_from(query)?;
@@ -250,13 +302,8 @@ pub async fn repo_card(
 ) -> Result<Response, AppError> {
   let opts = CardOpts::history(query)?;
   let repo = format!("{owner}/{repo}");
-  if !public_repos(&state).await?.iter().any(|x| x.name == repo) {
-    return Err(AppError::status(StatusCode::NOT_FOUND));
-  }
-
-  let stars = dated_stars(state.db.get_stars(&repo).await?);
-  let points: Vec<Point> = stars.into_iter().map(|x| (x.0, x.1.into())).collect();
-  Ok(svg_response(history_card(&repo, points, &opts)))
+  let lines = public_lines(&state, &[&repo]).await?;
+  Ok(svg_response(history_card(&repo, lines, false, &opts)))
 }
 
 fn svg_response(svg: Markup) -> Response {
@@ -292,6 +339,22 @@ async fn card_repos(state: &Arc<AppState>, period: Period) -> Res<Vec<CardRepo>>
   });
 
   Ok(repos.collect())
+}
+
+/// A star line per name, a repo the cards can't show is a 404
+async fn public_lines(state: &Arc<AppState>, names: &[&str]) -> Result<Vec<Line>, AppError> {
+  let repos = public_repos(state).await?;
+  let mut lines = Vec::new();
+  for name in names {
+    if !repos.iter().any(|x| x.name == *name) {
+      return Err(AppError::status(StatusCode::NOT_FOUND));
+    }
+
+    let stars = dated_stars(state.db.get_stars(name).await?);
+    lines.push(Line::new(name, stars.into_iter().map(|x| (x.0, x.1.into())).collect()));
+  }
+
+  Ok(lines)
 }
 
 /// Sum per date of each repo's latest known count
@@ -421,6 +484,21 @@ fn axis_top(value: i64) -> i64 {
   tops.into_iter().find(|x| *x >= value).unwrap_or(value)
 }
 
+/// Linear: zero, half and top. Log: powers of ten up to the next one, starting at 1
+fn y_ticks(value: i64, log: bool) -> Vec<i64> {
+  if !log {
+    let top = axis_top(value);
+    return vec![0, top / 2, top];
+  }
+
+  let mut ticks = vec![1, 10];
+  while ticks[ticks.len() - 1] < value {
+    ticks.push(ticks[ticks.len() - 1] * 10);
+  }
+
+  ticks
+}
+
 /// Even dates inside the chart, at most one per day of the range
 fn x_labels(first: NaiveDate, last: NaiveDate) -> Vec<(NaiveDate, String)> {
   let days = (last - first).num_days();
@@ -428,6 +506,31 @@ fn x_labels(first: NaiveDate, last: NaiveDate) -> Vec<(NaiveDate, String)> {
   let count = X_LABELS.min(days);
   let dates = (0..count).map(|x| first + Duration::days(days * (2 * x + 1) / (2 * count)));
   dates.map(|x| (x, x.format(format).to_string())).collect()
+}
+
+/// Round steps from the start of aligned lines: days, then years; the right edge stays free
+fn day_labels(first: NaiveDate, last: NaiveDate) -> Vec<(NaiveDate, String)> {
+  let days = (last - first).num_days();
+  let steps = [1, 2, 5, 10, 20, 50, 100, 200, 365, 730, 1825];
+  let step = steps.into_iter().find(|x| days / x <= X_LABELS + 1).unwrap_or(3650);
+
+  let label = |x: i64| {
+    if step < 365 { format!("Day {x}") } else { format!("Year {}", x / 365) }
+  };
+
+  let marks = (1..=(days - 1) / step).map(|x| x * step);
+  marks.map(|x| (first + Duration::days(x), label(x))).collect()
+}
+
+/// Moves each line to start on the same date, the x axis then counts days from it
+fn align_lines(lines: &mut [Line]) {
+  let zero = NaiveDate::default();
+  for line in lines {
+    let start = line.points.first().map_or(zero, |x| x.0);
+    for point in &mut line.points {
+      point.0 = zero + (point.0 - start);
+    }
+  }
 }
 
 fn pick_points(points: &[Point]) -> Vec<Point> {
@@ -454,11 +557,15 @@ fn rules(palette: &Palette, card: Card) -> String {
   }
 
   if matches!(card, Card::History) {
-    let stars = palette.stars;
     css += &format!(
-      ".line{{fill:none;stroke:{stars};stroke-width:2;stroke-linejoin:round;stroke-linecap:round}}\
-      .grid{{stroke:{border}}}.dot{{fill:{stars}}}"
+      ".line{{fill:none;stroke-width:3;stroke-linejoin:round;stroke-linecap:round}}\
+      .grid{{stroke:{border}}}"
     );
+
+    let lines = [palette.stars, palette.clones, palette.forks, palette.views];
+    for (idx, color) in lines.iter().enumerate() {
+      css += &format!(".line{idx}{{stroke:{color}}}.dot{idx}{{fill:{color}}}");
+    }
   }
 
   css
@@ -492,15 +599,20 @@ fn text(
 }
 
 fn frame(height: i32, label: &str, card: Card, opts: &CardOpts, body: Markup) -> Markup {
+  let (width, mark, right, drop) = match card {
+    Card::History => (CHART_W, CHART_MARK_SIZE, CHART_MARK_RIGHT, CHART_MARK_DROP),
+    _ => (W, MARK_SIZE, MARK_RIGHT, MARK_DROP),
+  };
+
   html!(
-    svg xmlns="http://www.w3.org/2000/svg" width=(W) height=(height)
-      viewBox=(format!("0 0 {W} {height}")) font-family=(FONT) {
+    svg xmlns="http://www.w3.org/2000/svg" width=(width) height=(height)
+      viewBox=(format!("0 0 {width} {height}")) font-family=(FONT) {
       title { (label) }
       // static text only: everything dynamic goes through maud's escaping
       style { (PreEscaped(style(opts.theme, card))) }
-      rect x="0.5" y="0.5" width=(W - 1) height=(height - 1) rx="6" class="card" {}
+      rect x="0.5" y="0.5" width=(width - 1) height=(height - 1) rx="6" class="card" {}
       @if opts.brand {
-        (text(W - MARK_RIGHT, height + MARK_DROP, MARK_SIZE, "mark", Some(700), true, "ghstats"))
+        (text(width - right, height + drop, mark, "mark", Some(700), true, "ghstats"))
       }
       (body)
     }
@@ -512,6 +624,11 @@ fn shared_owner<'a>(names: impl Iterator<Item = &'a str>) -> Option<&'a str> {
   let mut owners = names.filter_map(|x| x.split('/').next());
   let first = owners.next()?;
   owners.all(|x| x == first).then_some(first)
+}
+
+/// `name` without its owner when all names on the card share one
+fn short_name(name: &str, one_owner: bool) -> &str {
+  name.split_once('/').filter(|_| one_owner).map_or(name, |x| x.1)
 }
 
 fn card_header(title: &str, note: &str) -> Markup {
@@ -527,10 +644,7 @@ fn list_card(card: Card, note: &str, rows: &[Row], opts: &CardOpts) -> Markup {
   let top = rows.iter().map(|x| x.value).max().unwrap_or_default();
 
   let one_owner = shared_owner(rows.iter().map(|x| x.name.as_str())).is_some();
-  let name = |x: &Row| match x.name.split_once('/') {
-    Some((_, repo)) if one_owner => cut_name(repo, limit),
-    _ => cut_name(&x.name, limit),
-  };
+  let name = |x: &Row| cut_name(short_name(&x.name, one_owner), limit);
 
   let count = rows.len().max(1) as i32;
   let height = ROWS_Y + count * (ROW_H + ROW_GAP) - ROW_GAP + PAD;
@@ -598,57 +712,128 @@ fn totals_card(repos: &[CardRepo], opts: &CardOpts) -> Markup {
   frame(height, &format!("Totals: {}", summary.join(", ")), Card::Totals, opts, body)
 }
 
-fn chart(points: &[Point]) -> Markup {
-  let (first, last) = (points[0].0, points[points.len() - 1].0);
-  let top = axis_top(points.iter().map(|x| x.1).max().unwrap_or_default());
+fn dot(x: f64, y: f64, size: f64, class: &str) -> Markup {
+  html!(
+    rect x=(format!("{:.1}", x - size / 2.0)) y=(format!("{:.1}", y - size / 2.0))
+      width=(size) height=(size) rx=(size / 2.0) class=(class) {}
+  )
+}
+
+fn legend(lines: &[Line]) -> Markup {
+  let one_owner = shared_owner(lines.iter().map(|x| x.name.as_str())).is_some();
+  let rows: Vec<(String, String)> = lines
+    .iter()
+    .map(|x| (cut_name(short_name(&x.name, one_owner), NAME_MAX_PLAIN), format_count(x.count)))
+    .collect();
+
+  let chars = rows.iter().map(|x| x.0.chars().count() + x.1.chars().count() + 1).max();
+  let width = 2 * LEGEND_PAD + LEGEND_TEXT + chars.unwrap_or_default() as i32 * LEGEND_CHAR;
+  let height = 2 * LEGEND_PAD + rows.len() as i32 * LEGEND_ROW - 6;
+
+  html!(
+    rect x=(LEGEND_X) y=(LEGEND_Y) width=(width) height=(height) rx="6" class="card" {}
+    @for (idx, (name, count)) in rows.iter().enumerate() {
+      @let y = LEGEND_Y + LEGEND_PAD + idx as i32 * LEGEND_ROW + 13;
+      @let x = LEGEND_X + LEGEND_PAD;
+      (dot(f64::from(x) + LEGEND_DOT / 2.0, f64::from(y - 5), LEGEND_DOT, &format!("dot{idx}")))
+      text x=(x + LEGEND_TEXT) y=(y) font-size=(CHART_TEXT) class="ink" {
+        (name) " " tspan class="muted" { (count) }
+      }
+    }
+  )
+}
+
+fn chart(lines: &[Line], compare: bool, opts: &CardOpts) -> Markup {
+  let points = || lines.iter().flat_map(|x| &x.points);
+  let first = points().map(|x| x.0).min().unwrap_or_default();
+  let last = points().map(|x| x.0).max().unwrap_or_default();
+  let ticks = y_ticks(points().map(|x| x.1).max().unwrap_or_default(), opts.log);
+  let top = ticks[ticks.len() - 1] as f64;
 
   let days = (last - first).num_days() as f64;
   let x_at = |date: NaiveDate| {
     f64::from(CHART_L) + f64::from(CHART_R - CHART_L) * (date - first).num_days() as f64 / days
   };
-  let y_at =
-    |value: i64| f64::from(CHART_B) - f64::from(CHART_B - CHART_T) * value as f64 / top as f64;
 
-  let picked = pick_points(points);
-  let line: Vec<String> =
-    picked.iter().map(|x| format!("{:.1} {:.1}", x_at(x.0), y_at(x.1))).collect();
-  let line = line.join("L");
-  let end = picked[picked.len() - 1];
+  let y_at = |value: i64| {
+    let share = if opts.log { (value as f64).log10() / top.log10() } else { value as f64 / top };
+
+    f64::from(CHART_B) - f64::from(CHART_B - CHART_T) * share
+  };
+
+  let aligned = compare && opts.align;
+  let x_marks = if aligned { day_labels(first, last) } else { x_labels(first, last) };
+  let area = !compare && !opts.log;
 
   html!(
-    @for value in [0, top / 2, top] {
+    @for value in ticks {
       @let y = y_at(value);
       @let label = format_count(value);
+      @let label = if opts.log { label.replace(".0", "") } else { label };
       line x1=(CHART_L) y1=(format!("{y:.1}")) x2=(CHART_R) y2=(format!("{y:.1}")) class="grid" {}
-      (text(CHART_L - 6, y.round() as i32 + 3, CHART_TEXT, "muted", None, true, &label))
+      (text(CHART_L - 8, y.round() as i32 + 5, CHART_TEXT, "muted", None, true, &label))
     }
-    path d=(format!("M{line}L{CHART_R} {CHART_B}L{CHART_L} {CHART_B}Z")) class="bar" {}
-    path d=(format!("M{line}")) class="line" {}
-    rect x=(format!("{:.1}", x_at(end.0) - DOT / 2.0)) y=(format!("{:.1}", y_at(end.1) - DOT / 2.0))
-      width=(DOT) height=(DOT) rx=(DOT / 2.0) class="dot" {}
-    @for (date, label) in x_labels(first, last) {
+    @if compare {
+      (legend(lines))
+    }
+    @for (idx, line) in lines.iter().enumerate() {
+      @let picked = pick_points(&line.points);
+      @let path: Vec<String> =
+        picked.iter().map(|x| format!("{:.1} {:.1}", x_at(x.0), y_at(x.1))).collect();
+      @let path = path.join("L");
+      @if let Some(end) = picked.last() {
+        @if area {
+          path d=(format!("M{path}L{CHART_R} {CHART_B}L{CHART_L} {CHART_B}Z")) class="bar" {}
+        }
+        path d=(format!("M{path}")) class=(format!("line line{idx}")) {}
+        (dot(x_at(end.0), y_at(end.1), DOT, &format!("dot{idx}")))
+      }
+    }
+    @for (date, label) in x_marks {
       text x=(format!("{:.1}", x_at(date))) y=(X_LABEL_Y) font-size=(CHART_TEXT) class="muted"
         text-anchor="middle" { (label) }
     }
   )
 }
 
-fn history_card(name: &str, mut points: Vec<Point>, opts: &CardOpts) -> Markup {
-  let total = points.last().map_or(0, |x| x.1);
-  let unit = if total == 1 { "star" } else { "stars" };
-  let note = format!("{} {unit}", format_count(total));
-  let label = format!("{name}, {note}");
-  let header = card_header(&cut_name(name, NAME_MAX_PLAIN), &note);
+fn stars_note(count: i64) -> String {
+  let unit = if count == 1 { "star" } else { "stars" };
+  format!("{} {unit}", format_count(count))
+}
 
-  points.retain(|x| in_period_date(x.0, opts.period));
+fn chart_header(title: &str, note: &str) -> Markup {
+  let left = text(CHART_PAD, CHART_HEAD_Y, 22.0, "head", HEAD_WEIGHT, false, title);
+  let right = text(CHART_R, CHART_HEAD_Y, 16.0, "muted", None, true, note);
+  html!((left) @if !note.is_empty() { (right) })
+}
 
-  if points.len() < 2 {
-    let body =
-      html!((header)(text(TEXT_L, ROWS_Y + BASELINE, 13.0, "muted", None, false, "No data")));
-    return frame(ROWS_Y + ROW_H + PAD, &label, Card::History, opts, body);
+/// `compare` is the repos chart: a legend instead of the note, no area, the only one to align
+fn history_card(title: &str, mut lines: Vec<Line>, compare: bool, opts: &CardOpts) -> Markup {
+  let note = if compare { String::new() } else { stars_note(lines[0].count) };
+  let label = if compare {
+    let names: Vec<String> =
+      lines.iter().map(|x| format!("{} {}", x.name, stars_note(x.count))).collect();
+    format!("{title}: {}", names.join(", "))
+  } else {
+    format!("{title}, {note}")
+  };
+
+  let header = chart_header(&cut_name(title, NAME_MAX_PLAIN), &note);
+
+  for line in &mut lines {
+    line.points.retain(|x| in_period_date(x.0, opts.period));
   }
 
-  frame(CHART_H, &label, Card::History, opts, html!((header)(chart(&points))))
+  if lines.iter().all(|x| x.points.len() < 2) {
+    let empty = text(CHART_PAD, CHART_T + 8, 16.0, "muted", None, false, "No data");
+    return frame(CHART_EMPTY_H, &label, Card::History, opts, html!((header)(empty)));
+  }
+
+  if compare && opts.align {
+    align_lines(&mut lines);
+  }
+
+  frame(CHART_H, &label, Card::History, opts, html!((header)(chart(&lines, compare, opts))))
 }
 
 #[cfg(test)]
@@ -764,8 +949,8 @@ mod tests {
   }
 
   /// The drawn line as "x y" pairs
-  fn line_points(svg: &str) -> Vec<&str> {
-    let line = svg.split(r#" class="line""#).next().unwrap();
+  fn line_points(svg: &str, idx: usize) -> Vec<&str> {
+    let line = svg.split(&format!(r#" class="line line{idx}""#)).next().unwrap();
     line.rsplit_once(r#"d="M"#).unwrap().1.trim_end_matches('"').split('L').collect()
   }
 
@@ -1205,15 +1390,15 @@ mod tests {
     assert_eq!(rep.headers()[header::CACHE_CONTROL], "public,max-age=3600");
 
     let total = svg(&state, "history.svg", "").await;
-    assert!(total.contains(r#"height="200" viewBox="0 0 420 200""#));
+    assert!(total.contains(r#"width="800" height="480" viewBox="0 0 800 480""#));
     assert!(total.contains("<title>o, 57 stars</title>"));
     assert!(total.contains(">o<") && total.contains(">57 stars<"));
     assert_eq!(total.matches(r#"class="grid""#).count(), 3);
-    assert_eq!(total.matches(r#"class="dot""#).count(), 1);
+    assert_eq!(total.matches(r#"class="dot0""#).count(), 1);
     assert_eq!(total.matches(r#"text-anchor="middle""#).count(), 4);
-    assert_eq!(line_points(&total).len(), 3);
-    assert_eq!(line_points(&total)[0], "50.0 139.5", "15 of 60 at the left edge");
-    assert_eq!(line_points(&total)[2], "404.0 48.5", "57 of 60 at the right edge");
+    assert_eq!(line_points(&total, 0).len(), 3);
+    assert_eq!(line_points(&total, 0)[0], "84.0 334.0", "15 of 60 at the left edge");
+    assert_eq!(line_points(&total, 0)[2], "772.0 93.2", "57 of 60 at the right edge");
 
     let elements = total.split('<').skip(1).filter(|x| !x.starts_with('/'));
     let mut elements = elements.filter_map(|x| x.split([' ', '>']).next());
@@ -1227,8 +1412,8 @@ mod tests {
     for (theme, card, stars) in [("light", "#ffffff", "#2f95dc"), ("dark", "#181c25", "#4fb0f0")] {
       let body = svg(&state, "history.svg", &format!("theme={theme}")).await;
       assert!(body.contains(&format!(".card{{fill:{card}")), "{theme}");
-      assert!(body.contains(&format!(".line{{fill:none;stroke:{stars}")), "{theme}");
-      assert!(body.contains(&format!(".dot{{fill:{stars}}}")), "{theme}");
+      assert!(body.contains(&format!(".line0{{stroke:{stars}}}")), "{theme}");
+      assert!(body.contains(&format!(".dot0{{fill:{stars}}}")), "{theme}");
     }
 
     let auto = svg(&state, "history.svg", "brand=0").await;
@@ -1268,7 +1453,7 @@ mod tests {
       [("", 5), ("period=tracked", 5), ("period=90d", 4), ("period=30d", 3), ("period=7d", 2)];
     for (query, want) in cases {
       for body in [svg(&state, "history.svg", query).await, repo_svg(&state, "o/r", query).await] {
-        assert_eq!(line_points(&body).len(), want, "{query}");
+        assert_eq!(line_points(&body, 0).len(), want, "{query}");
         assert!(body.contains(">40 stars<"), "{query}");
       }
     }
@@ -1304,7 +1489,7 @@ mod tests {
 
     let body = svg(&state, "history.svg", "").await;
     assert_eq!(texts(&body).join(" "), "ghstats All repositories 0 stars No data");
-    assert!(body.contains(r#"height="84""#));
+    assert!(body.contains(r#"width="800" height="116""#));
 
     seed_stats(&state, 1, "o/one", &[(0, 1, 0)]).await;
     seed_stats(&state, 2, "o/old", &[(20, 4, 0), (10, 5, 0)]).await;
@@ -1312,10 +1497,140 @@ mod tests {
     let body = repo_svg(&state, "o/one", "").await;
     assert_eq!(texts(&body).join(" "), "ghstats o/one 1 star No data");
     assert!(body.contains("<title>o/one, 1 star</title>"));
-    assert!(!body.contains(r#"class="line""#));
+    assert!(!body.contains(r#"class="line "#));
 
     let body = repo_svg(&state, "o/old", "period=7d").await;
     assert_eq!(texts(&body).join(" "), "ghstats o/old 5 stars No data", "the note stays current");
+  }
+
+  #[tokio::test]
+  async fn repos_draw_a_line_each_with_a_legend() {
+    let state = test_state("compare").await;
+    seed_stats(&state, 1, "o/one", &[(40, 10, 0), (0, 50, 0)]).await;
+    seed_stats(&state, 2, "o/two", &[(20, 5, 0), (0, 7, 0)]).await;
+    seed_stats(&state, 3, "x/three", &[(3, 1, 0), (0, 2, 0)]).await;
+    seed_stats(&state, 4, "x/old", &[(20, 4, 0), (10, 5, 0)]).await;
+
+    let body = svg(&state, "history.svg", "repos=o/one,o/two").await;
+    assert_eq!(body.matches(r#"class="line "#).count(), 2);
+    assert_eq!(body.matches(r#"class="dot1""#).count(), 2, "the end dot and the legend");
+    assert!(!body.contains(r#"class="bar""#));
+    assert!(body.contains(">Star history<"));
+    assert!(!texts(&body).iter().any(|x| x.ends_with(" stars")), "no note");
+    assert!(body.contains(r#">one <tspan class="muted">50</tspan>"#));
+    assert!(body.contains(r#">two <tspan class="muted">7</tspan>"#));
+    assert!(body.contains("<title>Star history: o/one 50 stars, o/two 7 stars</title>"));
+
+    assert_eq!(line_points(&body, 0)[0], "84.0 351.2", "the first date of all");
+    assert_eq!(line_points(&body, 1)[0], "428.0 385.6", "its own first date, on the same scale");
+    assert_eq!(line_points(&body, 1)[1], "772.0 371.8");
+
+    let body = svg(&state, "history.svg", "repos=x/three,o/two").await;
+    assert!(body.contains(r#">x/three <tspan"#), "two owners stay");
+    assert_eq!(line_points(&body, 0).len(), 2, "colors follow the position in repos");
+    assert!(line_points(&body, 0)[0].starts_with("668.8 "));
+
+    // a repo without points in the period keeps its row, its color and no line
+    let body = svg(&state, "history.svg", "repos=x/old,x/three&period=7d").await;
+    assert!(!body.contains(r#"class="line line0""#) && body.contains(r#"class="line line1""#));
+    assert!(body.contains(r#">old <tspan class="muted">5</tspan>"#));
+
+    let body = svg(&state, "history.svg", "repos=x/old,o/two&period=7d&align=1").await;
+    assert!(body.contains(">No data<") && body.contains(r#"height="116""#));
+  }
+
+  #[tokio::test]
+  async fn repos_keep_to_four_and_flags_to_zero_or_one() {
+    let state = test_state("compare-invalid").await;
+    seed_stats(&state, 1, "o/r", &[(1, 1, 0), (0, 2, 0)]).await;
+
+    let five = "repos=o/r,o/r,o/r,o/r,o/r";
+    assert_eq!(status(&state, "history.svg", five).await, StatusCode::BAD_REQUEST);
+    assert_eq!(status(&state, "history.svg", "repos=o/r,o/r,o/r,o/r").await, StatusCode::OK);
+
+    for query in ["log=2", "log=", "log=true", "align=2", "align=", "align=true"] {
+      assert_eq!(status(&state, "history.svg", query).await, StatusCode::BAD_REQUEST, "{query}");
+      assert_eq!(repo_status(&state, "o/r", query).await, StatusCode::BAD_REQUEST, "{query}");
+
+      let query = format!("repos=o/r&{query}");
+      assert_eq!(status(&state, "history.svg", &query).await, StatusCode::BAD_REQUEST, "{query}");
+    }
+
+    let plain = svg(&state, "history.svg", "").await;
+    for query in ["log=0", "align=0", "align=1"] {
+      assert_eq!(svg(&state, "history.svg", query).await, plain, "{query}");
+    }
+
+    for query in ["log=2", "align=2"] {
+      assert_eq!(status(&state, "stars.svg", query).await, StatusCode::BAD_REQUEST, "{query}");
+    }
+  }
+
+  #[tokio::test]
+  async fn repos_outside_the_public_set_are_a_404_without_their_name() {
+    let db = DbClient::new(&db_path("compare-privacy")).await.unwrap();
+    let mut state = AppState::for_test(db, "!o/filtered");
+    state.show = Filter::parse("!o/hidden-by-show", true).unwrap();
+    state.include_private = true;
+    let state = Arc::new(state);
+
+    seed_stats(&state, 1, "o/visible", &[(5, 5, 0), (0, 10, 0)]).await;
+    seed_stats(&state, 2, "o/hidden-by-show", &[(5, 900, 0), (0, 1_000, 0)]).await;
+    seed_stats(&state, 3, "o/secret", &[(5, 2_000, 0), (0, 3_000, 0)]).await;
+    seed_stats(&state, 4, "o/filtered", &[(5, 4_000, 0), (0, 5_000, 0)]).await;
+
+    let secret = Repo { private: true, ..sample_repo(3, "o/secret", 3_000, 0) };
+    state.db.insert_repo(&secret).await.unwrap();
+
+    assert_eq!(status(&state, "history.svg", "repos=o/visible").await, StatusCode::OK);
+
+    for repo in ["o/hidden-by-show", "o/secret", "o/filtered", "o/unknown"] {
+      let query = format!("repos=o/visible,{repo}");
+      let rep = response(&state, "history.svg", &query).await.err().unwrap().into_response();
+      assert_eq!(rep.status(), StatusCode::NOT_FOUND, "{repo}");
+
+      let body = to_bytes(rep.into_body(), usize::MAX).await.unwrap();
+      assert!(!String::from_utf8_lossy(&body).contains(repo), "{repo}");
+    }
+  }
+
+  #[tokio::test]
+  async fn log_axis_counts_powers_of_ten_without_an_area() {
+    let state = test_state("log").await;
+    seed_stats(&state, 1, "o/r", &[(20, 1, 0), (10, 10, 0), (0, 1_200, 0)]).await;
+
+    let body = repo_svg(&state, "o/r", "log=1").await;
+    assert_eq!(texts(&body)[3..8].join(" "), "1 10 100 1,000 10k");
+    assert_eq!(body.matches(r#"class="grid""#).count(), 5);
+    assert_eq!(line_points(&body, 0)[0], "84.0 420.0", "1 is the bottom");
+    assert_eq!(line_points(&body, 0)[1], "428.0 334.0", "10 is one of four decades up");
+    assert!(!body.contains(r#"class="bar""#));
+    assert!(!svg(&state, "history.svg", "log=1").await.contains(r#"class="bar""#));
+
+    let body = repo_svg(&state, "o/r", "log=0").await;
+    assert_eq!(body, repo_svg(&state, "o/r", "").await);
+    assert!(body.contains(r#"class="bar""#));
+
+    let body = svg(&state, "history.svg", "repos=o/r&log=1").await;
+    assert_eq!(body.matches(r#"class="grid""#).count(), 5);
+  }
+
+  #[tokio::test]
+  async fn align_starts_every_line_at_day_zero() {
+    let state = test_state("align").await;
+    seed_stats(&state, 1, "o/one", &[(40, 1, 0), (0, 5, 0)]).await;
+    seed_stats(&state, 2, "o/two", &[(20, 1, 0), (0, 3, 0)]).await;
+
+    let body = svg(&state, "history.svg", "repos=o/one,o/two&align=1").await;
+    assert!(line_points(&body, 0)[0].starts_with("84.0 "));
+    assert!(line_points(&body, 1)[0].starts_with("84.0 "));
+    assert!(line_points(&body, 0)[1].starts_with("772.0 "), "the longest life fills the axis");
+    assert!(line_points(&body, 1)[1].starts_with("428.0 "), "20 of 40 days");
+    assert!(body.contains(">Day 10<") && body.contains(">Day 30<"));
+
+    let body = svg(&state, "history.svg", "repos=o/one,o/two&align=0").await;
+    assert!(line_points(&body, 1)[0].starts_with("428.0 "));
+    assert!(!body.contains(">Day "));
   }
 
   #[test]
@@ -1327,7 +1642,7 @@ mod tests {
     assert_eq!(picked.len(), CHART_POINTS);
     assert_eq!(picked[0], points[0]);
     assert_eq!(picked[CHART_POINTS - 1], points[999]);
-    assert!(picked.windows(2).all(|x| (8..=9).contains(&(x[1].1 - x[0].1))));
+    assert!(picked.windows(2).all(|x| (5..=6).contains(&(x[1].1 - x[0].1))));
 
     assert_eq!(pick_points(&points[..CHART_POINTS]), points[..CHART_POINTS]);
   }
@@ -1349,6 +1664,35 @@ mod tests {
 
     for (value, want) in cases {
       assert_eq!(axis_top(value), want, "{value}");
+    }
+
+    let cases = [
+      (1, "1 10"),
+      (10, "1 10"),
+      (11, "1 10 100"),
+      (2_932, "1 10 100 1,000 10.0k"),
+      (100_000, "1 10 100 1,000 10.0k 100k"),
+    ];
+
+    for (value, want) in cases {
+      let ticks: Vec<String> = y_ticks(value, true).into_iter().map(format_count).collect();
+      assert_eq!(ticks.join(" "), want, "{value}");
+    }
+
+    let cases = [
+      (3, "Day 1 Day 2"),
+      (40, "Day 10 Day 20 Day 30"),
+      (100, "Day 20 Day 40 Day 60 Day 80"),
+      (1_000, "Day 200 Day 400 Day 600 Day 800"),
+      (1_276, "Year 1 Year 2 Year 3"),
+      (3_650, "Year 2 Year 4 Year 6 Year 8"),
+    ];
+
+    for (days, want) in cases {
+      let first = NaiveDate::default();
+      let labels = day_labels(first, first + Duration::days(days));
+      let labels: Vec<String> = labels.into_iter().map(|x| x.1).collect();
+      assert_eq!(labels.join(" "), want, "{days}");
     }
 
     let cases = [

@@ -302,15 +302,20 @@ Badge URLs cannot send `GHS_API_TOKEN`. If the instance contains private reposit
 
 Examples, rendered by a real instance and saved in [examples](examples):
 
-![Top stars](examples/stars.svg) ![Top forks](examples/forks.svg) ![Top clones](examples/clones.svg) ![Top views](examples/views.svg) ![Totals](examples/totals.svg) ![Star history](examples/history.svg) ![twscrape star history](examples/history-twscrape.svg)
+![Top stars](examples/stars.svg) ![Top forks](examples/forks.svg) ![Top clones](examples/clones.svg) ![Top views](examples/views.svg) ![Totals](examples/totals.svg) ![Star history](examples/history.svg) ![twscrape star history](examples/history-twscrape.svg) ![Star history of twscrape and macmon](examples/history-compare.svg)
 
 Query parameters:
 
 - `period`: `7d`, `30d` (default), `90d` or `tracked`, as for badges. With `tracked` the top lists use all collected history and no change is shown. The star history cards default to `tracked`, the whole history
 - `theme`: `auto` (default) follows the viewer's light or dark mode, `light` and `dark` fix the colors
 - `brand`: `brand=1` (default) keeps the `ghstats` wordmark in the background, `brand=0` removes it
+- `log`: on the star history cards, `log=1` draws a log scale with gridlines at powers of ten and no area under a single line, `log=0` (default) keeps the linear one
+- `repos`: on `/card/history.svg`, up to 4 comma-separated `owner/name` repositories, each as its own line with a legend. More than 4 is a 400 error, a repository the cards can't show is a 404
+- `align`: with `repos`, `align=1` starts every line at its own first date and counts days or years on the x axis, to compare how fast projects grew from their start; `align=0` (default) keeps the dates
 
-Any other value of these parameters is a 400 error.
+Any other value of `period`, `theme`, `brand`, `log` and `align` is a 400 error.
+
+Charts only know repositories `ghstats` tracks, so `repos` can't compare an arbitrary GitHub repository.
 
 Cards are public and show repository names. They follow both `GHS_FILTER` and `GHS_SHOW` and never show private repositories, also with `GHS_INCLUDE_PRIVATE=true`: there is no option to include them, and the totals count the same set of repositories. Cards are cached for an hour.
 
@@ -318,6 +323,7 @@ GitHub loads images through its own proxy, so the server must be reachable from 
 
 ```md
 ![Top stars](https://ghstats.example.com/card/stars.svg?period=30d)
+![Star history of twscrape and macmon](https://ghstats.example.com/card/history.svg?repos=vladkens/twscrape,vladkens/macmon&log=1)
 ```
 
 ## 🤝 Contributing
