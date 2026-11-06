@@ -201,16 +201,14 @@ Old comma values of `GHS_FILTER` like `!fork,vladkens/*` keep working, with two 
 ```json
 {
   "status": "ok",
-  "sync": {
-    "healthy": true,
-    "last_success": "2026-11-06T04:59:12Z",
-    "last_error": null,
-    "running": false
-  }
+  "sync_healthy": true,
+  "sync_last_success": "2026-11-06T04:59:12Z",
+  "sync_last_error": null,
+  "sync_running": false
 }
 ```
 
-`sync.healthy` is `true` if the last successful sync was less than 8 hours ago, which is 8 missed runs on the default hourly schedule. `last_success` is kept in memory and is empty after a restart, so with no successful sync yet `sync.healthy` is `true` during the first 8 hours of uptime, then `false`. The 8 hours are fixed, so a `GHS_CRON_SCHEDULE` rarer than that reads as unhealthy between runs. `last_error` is the error of the last failed sync, `null` once a sync succeeds.
+`sync_healthy` is `true` if the last successful sync was less than 8 hours ago, which is 8 missed runs on the default hourly schedule. `sync_last_success` is kept in memory and is empty after a restart, so with no successful sync yet `sync_healthy` is `true` during the first 8 hours of uptime, then `false`. The 8 hours are fixed, so a `GHS_CRON_SCHEDULE` rarer than that reads as unhealthy between runs. `sync_last_error` is the error of the last failed sync, `null` once a sync succeeds.
 
 The HTTP code reflects only the database: `200` with `"status": "ok"`, or `503` with `"status": "error"` and the details if it isn't writable. A stale sync doesn't change it: Docker's `HEALTHCHECK` reads this endpoint, and a stale sync shouldn't mark the container unhealthy, because a restart doesn't fix an expired token.
 

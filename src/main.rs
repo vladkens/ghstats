@@ -114,27 +114,12 @@ async fn start_db_healthcheck(state: Arc<AppState>) {
   }
 }
 
-fn sync_health(state: &AppState) -> serde_json::Value {
-  let status = state.sync_status();
-  let last_success = status.last_success.map(|x| x.to_rfc3339_opts(SecondsFormat::Secs, true));
-  serde_json::json!({
-    "healthy": is_sync_healthy(status.last_success, state.started_at, Utc::now()),
-    "last_success": last_success,
-    "last_error": status.last_error,
-    "running": status.running,
-  })
-}
-
 // the status and HTTP code are only about the database: Docker's HEALTHCHECK reads them, and a
 // stale sync shouldn't mark the container unhealthy
 async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
   let health = state.db_health();
-  let sync = sync_health(&state);
-  match health.result {
-    Ok(_) => {
-      let msg = serde_json::json!({ "status": "ok", "sync": sync });
-      (StatusCode::OK, axum::response::Json(msg))
-    }
+  let (code, mut msg) = match health.result {
+    Ok(_) => (StatusCode::OK, serde_json::json!({ "status": "ok" })),
     Err(details) => {
       let msg = serde_json::json!({
         "status": "error",
@@ -143,11 +128,19 @@ async fn health(State(state): State<Arc<AppState>>) -> impl IntoResponse {
         "details": details,
         "checked_seconds_ago": health.checked_at.elapsed().as_secs(),
         "check_interval_seconds": DB_HEALTH_INTERVAL_SECS,
-        "sync": sync,
       });
-      (StatusCode::SERVICE_UNAVAILABLE, axum::response::Json(msg))
+      (StatusCode::SERVICE_UNAVAILABLE, msg)
     }
-  }
+  };
+
+  let sync = state.sync_status();
+  let last_success = sync.last_success.map(|x| x.to_rfc3339_opts(SecondsFormat::Secs, true));
+  msg["sync_healthy"] = is_sync_healthy(sync.last_success, state.started_at, Utc::now()).into();
+  msg["sync_last_success"] = last_success.into();
+  msg["sync_last_error"] = sync.last_error.into();
+  msg["sync_running"] = sync.running.into();
+
+  (code, axum::response::Json(msg))
 }
 
 #[tokio::main]
@@ -230,19 +223,24 @@ mod tests {
     let state = Arc::new(test_state("sync").await);
 
     let (code, body) = get_health(&state).await;
-    let sync =
-      json!({ "healthy": true, "last_success": null, "last_error": null, "running": false });
+    let want = json!({
+      "status": "ok",
+      "sync_healthy": true,
+      "sync_last_success": null,
+      "sync_last_error": null,
+      "sync_running": false,
+    });
     assert_eq!(code, StatusCode::OK);
-    assert_eq!(body, json!({ "status": "ok", "sync": sync }));
+    assert_eq!(body, want);
 
     state.record_sync_success();
     state.record_sync_start();
     state.record_sync_error(&anyhow::anyhow!("sync failed"));
 
     let (_, body) = get_health(&state).await;
-    let last_success = body["sync"]["last_success"].as_str().unwrap();
-    assert_eq!(body["sync"]["last_error"], "sync failed");
-    assert_eq!(body["sync"]["healthy"], true);
+    let last_success = body["sync_last_success"].as_str().unwrap();
+    assert_eq!(body["sync_last_error"], "sync failed");
+    assert_eq!(body["sync_healthy"], true);
     assert!(last_success.ends_with('Z') && last_success.len() == 20, "{last_success}");
   }
 
@@ -254,7 +252,7 @@ mod tests {
     let (code, body) = get_health(&Arc::new(state)).await;
     assert_eq!(code, StatusCode::OK);
     assert_eq!(body["status"], "ok");
-    assert_eq!(body["sync"]["healthy"], false);
+    assert_eq!(body["sync_healthy"], false);
   }
 
   #[tokio::test]
@@ -267,6 +265,10 @@ mod tests {
     assert_eq!(body["status"], "error");
     assert_eq!(body["error"], "database_not_writable");
     assert_eq!(body["details"], "readonly");
-    assert_eq!(body["sync"]["healthy"], true);
+    assert_eq!(body["sync_healthy"], true);
+
+    for key in ["sync_last_success", "sync_last_error", "sync_running"] {
+      assert!(body.get(key).is_some(), "{key}");
+    }
   }
 }
