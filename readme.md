@@ -302,7 +302,7 @@ Badge URLs cannot send `GHS_API_TOKEN`. If the instance contains private reposit
 
 Examples, rendered by a real instance and saved in [examples](examples):
 
-![Top stars](examples/stars.svg) ![Top forks](examples/forks.svg) ![Top clones](examples/clones.svg) ![Top views](examples/views.svg) ![Totals](examples/totals.svg) ![Star history](examples/history.svg)
+![Top stars](examples/stars.svg) ![Top forks](examples/forks.svg) ![Top clones](examples/clones.svg) ![Top views](examples/views.svg) ![Totals](examples/totals.svg) ![Star history](examples/history.svg) ![twscrape star history](examples/history-twscrape.svg)
 
 Query parameters:
 

@@ -134,7 +134,7 @@ impl Card {
       Self::Clones => "Top clones",
       Self::Views => "Top views",
       Self::Totals => "Totals",
-      Self::History => "Star history",
+      Self::History => "All repositories",
     }
   }
 
@@ -226,7 +226,8 @@ pub async fn card(
     let opts = CardOpts::history(query)?;
     let repos = public_repos(&state).await?;
     let points = total_points(&state, &repos).await?;
-    return Ok(svg_response(history_card(card.title(), points, &opts)));
+    let title = shared_owner(repos.iter().map(|x| x.name.as_str())).unwrap_or(card.title());
+    return Ok(svg_response(history_card(title, points, &opts)));
   }
 
   let opts = CardOpts::try_from(query)?;
@@ -506,6 +507,13 @@ fn frame(height: i32, label: &str, card: Card, opts: &CardOpts, body: Markup) ->
   )
 }
 
+/// The owner of all `names`, when they have only one
+fn shared_owner<'a>(names: impl Iterator<Item = &'a str>) -> Option<&'a str> {
+  let mut owners = names.filter_map(|x| x.split('/').next());
+  let first = owners.next()?;
+  owners.all(|x| x == first).then_some(first)
+}
+
 fn card_header(title: &str, note: &str) -> Markup {
   let left = text(PAD, 27, 14.0, "head", HEAD_WEIGHT, false, title);
   let right = text(W - PAD, 27, 11.5, "muted", None, true, note);
@@ -518,8 +526,7 @@ fn list_card(card: Card, note: &str, rows: &[Row], opts: &CardOpts) -> Markup {
   let limit = if with_delta { NAME_MAX_DELTA } else { NAME_MAX_PLAIN };
   let top = rows.iter().map(|x| x.value).max().unwrap_or_default();
 
-  let one_owner =
-    rows.windows(2).all(|x| x[0].name.split('/').next() == x[1].name.split('/').next());
+  let one_owner = shared_owner(rows.iter().map(|x| x.name.as_str())).is_some();
   let name = |x: &Row| match x.name.split_once('/') {
     Some((_, repo)) if one_owner => cut_name(repo, limit),
     _ => cut_name(&x.name, limit),
@@ -1199,8 +1206,8 @@ mod tests {
 
     let total = svg(&state, "history.svg", "").await;
     assert!(total.contains(r#"height="200" viewBox="0 0 420 200""#));
-    assert!(total.contains("<title>Star history, 57 stars</title>"));
-    assert!(total.contains(">Star history<") && total.contains(">57 stars<"));
+    assert!(total.contains("<title>o, 57 stars</title>"));
+    assert!(total.contains(">o<") && total.contains(">57 stars<"));
     assert_eq!(total.matches(r#"class="grid""#).count(), 3);
     assert_eq!(total.matches(r#"class="dot""#).count(), 1);
     assert_eq!(total.matches(r#"text-anchor="middle""#).count(), 4);
@@ -1215,7 +1222,7 @@ mod tests {
 
     let one = repo_svg(&state, "o/one", "").await;
     assert!(one.contains(">o/one<") && one.contains(">50 stars<"));
-    assert!(!one.contains(">Star history<"));
+    assert!(!one.contains(">o<"));
 
     for (theme, card, stars) in [("light", "#ffffff", "#2f95dc"), ("dark", "#181c25", "#4fb0f0")] {
       let body = svg(&state, "history.svg", &format!("theme={theme}")).await;
@@ -1228,6 +1235,12 @@ mod tests {
     assert_eq!(auto.matches(".line{").count(), 2, "both themes");
     assert!(!auto.contains(">ghstats<"));
     assert!(!svg(&state, "stars.svg", "").await.contains(".line{"));
+
+    seed_stats(&state, 3, "x/three", &[(0, 1, 0)]).await;
+    let total = svg(&state, "history.svg", "").await;
+    assert!(total.contains("<title>All repositories, 58 stars</title>"));
+    assert!(total.contains(">All repositories<") && total.contains(">58 stars<"));
+    assert!(repo_svg(&state, "x/three", "").await.contains(">x/three<"));
   }
 
   #[tokio::test]
@@ -1290,7 +1303,7 @@ mod tests {
     let state = test_state("history-empty").await;
 
     let body = svg(&state, "history.svg", "").await;
-    assert_eq!(texts(&body).join(" "), "ghstats Star history 0 stars No data");
+    assert_eq!(texts(&body).join(" "), "ghstats All repositories 0 stars No data");
     assert!(body.contains(r#"height="84""#));
 
     seed_stats(&state, 1, "o/one", &[(0, 1, 0)]).await;
