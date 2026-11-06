@@ -302,7 +302,7 @@ Badge URLs cannot send `GHS_API_TOKEN`. If the instance contains private reposit
 
 Examples, rendered by a real instance and saved in [examples](examples):
 
-![Top stars](examples/stars.svg) ![Top forks](examples/forks.svg) ![Top clones](examples/clones.svg) ![Top views](examples/views.svg) ![Totals](examples/totals.svg) ![Star history](examples/history.svg) ![twscrape star history](examples/history-twscrape.svg) ![Star history of twscrape and macmon](examples/history-compare.svg) ![Star history on a log scale](examples/history-log.svg) ![Star history since 2023](examples/history-since.svg)
+<img src="examples/stars.svg" width="400" alt="Top stars"> <img src="examples/forks.svg" width="400" alt="Top forks"> <img src="examples/clones.svg" width="400" alt="Top clones"> <img src="examples/views.svg" width="400" alt="Top views"> <img src="examples/totals.svg" width="400" alt="Totals"> <img src="examples/history.svg" width="400" alt="Star history"> <img src="examples/history-twscrape.svg" width="400" alt="twscrape star history"> <img src="examples/history-compare.svg" width="400" alt="Star history of twscrape and macmon"> <img src="examples/history-log.svg" width="400" alt="Star history on a log scale"> <img src="examples/history-since.svg" width="400" alt="Star history since 2023">
 
 Query parameters:
 
@@ -316,7 +316,7 @@ Query parameters:
 
 Any other value of `period`, `theme`, `brand`, `log`, `align` and `since` is a 400 error.
 
-A card scales with the image width, set it in the embed: `<img src="https://ghstats.example.com/card/history.svg" width="420">`.
+All cards are 800 wide by default. A smaller width in the embed makes them smaller, for example two in a row: `<img src="https://ghstats.example.com/card/history.svg" width="400">`.
 
 Charts only know repositories `ghstats` tracks, so `repos` can't compare an arbitrary GitHub repository.
 

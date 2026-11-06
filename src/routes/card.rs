@@ -69,6 +69,7 @@ const LEGEND_OPACITY: f32 = 0.8; // lines stay visible behind it
 const LEGEND_DOT: f64 = 10.0;
 const LEGEND_TEXT: i32 = 20; // from the dot to the name
 const LEGEND_CHAR: i32 = 10; // no text measuring in SVG: a wide guess per char
+const LEGEND_NAME_MAX: usize = 56; // the widest row still ends inside the chart
 
 // the wordmark sits behind the rows, cut off by the bottom edge
 const MARK_SIZE: f32 = 64.0;
@@ -619,8 +620,11 @@ fn frame(height: i32, label: &str, card: Card, opts: &CardOpts, body: Markup) ->
     _ => (W, MARK_SIZE, MARK_RIGHT, MARK_DROP),
   };
 
+  // every card shows at the width of the charts, the viewBox keeps its own drawing
+  let shown = (f64::from(height * CHART_W) / f64::from(width)).round() as i32;
+
   html!(
-    svg xmlns="http://www.w3.org/2000/svg" width=(width) height=(height)
+    svg xmlns="http://www.w3.org/2000/svg" width=(CHART_W) height=(shown)
       viewBox=(format!("0 0 {width} {height}")) font-family=(FONT) {
       title { (label) }
       // static text only: everything dynamic goes through maud's escaping
@@ -735,11 +739,8 @@ fn dot(x: f64, y: f64, size: f64, class: &str) -> Markup {
 }
 
 fn legend(lines: &[Line]) -> Markup {
-  let one_owner = shared_owner(lines.iter().map(|x| x.name.as_str())).is_some();
-  let rows: Vec<(String, String)> = lines
-    .iter()
-    .map(|x| (cut_name(short_name(&x.name, one_owner), NAME_MAX_PLAIN), format_count(x.count)))
-    .collect();
+  let rows: Vec<(String, String)> =
+    lines.iter().map(|x| (cut_name(&x.name, LEGEND_NAME_MAX), format_count(x.count))).collect();
 
   let chars = rows.iter().map(|x| x.0.chars().count() + x.1.chars().count() + 1).max();
   let width = 2 * LEGEND_PAD + LEGEND_TEXT + chars.unwrap_or_default() as i32 * LEGEND_CHAR;
@@ -1006,7 +1007,7 @@ mod tests {
       assert_eq!(rep.headers()[header::CACHE_CONTROL], "public,max-age=3600", "{name}");
 
       let svg = svg(&state, name, "").await;
-      assert!(svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"420\""), "{name}");
+      assert!(svg.starts_with("<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"800\""), "{name}");
       assert!(svg.ends_with("</svg>"), "{name}");
       assert!(svg.contains(&format!(">{title}<")), "{name}");
       assert!(svg.contains(&format!(">{note}<")), "{name}");
@@ -1147,7 +1148,7 @@ mod tests {
 
     let body = svg(&state, "totals.svg", "period=tracked").await;
     assert!(body.contains(">all time<"));
-    assert!(body.contains(r#"height="90""#), "no delta row");
+    assert!(body.contains(r#"height="171" viewBox="0 0 420 90""#), "no delta row");
     assert!(!body.contains(r#"y="93""#));
   }
 
@@ -1360,7 +1361,7 @@ mod tests {
       for query in ["", "period=tracked"] {
         let body = svg(&state, name, query).await;
         assert!(body.contains(r#"class="muted">No data<"#), "{name}");
-        assert!(body.contains(r#"height="84""#), "{name}");
+        assert!(body.contains(r#"height="160" viewBox="0 0 420 84""#), "{name}");
         assert!(!body.contains(r#"class="bar""#), "{name}");
       }
     }
@@ -1375,12 +1376,12 @@ mod tests {
     seed_stats(&state, 2, "o/two", &[(0, 2, 0)]).await;
 
     let body = svg(&state, "stars.svg", "").await;
-    assert!(body.contains(r#"height="113" viewBox="0 0 420 113""#));
+    assert!(body.contains(r#"width="800" height="215" viewBox="0 0 420 113""#));
     assert!(body.contains(">one<") && body.contains(">two<"));
 
     seed_stats(&state, 3, "x/three", &[(0, 1, 0)]).await;
     let body = svg(&state, "stars.svg", "").await;
-    assert!(body.contains(r#"height="142""#));
+    assert!(body.contains(r#"height="270" viewBox="0 0 420 142""#));
     assert!(body.contains(">o/one<") && body.contains(">x/three<"));
   }
 
@@ -1563,8 +1564,8 @@ mod tests {
     assert!(!body.contains(r#"class="bar""#));
     assert!(body.contains(">Star history<"));
     assert!(!texts(&body).iter().any(|x| x.ends_with(" stars")), "no note");
-    assert!(body.contains(r#">one <tspan class="muted">50</tspan>"#));
-    assert!(body.contains(r#">two <tspan class="muted">7</tspan>"#));
+    assert!(body.contains(r#">o/one <tspan class="muted">50</tspan>"#), "a shared owner stays");
+    assert!(body.contains(r#">o/two <tspan class="muted">7</tspan>"#));
     assert!(body.contains("<title>Star history: o/one 50 stars, o/two 7 stars</title>"));
 
     assert_eq!(line_points(&body, 0)[0], "88.0 349.6", "the first date of all");
@@ -1579,10 +1580,26 @@ mod tests {
     // a repo without points in the period keeps its row, its color and no line
     let body = svg(&state, "history.svg", "repos=x/old,x/three&period=7d").await;
     assert!(!body.contains(r#"class="line line0""#) && body.contains(r#"class="line line1""#));
-    assert!(body.contains(r#">old <tspan class="muted">5</tspan>"#));
+    assert!(body.contains(r#">x/old <tspan class="muted">5</tspan>"#));
 
     let body = svg(&state, "history.svg", "repos=x/old,o/two&period=7d&align=1").await;
     assert!(body.contains(">No data<") && body.contains(r#"height="128""#));
+  }
+
+  #[test]
+  fn legend_keeps_long_names_inside_the_chart() {
+    let full = format!("owner/{}", "n".repeat(50));
+    let long = format!("owner/{}", "n".repeat(90));
+    let names = [&full, &full, &long, &long];
+    let lines = names.map(|x| Line::new(x, vec![(NaiveDate::default(), 99_900)]));
+
+    let body = legend(&lines).into_string();
+    assert!(body.contains(&format!(">{full} <tspan")));
+    assert!(body.contains(&format!(">{}… <tspan", &long[..LEGEND_NAME_MAX - 1])));
+
+    let width = 668;
+    assert!(body.contains(&format!(r#"width="{width}""#)));
+    assert!(LEGEND_X + width <= CHART_R);
   }
 
   #[tokio::test]
