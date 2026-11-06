@@ -47,7 +47,9 @@ pub fn badge_routes() -> Router<Arc<AppState>> {
 }
 
 pub fn card_routes() -> Router<Arc<AppState>> {
-  Router::new().route("/card/{name}", get(card::card))
+  Router::new()
+    .route("/card/{name}", get(card::card))
+    .route("/card/{owner}/{repo}/history.svg", get(card::repo_card))
 }
 
 pub fn asset_routes() -> Router<Arc<AppState>> {

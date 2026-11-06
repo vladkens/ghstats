@@ -290,21 +290,23 @@ Badge URLs cannot send `GHS_API_TOKEN`. If the instance contains private reposit
 
 `ghstats` can also render SVG cards for a GitHub profile README or a personal site:
 
-| Card       | Endpoint           | Shows                                                                       |
-| ---------- | ------------------ | --------------------------------------------------------------------------- |
-| Top stars  | `/card/stars.svg`  | Top 5 repositories by current stars, with the change in the period          |
-| Top forks  | `/card/forks.svg`  | Top 5 repositories by current forks, with the change in the period          |
-| Top clones | `/card/clones.svg` | Top 5 repositories by clones in the period                                  |
-| Top views  | `/card/views.svg`  | Top 5 repositories by views in the period                                   |
-| Totals     | `/card/totals.svg` | Stars, forks, views, clones and repositories, with the change in the period |
+| Card              | Endpoint                           | Shows                                                                            |
+| ----------------- | ---------------------------------- | -------------------------------------------------------------------------------- |
+| Top stars         | `/card/stars.svg`                  | Top 5 repositories by current stars, with the change in the period               |
+| Top forks         | `/card/forks.svg`                  | Top 5 repositories by current forks, with the change in the period               |
+| Top clones        | `/card/clones.svg`                 | Top 5 repositories by clones in the period                                       |
+| Top views         | `/card/views.svg`                  | Top 5 repositories by views in the period                                        |
+| Totals            | `/card/totals.svg`                 | Stars, forks, views, clones and repositories, with the change in the period      |
+| Star history      | `/card/history.svg`                | Chart of the total stars of all repositories on the cards                        |
+| Repo star history | `/card/{owner}/{repo}/history.svg` | Chart of the stars of one repository, a repository the cards can't show is a 404 |
 
 Examples, rendered by a real instance and saved in [examples](examples):
 
-![Top stars](examples/stars.svg) ![Top forks](examples/forks.svg) ![Top clones](examples/clones.svg) ![Top views](examples/views.svg) ![Totals](examples/totals.svg)
+![Top stars](examples/stars.svg) ![Top forks](examples/forks.svg) ![Top clones](examples/clones.svg) ![Top views](examples/views.svg) ![Totals](examples/totals.svg) ![Star history](examples/history.svg)
 
 Query parameters:
 
-- `period`: `7d`, `30d` (default), `90d` or `tracked`, as for badges. With `tracked` the top lists use all collected history and no change is shown
+- `period`: `7d`, `30d` (default), `90d` or `tracked`, as for badges. With `tracked` the top lists use all collected history and no change is shown. The star history cards default to `tracked`, the whole history
 - `theme`: `auto` (default) follows the viewer's light or dark mode, `light` and `dark` fix the colors
 - `brand`: `brand=1` (default) keeps the `ghstats` wordmark in the background, `brand=0` removes it
 

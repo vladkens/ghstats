@@ -1,15 +1,15 @@
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use chrono::{NaiveDate, Utc};
+use chrono::{Duration, NaiveDate, Utc};
 use maud::{Markup, PreEscaped, Render, html};
 use serde::Deserialize;
 use thousands::Separable;
 
-use super::badge::Period;
+use super::badge::{Period, dated_stars, in_period_date};
 use crate::AppState;
 use crate::db_client::{self, RepoFilter, RepoPeriod, RepoTotals};
 use crate::types::{AppError, Res};
@@ -40,6 +40,17 @@ const TOTALS_COL: f64 = (W - 2 * PAD) as f64 / 5.0;
 const TOTALS_LABEL_Y: i32 = 52;
 const TOTALS_VALUE_Y: i32 = 75;
 const TOTALS_DELTA_Y: i32 = 93;
+
+const CHART_H: i32 = 200;
+const CHART_L: i32 = 50; // the y labels stay to the left of it
+const CHART_R: i32 = W - PAD;
+const CHART_T: i32 = ROWS_Y;
+const CHART_B: i32 = 172;
+const CHART_TEXT: f32 = 10.0;
+const CHART_POINTS: usize = 120;
+const DOT: f64 = 6.0;
+const X_LABEL_Y: i32 = 188;
+const X_LABELS: i64 = 4;
 
 // the wordmark sits behind the rows, cut off by the bottom edge
 const MARK_SIZE: f32 = 64.0;
@@ -100,6 +111,7 @@ enum Card {
   Clones,
   Views,
   Totals,
+  History,
 }
 
 impl Card {
@@ -110,6 +122,7 @@ impl Card {
       "clones.svg" => Some(Self::Clones),
       "views.svg" => Some(Self::Views),
       "totals.svg" => Some(Self::Totals),
+      "history.svg" => Some(Self::History),
       _ => None,
     }
   }
@@ -121,12 +134,13 @@ impl Card {
       Self::Clones => "Top clones",
       Self::Views => "Top views",
       Self::Totals => "Totals",
+      Self::History => "Star history",
     }
   }
 
   fn bar(self, palette: &Palette) -> Option<&'static str> {
     match self {
-      Self::Stars => Some(palette.stars),
+      Self::Stars | Self::History => Some(palette.stars),
       Self::Forks => Some(palette.forks),
       Self::Clones => Some(palette.clones),
       Self::Views => Some(palette.views),
@@ -184,6 +198,13 @@ impl TryFrom<CardQuery> for CardOpts {
   }
 }
 
+impl CardOpts {
+  fn history(query: CardQuery) -> Result<Self, AppError> {
+    let period = query.period.or(Some("tracked".to_string()));
+    Self::try_from(CardQuery { period, ..query })
+  }
+}
+
 struct Row {
   name: String,
   value: i64,
@@ -191,6 +212,7 @@ struct Row {
 }
 
 type CardRepo = (RepoTotals, RepoPeriod);
+type Point = (NaiveDate, i64);
 
 // MARK: Data
 
@@ -200,8 +222,14 @@ pub async fn card(
   Query(query): Query<CardQuery>,
 ) -> Result<Response, AppError> {
   let card = Card::from_path(&name).ok_or_else(|| AppError::status(StatusCode::NOT_FOUND))?;
-  let opts = CardOpts::try_from(query)?;
+  if matches!(card, Card::History) {
+    let opts = CardOpts::history(query)?;
+    let repos = public_repos(&state).await?;
+    let points = total_points(&state, &repos).await?;
+    return Ok(svg_response(history_card(card.title(), points, &opts)));
+  }
 
+  let opts = CardOpts::try_from(query)?;
   let repos = card_repos(&state, opts.period).await?;
   let svg = match card {
     Card::Totals => totals_card(&repos, &opts),
@@ -211,17 +239,41 @@ pub async fn card(
     }
   };
 
+  Ok(svg_response(svg))
+}
+
+pub async fn repo_card(
+  State(state): State<Arc<AppState>>,
+  Path((owner, repo)): Path<(String, String)>,
+  Query(query): Query<CardQuery>,
+) -> Result<Response, AppError> {
+  let opts = CardOpts::history(query)?;
+  let repo = format!("{owner}/{repo}");
+  if !public_repos(&state).await?.iter().any(|x| x.name == repo) {
+    return Err(AppError::status(StatusCode::NOT_FOUND));
+  }
+
+  let stars = dated_stars(state.db.get_stars(&repo).await?);
+  let points: Vec<Point> = stars.into_iter().map(|x| (x.0, x.1.into())).collect();
+  Ok(svg_response(history_card(&repo, points, &opts)))
+}
+
+fn svg_response(svg: Markup) -> Response {
   let headers =
     [(header::CONTENT_TYPE, "image/svg+xml"), (header::CACHE_CONTROL, "public,max-age=3600")];
-  Ok((headers, svg.into_string()).into_response())
+  (headers, svg.into_string()).into_response()
 }
 
 /// Cards put repo names on public pages: only what GHS_FILTER and GHS_SHOW allow, never a private
 /// repo, whatever GHS_INCLUDE_PRIVATE says
-async fn card_repos(state: &Arc<AppState>, period: Period) -> Res<Vec<CardRepo>> {
+async fn public_repos(state: &Arc<AppState>) -> Res<Vec<RepoTotals>> {
   let mut repos = state.get_repos_shown(&RepoFilter::default()).await?;
   repos.retain(|x| !x.private);
+  Ok(repos)
+}
 
+async fn card_repos(state: &Arc<AppState>, period: Period) -> Res<Vec<CardRepo>> {
+  let repos = public_repos(state).await?;
   let days = match period {
     Period::Days(days) => db_client::Period(days as i32),
     Period::Tracked => db_client::Period(-1),
@@ -239,6 +291,28 @@ async fn card_repos(state: &Arc<AppState>, period: Period) -> Res<Vec<CardRepo>>
   });
 
   Ok(repos.collect())
+}
+
+/// Sum per date of each repo's latest known count
+async fn total_points(state: &Arc<AppState>, repos: &[RepoTotals]) -> Res<Vec<Point>> {
+  let mut changes = BTreeMap::<NaiveDate, i64>::new();
+  for repo in repos {
+    let mut prev = 0;
+    for (date, stars) in dated_stars(state.db.get_stars(&repo.name).await?) {
+      let stars = i64::from(stars);
+      *changes.entry(date).or_default() += stars - prev;
+      prev = stars;
+    }
+  }
+
+  let mut total = 0;
+  let mut points = Vec::new();
+  for (date, change) in changes {
+    total += change;
+    points.push((date, total));
+  }
+
+  Ok(points)
 }
 
 fn forks_gain(repo: &RepoTotals, per: &RepoPeriod) -> i64 {
@@ -334,6 +408,36 @@ fn bar_width(value: i64, top: i64) -> i32 {
   (width.round() as i32).max(BAR_MIN)
 }
 
+/// Rounded up to a value whose half is round too
+fn axis_top(value: i64) -> i64 {
+  let value = value.max(2);
+  let mut unit = 1;
+  while unit * 10 < value {
+    unit *= 10;
+  }
+
+  let tops = [12, 15, 20, 30, 40, 50, 60, 80, 100].map(|x| x * unit / 10);
+  tops.into_iter().find(|x| *x >= value).unwrap_or(value)
+}
+
+/// Even dates inside the chart, at most one per day of the range
+fn x_labels(first: NaiveDate, last: NaiveDate) -> Vec<(NaiveDate, String)> {
+  let days = (last - first).num_days();
+  let format = if days > 300 { "%b %Y" } else { "%b %d" };
+  let count = X_LABELS.min(days);
+  let dates = (0..count).map(|x| first + Duration::days(days * (2 * x + 1) / (2 * count)));
+  dates.map(|x| (x, x.format(format).to_string())).collect()
+}
+
+fn pick_points(points: &[Point]) -> Vec<Point> {
+  if points.len() <= CHART_POINTS {
+    return points.to_vec();
+  }
+
+  let last = points.len() - 1;
+  (0..CHART_POINTS).map(|x| points[x * last / (CHART_POINTS - 1)]).collect()
+}
+
 // MARK: SVG
 
 fn rules(palette: &Palette, card: Card) -> String {
@@ -346,6 +450,14 @@ fn rules(palette: &Palette, card: Card) -> String {
 
   if let Some(bar) = card.bar(palette) {
     css += &format!(".bar{{fill:{bar};fill-opacity:{BAR_OPACITY}}}");
+  }
+
+  if matches!(card, Card::History) {
+    let stars = palette.stars;
+    css += &format!(
+      ".line{{fill:none;stroke:{stars};stroke-width:2;stroke-linejoin:round;stroke-linecap:round}}\
+      .grid{{stroke:{border}}}.dot{{fill:{stars}}}"
+    );
   }
 
   css
@@ -479,13 +591,65 @@ fn totals_card(repos: &[CardRepo], opts: &CardOpts) -> Markup {
   frame(height, &format!("Totals: {}", summary.join(", ")), Card::Totals, opts, body)
 }
 
+fn chart(points: &[Point]) -> Markup {
+  let (first, last) = (points[0].0, points[points.len() - 1].0);
+  let top = axis_top(points.iter().map(|x| x.1).max().unwrap_or_default());
+
+  let days = (last - first).num_days() as f64;
+  let x_at = |date: NaiveDate| {
+    f64::from(CHART_L) + f64::from(CHART_R - CHART_L) * (date - first).num_days() as f64 / days
+  };
+  let y_at =
+    |value: i64| f64::from(CHART_B) - f64::from(CHART_B - CHART_T) * value as f64 / top as f64;
+
+  let picked = pick_points(points);
+  let line: Vec<String> =
+    picked.iter().map(|x| format!("{:.1} {:.1}", x_at(x.0), y_at(x.1))).collect();
+  let line = line.join("L");
+  let end = picked[picked.len() - 1];
+
+  html!(
+    @for value in [0, top / 2, top] {
+      @let y = y_at(value);
+      @let label = format_count(value);
+      line x1=(CHART_L) y1=(format!("{y:.1}")) x2=(CHART_R) y2=(format!("{y:.1}")) class="grid" {}
+      (text(CHART_L - 6, y.round() as i32 + 3, CHART_TEXT, "muted", None, true, &label))
+    }
+    path d=(format!("M{line}L{CHART_R} {CHART_B}L{CHART_L} {CHART_B}Z")) class="bar" {}
+    path d=(format!("M{line}")) class="line" {}
+    rect x=(format!("{:.1}", x_at(end.0) - DOT / 2.0)) y=(format!("{:.1}", y_at(end.1) - DOT / 2.0))
+      width=(DOT) height=(DOT) rx=(DOT / 2.0) class="dot" {}
+    @for (date, label) in x_labels(first, last) {
+      text x=(format!("{:.1}", x_at(date))) y=(X_LABEL_Y) font-size=(CHART_TEXT) class="muted"
+        text-anchor="middle" { (label) }
+    }
+  )
+}
+
+fn history_card(name: &str, mut points: Vec<Point>, opts: &CardOpts) -> Markup {
+  let total = points.last().map_or(0, |x| x.1);
+  let unit = if total == 1 { "star" } else { "stars" };
+  let note = format!("{} {unit}", format_count(total));
+  let label = format!("{name}, {note}");
+  let header = card_header(&cut_name(name, NAME_MAX_PLAIN), &note);
+
+  points.retain(|x| in_period_date(x.0, opts.period));
+
+  if points.len() < 2 {
+    let body =
+      html!((header)(text(TEXT_L, ROWS_Y + BASELINE, 13.0, "muted", None, false, "No data")));
+    return frame(ROWS_Y + ROW_H + PAD, &label, Card::History, opts, body);
+  }
+
+  frame(CHART_H, &label, Card::History, opts, html!((header)(chart(&points))))
+}
+
 #[cfg(test)]
 mod tests {
   use std::time::{SystemTime, UNIX_EPOCH};
 
   use axum::body::to_bytes;
   use axum::http::Uri;
-  use chrono::Duration;
 
   use super::*;
   use crate::db_client::DbClient;
@@ -566,6 +730,36 @@ mod tests {
       Ok(x) => x.status(),
       Err(e) => e.into_response().status(),
     }
+  }
+
+  async fn repo_response(
+    state: &Arc<AppState>,
+    repo: &str,
+    query: &str,
+  ) -> Result<Response, AppError> {
+    let uri: Uri = format!("/card/{repo}/history.svg?{query}").parse().unwrap();
+    let query = Query::try_from_uri(&uri).unwrap();
+    let (owner, repo) = repo.split_once('/').unwrap();
+    repo_card(State(state.clone()), Path((owner.to_string(), repo.to_string())), query).await
+  }
+
+  async fn repo_svg(state: &Arc<AppState>, repo: &str, query: &str) -> String {
+    let rep = repo_response(state, repo, query).await.unwrap();
+    let body = to_bytes(rep.into_body(), usize::MAX).await.unwrap();
+    String::from_utf8(body.to_vec()).unwrap()
+  }
+
+  async fn repo_status(state: &Arc<AppState>, repo: &str, query: &str) -> StatusCode {
+    match repo_response(state, repo, query).await {
+      Ok(x) => x.status(),
+      Err(e) => e.into_response().status(),
+    }
+  }
+
+  /// The drawn line as "x y" pairs
+  fn line_points(svg: &str) -> Vec<&str> {
+    let line = svg.split(r#" class="line""#).next().unwrap();
+    line.rsplit_once(r#"d="M"#).unwrap().1.trim_end_matches('"').split('L').collect()
   }
 
   fn texts(svg: &str) -> Vec<&str> {
@@ -986,6 +1180,189 @@ mod tests {
     let body = svg(&state, "stars.svg", "").await;
     assert!(body.contains(">tom&amp;jerry&lt;beta&gt;<"));
     assert!(!body.contains("tom&jerry"));
+  }
+
+  #[tokio::test]
+  async fn history_renders_the_chart_with_headers() {
+    let state = test_state("history").await;
+    seed_stats(&state, 1, "o/one", &[(40, 10, 0), (20, 30, 0), (0, 50, 0)]).await;
+    seed_stats(&state, 2, "o/two", &[(40, 5, 0), (0, 7, 0)]).await;
+
+    let rep = response(&state, "history.svg", "").await.unwrap();
+    assert_eq!(rep.status(), StatusCode::OK);
+    assert_eq!(rep.headers()[header::CONTENT_TYPE], "image/svg+xml");
+    assert_eq!(rep.headers()[header::CACHE_CONTROL], "public,max-age=3600");
+
+    let rep = repo_response(&state, "o/one", "").await.unwrap();
+    assert_eq!(rep.headers()[header::CONTENT_TYPE], "image/svg+xml");
+    assert_eq!(rep.headers()[header::CACHE_CONTROL], "public,max-age=3600");
+
+    let total = svg(&state, "history.svg", "").await;
+    assert!(total.contains(r#"height="200" viewBox="0 0 420 200""#));
+    assert!(total.contains("<title>Star history, 57 stars</title>"));
+    assert!(total.contains(">Star history<") && total.contains(">57 stars<"));
+    assert_eq!(total.matches(r#"class="grid""#).count(), 3);
+    assert_eq!(total.matches(r#"class="dot""#).count(), 1);
+    assert_eq!(total.matches(r#"text-anchor="middle""#).count(), 4);
+    assert_eq!(line_points(&total).len(), 3);
+    assert_eq!(line_points(&total)[0], "50.0 139.5", "15 of 60 at the left edge");
+    assert_eq!(line_points(&total)[2], "404.0 48.5", "57 of 60 at the right edge");
+
+    let elements = total.split('<').skip(1).filter(|x| !x.starts_with('/'));
+    let mut elements = elements.filter_map(|x| x.split([' ', '>']).next());
+    let allowed = ["svg", "title", "style", "rect", "text", "line", "path"];
+    assert!(elements.all(|x| allowed.contains(&x)));
+
+    let one = repo_svg(&state, "o/one", "").await;
+    assert!(one.contains(">o/one<") && one.contains(">50 stars<"));
+    assert!(!one.contains(">Star history<"));
+
+    for (theme, card, stars) in [("light", "#ffffff", "#2f95dc"), ("dark", "#181c25", "#4fb0f0")] {
+      let body = svg(&state, "history.svg", &format!("theme={theme}")).await;
+      assert!(body.contains(&format!(".card{{fill:{card}")), "{theme}");
+      assert!(body.contains(&format!(".line{{fill:none;stroke:{stars}")), "{theme}");
+      assert!(body.contains(&format!(".dot{{fill:{stars}}}")), "{theme}");
+    }
+
+    let auto = svg(&state, "history.svg", "brand=0").await;
+    assert_eq!(auto.matches(".line{").count(), 2, "both themes");
+    assert!(!auto.contains(">ghstats<"));
+    assert!(!svg(&state, "stars.svg", "").await.contains(".line{"));
+  }
+
+  #[tokio::test]
+  async fn history_totals_carry_forward_and_sum() {
+    let state = test_state("history-totals").await;
+    // the zero row is a gap, not a drop to zero
+    seed_stats(&state, 1, "o/a", &[(9, 0, 0), (8, 10, 0), (6, 0, 0), (4, 12, 0), (0, 15, 0)]).await;
+    seed_stats(&state, 2, "o/b", &[(6, 100, 0), (2, 90, 0)]).await;
+
+    let repos = public_repos(&state).await.unwrap();
+    let day = |x: i64| Utc::now().date_naive() - Duration::days(x);
+    let want = vec![(day(8), 10), (day(6), 110), (day(4), 112), (day(2), 102), (day(0), 105)];
+    assert_eq!(total_points(&state, &repos).await.unwrap(), want);
+
+    assert!(svg(&state, "history.svg", "").await.contains(">105 stars<"));
+  }
+
+  #[tokio::test]
+  async fn history_period_limits_the_range() {
+    let state = test_state("history-period").await;
+    seed_stats(&state, 1, "o/r", &[(100, 1, 0), (50, 10, 0), (20, 20, 0), (5, 30, 0), (0, 40, 0)])
+      .await;
+
+    let cases =
+      [("", 5), ("period=tracked", 5), ("period=90d", 4), ("period=30d", 3), ("period=7d", 2)];
+    for (query, want) in cases {
+      for body in [svg(&state, "history.svg", query).await, repo_svg(&state, "o/r", query).await] {
+        assert_eq!(line_points(&body).len(), want, "{query}");
+        assert!(body.contains(">40 stars<"), "{query}");
+      }
+    }
+  }
+
+  #[tokio::test]
+  async fn history_leaves_out_private_and_show_hidden_repos() {
+    let db = DbClient::new(&db_path("history-privacy")).await.unwrap();
+    let mut state = AppState::for_test(db, "!o/filtered");
+    state.show = Filter::parse("!o/hidden-by-show", true).unwrap();
+    state.include_private = true;
+    let state = Arc::new(state);
+
+    seed_stats(&state, 1, "o/visible", &[(5, 5, 0), (0, 10, 0)]).await;
+    seed_stats(&state, 2, "o/hidden-by-show", &[(5, 900, 0), (0, 1_000, 0)]).await;
+    seed_stats(&state, 3, "o/secret", &[(5, 2_000, 0), (0, 3_000, 0)]).await;
+    seed_stats(&state, 4, "o/filtered", &[(5, 4_000, 0), (0, 5_000, 0)]).await;
+
+    let secret = Repo { private: true, ..sample_repo(3, "o/secret", 3_000, 0) };
+    state.db.insert_repo(&secret).await.unwrap();
+
+    assert!(svg(&state, "history.svg", "").await.contains(">10 stars<"));
+    assert_eq!(repo_status(&state, "o/visible", "").await, StatusCode::OK);
+
+    for repo in ["o/hidden-by-show", "o/secret", "o/filtered", "o/unknown"] {
+      assert_eq!(repo_status(&state, repo, "").await, StatusCode::NOT_FOUND, "{repo}");
+    }
+  }
+
+  #[tokio::test]
+  async fn history_without_two_points_renders_no_data() {
+    let state = test_state("history-empty").await;
+
+    let body = svg(&state, "history.svg", "").await;
+    assert_eq!(texts(&body).join(" "), "ghstats Star history 0 stars No data");
+    assert!(body.contains(r#"height="84""#));
+
+    seed_stats(&state, 1, "o/one", &[(0, 1, 0)]).await;
+    seed_stats(&state, 2, "o/old", &[(20, 4, 0), (10, 5, 0)]).await;
+
+    let body = repo_svg(&state, "o/one", "").await;
+    assert_eq!(texts(&body).join(" "), "ghstats o/one 1 star No data");
+    assert!(body.contains("<title>o/one, 1 star</title>"));
+    assert!(!body.contains(r#"class="line""#));
+
+    let body = repo_svg(&state, "o/old", "period=7d").await;
+    assert_eq!(texts(&body).join(" "), "ghstats o/old 5 stars No data", "the note stays current");
+  }
+
+  #[test]
+  fn pick_points_spreads_evenly_and_keeps_the_last() {
+    let start = Utc::now().date_naive();
+    let points: Vec<Point> = (0..1_000).map(|x| (start + Duration::days(x), x)).collect();
+
+    let picked = pick_points(&points);
+    assert_eq!(picked.len(), CHART_POINTS);
+    assert_eq!(picked[0], points[0]);
+    assert_eq!(picked[CHART_POINTS - 1], points[999]);
+    assert!(picked.windows(2).all(|x| (8..=9).contains(&(x[1].1 - x[0].1))));
+
+    assert_eq!(pick_points(&points[..CHART_POINTS]), points[..CHART_POINTS]);
+  }
+
+  #[test]
+  fn chart_axes_round_up_and_keep_the_label_count() {
+    let cases = [
+      (1, 2),
+      (3, 3),
+      (7, 8),
+      (55, 60),
+      (100, 100),
+      (1_043, 1_200),
+      (2_932, 3_000),
+      (5_817, 6_000),
+      (9_999, 10_000),
+      (205_000, 300_000),
+    ];
+
+    for (value, want) in cases {
+      assert_eq!(axis_top(value), want, "{value}");
+    }
+
+    let cases = [
+      ("2026-11-05", "2026-11-06", "Nov 05"),
+      ("2026-11-04", "2026-11-06", "Nov 04 Nov 05"),
+      ("2026-10-31", "2026-11-06", "Oct 31 Nov 02 Nov 03 Nov 05"),
+      ("2026-01-01", "2026-10-28", "Feb 07 Apr 23 Jul 07 Sep 20"),
+      ("2026-01-01", "2026-10-29", "Feb 2026 Apr 2026 Jul 2026 Sep 2026"),
+      ("2023-05-09", "2026-11-05", "Oct 2023 Aug 2024 Jul 2025 May 2026"),
+    ];
+
+    for (first, last, want) in cases {
+      let labels = x_labels(first.parse().unwrap(), last.parse().unwrap());
+      let labels: Vec<String> = labels.into_iter().map(|x| x.1).collect();
+      assert_eq!(labels.join(" "), want, "{first}");
+    }
+  }
+
+  #[tokio::test]
+  async fn history_rejects_invalid_params() {
+    let state = test_state("history-invalid").await;
+    seed_stats(&state, 1, "o/r", &[(1, 1, 0), (0, 2, 0)]).await;
+
+    for query in ["period=year", "period=", "theme=blue", "brand=2"] {
+      assert_eq!(status(&state, "history.svg", query).await, StatusCode::BAD_REQUEST, "{query}");
+      assert_eq!(repo_status(&state, "o/r", query).await, StatusCode::BAD_REQUEST, "{query}");
+    }
   }
 
   #[test]
