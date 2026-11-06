@@ -30,6 +30,7 @@ or public stats pages where GitHub's built-in traffic tab is too short-lived.
 - Repo filtering by owner, exact name, forks, and archived status
 - JSON API for exposing collected stats to personal sites or other tools
 - Embeddable SVG badges for repository, portfolio, and service metrics
+- Embeddable SVG cards with your top repositories and account totals
 - Small self-hosted deployment: one Rust binary, one SQLite database, one Docker image
 
 ## Quick start
@@ -155,8 +156,8 @@ The home page is sorted by views by default. Set `GHS_SORT` to another column to
 
 Two variables pick the repos, both written in one query syntax like GitHub search:
 
-- `GHS_FILTER` picks the repos `ghstats` collects and shows anywhere (pages, API, badges); repos outside it aren't synced, and the stats they already have stay in the database, hidden
-- `GHS_SHOW` picks which of the collected repos are shown on the public pages: the rest are hidden from the home list and their repo pages (a hidden repo's page is a 404), while their data is still collected and badges and the API are unchanged
+- `GHS_FILTER` picks the repos `ghstats` collects and shows anywhere (pages, API, badges, cards); repos outside it aren't synced, and the stats they already have stay in the database, hidden
+- `GHS_SHOW` picks which of the collected repos are shown on the public pages: the rest are hidden from the home list, their repo pages (a hidden repo's page is a 404) and the cards, while their data is still collected and badges and the API are unchanged
 
 ```sh
 GHS_FILTER='vladkens/*' # only vladkens repos
@@ -284,6 +285,64 @@ Markdown example:
 ```
 
 Badge URLs cannot send `GHS_API_TOKEN`. If the instance contains private repository data, protect the instance with a reverse proxy or exclude those repositories with `GHS_FILTER` before publishing badge URLs.
+
+### Card endpoints
+
+`ghstats` can also render SVG cards for a GitHub profile README or a personal site:
+
+| Card              | Endpoint                           | Shows                                                                            |
+| ----------------- | ---------------------------------- | -------------------------------------------------------------------------------- |
+| Top stars         | `/card/stars.svg`                  | Top 5 repositories by current stars, with the change in the period               |
+| Top forks         | `/card/forks.svg`                  | Top 5 repositories by current forks, with the change in the period               |
+| Top clones        | `/card/clones.svg`                 | Top 5 repositories by clones in the period                                       |
+| Top views         | `/card/views.svg`                  | Top 5 repositories by views in the period                                        |
+| Totals            | `/card/totals.svg`                 | Stars, forks, views, clones and repositories, with the change in the period      |
+| Star history      | `/card/history.svg`                | Chart of the total stars of all repositories on the cards                        |
+| Repo star history | `/card/{owner}/{repo}/history.svg` | Chart of the stars of one repository, a repository the cards can't show is a 404 |
+
+Examples, rendered by a real instance and saved in [examples](examples):
+
+<details>
+<summary>Examples</summary>
+
+<img src="examples/stars.svg" width="380" alt="Top stars"> <img src="examples/forks.svg" width="380" alt="Top forks">
+
+<img src="examples/clones.svg" width="380" alt="Top clones"> <img src="examples/views.svg" width="380" alt="Top views">
+
+<img src="examples/history.svg" width="380" alt="Star history"> <img src="examples/history-twscrape.svg" width="380" alt="twscrape star history">
+
+<img src="examples/history-compare.svg" width="380" alt="Star history of twscrape and macmon"> <img src="examples/history-log.svg" width="380" alt="Star history on a log scale">
+
+<img src="examples/history-since.svg" width="380" alt="Star history since 2023">
+
+<img src="examples/totals.svg" width="380" alt="Totals">
+
+</details>
+
+Query parameters:
+
+- `period`: `7d`, `30d` (default), `90d` or `tracked`, as for badges. With `tracked` the top lists use all collected history and no change is shown. The star history cards default to `tracked`, the whole history
+- `theme`: `auto` (default) follows the viewer's light or dark mode, `light` and `dark` fix the colors
+- `brand`: `brand=1` (default) keeps the `ghstats` wordmark in the background, `brand=0` removes it
+- `log`: on the star history cards, `log=1` draws a log scale with gridlines at powers of ten and no area under a single line, `log=0` (default) keeps the linear one
+- `repos`: on `/card/history.svg`, up to 4 comma-separated `owner/name` repositories, each as its own line with a legend. More than 4 is a 400 error, a repository the cards can't show is a 404
+- `align`: with `repos`, `align=1` starts every line at its own first date and counts days or years on the x axis, to compare how fast projects grew from their start; `align=0` (default) keeps the dates
+- `since`: on the star history cards, `since=2023-01-01` (`YYYY-MM-DD`) starts the chart at the first recorded date on or after it and replaces `period`, for a total that stays flat for years before growth starts
+
+Any other value of `period`, `theme`, `brand`, `log`, `align` and `since` is a 400 error.
+
+All cards are 800 wide by default. A smaller width in the embed makes them smaller, for example two in a row: `<img src="https://ghstats.example.com/card/history.svg" width="380">`.
+
+Charts only know repositories `ghstats` tracks, so `repos` can't compare an arbitrary GitHub repository.
+
+Cards are public and show repository names. They follow both `GHS_FILTER` and `GHS_SHOW` and never show private repositories, also with `GHS_INCLUDE_PRIVATE=true`: there is no option to include them, and the totals count the same set of repositories. Cards are cached for an hour.
+
+GitHub loads images through its own proxy, so the server must be reachable from the internet for a card to show up in a README:
+
+```md
+![Top stars](https://ghstats.example.com/card/stars.svg?period=30d)
+![Star history of twscrape and macmon](https://ghstats.example.com/card/history.svg?repos=vladkens/twscrape,vladkens/macmon&log=1)
+```
 
 ## 🤝 Contributing
 

@@ -72,13 +72,13 @@ impl Metric {
 }
 
 #[derive(Clone, Copy)]
-enum Period {
+pub(super) enum Period {
   Days(i64),
   Tracked,
 }
 
 impl Period {
-  fn parse(value: &str) -> Result<Self, AppError> {
+  pub(super) fn parse(value: &str) -> Result<Self, AppError> {
     match value {
       "7d" => Ok(Self::Days(7)),
       "30d" => Ok(Self::Days(30)),
@@ -309,7 +309,7 @@ async fn star_trend(
   Ok(StarTrend { delta, days })
 }
 
-fn dated_stars(stars: Vec<RepoStars>) -> Vec<(NaiveDate, i32)> {
+pub(super) fn dated_stars(stars: Vec<RepoStars>) -> Vec<(NaiveDate, i32)> {
   stars
     .into_iter()
     .filter_map(|star| parse_date(&star.date).map(|date| (date, star.stars)))
@@ -320,7 +320,7 @@ fn in_period(value: &str, period: Period) -> bool {
   parse_date(value).is_some_and(|date| in_period_date(date, period))
 }
 
-fn in_period_date(date: NaiveDate, period: Period) -> bool {
+pub(super) fn in_period_date(date: NaiveDate, period: Period) -> bool {
   period.cutoff().is_none_or(|cutoff| date >= cutoff)
 }
 

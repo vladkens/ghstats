@@ -271,6 +271,9 @@ pub struct RepoPeriod {
   pub stars: i64,
   pub stars_start: i64,
   pub stars_synced: bool,
+  /// `None` when the repo has no stats row
+  pub forks_start: Option<i64>,
+  pub first_traffic: Option<String>,
 }
 
 impl RepoPeriod {
@@ -653,6 +656,8 @@ fn repo_period_from_row(row: &Row<'_>) -> rusqlite::Result<RepoPeriod> {
     stars: row.get("stars")?,
     stars_start: row.get("stars_start")?,
     stars_synced: row.get("stars_synced")?,
+    forks_start: row.get("forks_start")?,
+    first_traffic: row.get("first_traffic")?,
   })
 }
 
@@ -942,6 +947,9 @@ impl DbClient {
     };
 
     // ?N, not $N: SQLite numbers $N params by first appearance
+    // forks_start skips star history rows: they hold 0 forks and a traffic row can set `traffic` on
+    // them. As in migrate_v5 a stats row has some other count, so a repo with no stars, watchers,
+    // issues or PRs looks like one and its first fork can show as 0
     let qs = "
     WITH ft AS (
       SELECT repo_id, first, MIN(date(first, '+' || ?6 || ' day'), date(last, '+1 day')) AS full
@@ -976,7 +984,18 @@ impl DbClient {
       COALESCE((
         SELECT x.stars FROM repo_stats x WHERE x.repo_id = r.id AND x.stars > 0 AND x.date < ?1
         ORDER BY x.date DESC LIMIT 1
-      ), 0) AS stars_start
+      ), 0) AS stars_start,
+      COALESCE((
+        SELECT x.forks FROM repo_stats x
+        WHERE x.repo_id = r.id AND x.date < ?1
+          AND (x.forks > 0 OR x.watchers > 0 OR x.issues > 0 OR x.prs > 0)
+        ORDER BY x.date DESC LIMIT 1
+      ), (
+        SELECT x.forks FROM repo_stats x
+        WHERE x.repo_id = r.id AND (x.forks > 0 OR x.watchers > 0 OR x.issues > 0 OR x.prs > 0)
+        ORDER BY x.date ASC LIMIT 1
+      )) AS forks_start,
+      ft.first AS first_traffic
     FROM repos r
     INNER JOIN repo_stats rs ON rs.repo_id = r.id
     LEFT JOIN ft ON ft.repo_id = r.id
