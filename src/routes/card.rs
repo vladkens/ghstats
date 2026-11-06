@@ -44,28 +44,31 @@ const TOTALS_DELTA_Y: i32 = 93;
 // history cards fill the width of a README, as star-history.com charts do
 const CHART_W: i32 = 800;
 const CHART_H: i32 = 480;
-const CHART_EMPTY_H: i32 = 116;
+const CHART_EMPTY_H: i32 = 128;
 const CHART_PAD: i32 = 28;
-const CHART_HEAD_Y: i32 = 46;
-const CHART_L: i32 = 84; // the y labels stay to the left of it
+const CHART_HEAD_Y: i32 = 50;
+const CHART_L: i32 = 88; // the y labels stay to the left of it
 const CHART_R: i32 = CHART_W - CHART_PAD;
-const CHART_T: i32 = 76;
-const CHART_B: i32 = 420;
-const CHART_TEXT: f32 = 14.0;
+const CHART_T: i32 = 84;
+const CHART_B: i32 = 416;
+const CHART_TITLE_TEXT: f32 = 26.0;
+const CHART_NOTE_TEXT: f32 = 20.0;
+const CHART_TEXT: f32 = 18.0; // sized to stay readable when the image is shown at 420
 const CHART_POINTS: usize = 200;
 const CHART_REPOS: usize = 4;
 const CHART_TITLE: &str = "Star history";
-const DOT: f64 = 10.0;
-const X_LABEL_Y: i32 = 448;
+const DOT: f64 = 12.0;
+const X_LABEL_Y: i32 = 450;
 const X_LABELS: i64 = 4;
 
 const LEGEND_X: i32 = CHART_L + 12;
 const LEGEND_Y: i32 = CHART_T + 12;
-const LEGEND_PAD: i32 = 12;
-const LEGEND_ROW: i32 = 24;
-const LEGEND_DOT: f64 = 8.0;
-const LEGEND_TEXT: i32 = 16; // from the dot to the name
-const LEGEND_CHAR: i32 = 8; // no text measuring in SVG: a wide guess per char
+const LEGEND_PAD: i32 = 14;
+const LEGEND_ROW: i32 = 30;
+const LEGEND_OPACITY: f32 = 0.8; // lines stay visible behind it
+const LEGEND_DOT: f64 = 10.0;
+const LEGEND_TEXT: i32 = 20; // from the dot to the name
+const LEGEND_CHAR: i32 = 10; // no text measuring in SVG: a wide guess per char
 
 // the wordmark sits behind the rows, cut off by the bottom edge
 const MARK_SIZE: f32 = 64.0;
@@ -193,10 +196,12 @@ pub struct CardQuery {
   repos: Option<String>,
   log: Option<String>,
   align: Option<String>,
+  since: Option<String>,
 }
 
 struct CardOpts {
   period: Period,
+  since: Option<NaiveDate>,
   theme: Theme,
   brand: bool,
   log: bool,
@@ -211,12 +216,17 @@ fn parse_flag(value: Option<&str>) -> Result<bool, AppError> {
   }
 }
 
+fn parse_since(value: &str) -> Result<NaiveDate, AppError> {
+  value.parse().map_err(|_| AppError::status(StatusCode::BAD_REQUEST))
+}
+
 impl TryFrom<CardQuery> for CardOpts {
   type Error = AppError;
 
   fn try_from(query: CardQuery) -> Result<Self, AppError> {
     Ok(Self {
       period: Period::parse(query.period.as_deref().unwrap_or("30d"))?,
+      since: query.since.as_deref().map(parse_since).transpose()?,
       theme: Theme::parse(query.theme.as_deref().unwrap_or("auto"))?,
       brand: parse_flag(query.brand.as_deref().or(Some("1")))?,
       log: parse_flag(query.log.as_deref())?,
@@ -229,6 +239,11 @@ impl CardOpts {
   fn history(query: CardQuery) -> Result<Self, AppError> {
     let period = query.period.or(Some("tracked".to_string()));
     Self::try_from(CardQuery { period, ..query })
+  }
+
+  /// On the history charts `since` replaces the period
+  fn in_range(&self, date: NaiveDate) -> bool {
+    self.since.map_or(in_period_date(date, self.period), |x| date >= x)
   }
 }
 
@@ -558,7 +573,7 @@ fn rules(palette: &Palette, card: Card) -> String {
 
   if matches!(card, Card::History) {
     css += &format!(
-      ".line{{fill:none;stroke-width:3;stroke-linejoin:round;stroke-linecap:round}}\
+      ".line{{fill:none;stroke-width:4;stroke-linejoin:round;stroke-linecap:round}}\
       .grid{{stroke:{border}}}"
     );
 
@@ -731,11 +746,12 @@ fn legend(lines: &[Line]) -> Markup {
   let height = 2 * LEGEND_PAD + rows.len() as i32 * LEGEND_ROW - 6;
 
   html!(
-    rect x=(LEGEND_X) y=(LEGEND_Y) width=(width) height=(height) rx="6" class="card" {}
+    rect x=(LEGEND_X) y=(LEGEND_Y) width=(width) height=(height) rx="6" class="card"
+      fill-opacity=(LEGEND_OPACITY) {}
     @for (idx, (name, count)) in rows.iter().enumerate() {
-      @let y = LEGEND_Y + LEGEND_PAD + idx as i32 * LEGEND_ROW + 13;
+      @let y = LEGEND_Y + LEGEND_PAD + idx as i32 * LEGEND_ROW + 17;
       @let x = LEGEND_X + LEGEND_PAD;
-      (dot(f64::from(x) + LEGEND_DOT / 2.0, f64::from(y - 5), LEGEND_DOT, &format!("dot{idx}")))
+      (dot(f64::from(x) + LEGEND_DOT / 2.0, f64::from(y - 6), LEGEND_DOT, &format!("dot{idx}")))
       text x=(x + LEGEND_TEXT) y=(y) font-size=(CHART_TEXT) class="ink" {
         (name) " " tspan class="muted" { (count) }
       }
@@ -771,10 +787,7 @@ fn chart(lines: &[Line], compare: bool, opts: &CardOpts) -> Markup {
       @let label = format_count(value);
       @let label = if opts.log { label.replace(".0", "") } else { label };
       line x1=(CHART_L) y1=(format!("{y:.1}")) x2=(CHART_R) y2=(format!("{y:.1}")) class="grid" {}
-      (text(CHART_L - 8, y.round() as i32 + 5, CHART_TEXT, "muted", None, true, &label))
-    }
-    @if compare {
-      (legend(lines))
+      (text(CHART_L - 8, y.round() as i32 + 6, CHART_TEXT, "muted", None, true, &label))
     }
     @for (idx, line) in lines.iter().enumerate() {
       @let picked = pick_points(&line.points);
@@ -789,6 +802,9 @@ fn chart(lines: &[Line], compare: bool, opts: &CardOpts) -> Markup {
         (dot(x_at(end.0), y_at(end.1), DOT, &format!("dot{idx}")))
       }
     }
+    @if compare {
+      (legend(lines))
+    }
     @for (date, label) in x_marks {
       text x=(format!("{:.1}", x_at(date))) y=(X_LABEL_Y) font-size=(CHART_TEXT) class="muted"
         text-anchor="middle" { (label) }
@@ -802,8 +818,8 @@ fn stars_note(count: i64) -> String {
 }
 
 fn chart_header(title: &str, note: &str) -> Markup {
-  let left = text(CHART_PAD, CHART_HEAD_Y, 22.0, "head", HEAD_WEIGHT, false, title);
-  let right = text(CHART_R, CHART_HEAD_Y, 16.0, "muted", None, true, note);
+  let left = text(CHART_PAD, CHART_HEAD_Y, CHART_TITLE_TEXT, "head", HEAD_WEIGHT, false, title);
+  let right = text(CHART_R, CHART_HEAD_Y, CHART_NOTE_TEXT, "muted", None, true, note);
   html!((left) @if !note.is_empty() { (right) })
 }
 
@@ -821,11 +837,11 @@ fn history_card(title: &str, mut lines: Vec<Line>, compare: bool, opts: &CardOpt
   let header = chart_header(&cut_name(title, NAME_MAX_PLAIN), &note);
 
   for line in &mut lines {
-    line.points.retain(|x| in_period_date(x.0, opts.period));
+    line.points.retain(|x| opts.in_range(x.0));
   }
 
   if lines.iter().all(|x| x.points.len() < 2) {
-    let empty = text(CHART_PAD, CHART_T + 8, 16.0, "muted", None, false, "No data");
+    let empty = text(CHART_PAD, CHART_T + 8, CHART_NOTE_TEXT, "muted", None, false, "No data");
     return frame(CHART_EMPTY_H, &label, Card::History, opts, html!((header)(empty)));
   }
 
@@ -1182,6 +1198,10 @@ mod tests {
       "brand=2",
       "brand=",
       "brand=false",
+      "since=",
+      "since=2023",
+      "since=2023-13-01",
+      "since=soon",
     ];
 
     for name in ["stars.svg", "totals.svg"] {
@@ -1397,8 +1417,8 @@ mod tests {
     assert_eq!(total.matches(r#"class="dot0""#).count(), 1);
     assert_eq!(total.matches(r#"text-anchor="middle""#).count(), 4);
     assert_eq!(line_points(&total, 0).len(), 3);
-    assert_eq!(line_points(&total, 0)[0], "84.0 334.0", "15 of 60 at the left edge");
-    assert_eq!(line_points(&total, 0)[2], "772.0 93.2", "57 of 60 at the right edge");
+    assert_eq!(line_points(&total, 0)[0], "88.0 333.0", "15 of 60 at the left edge");
+    assert_eq!(line_points(&total, 0)[2], "772.0 100.6", "57 of 60 at the right edge");
 
     let elements = total.split('<').skip(1).filter(|x| !x.starts_with('/'));
     let mut elements = elements.filter_map(|x| x.split([' ', '>']).next());
@@ -1460,6 +1480,32 @@ mod tests {
   }
 
   #[tokio::test]
+  async fn since_cuts_the_line_and_replaces_the_period() {
+    let state = test_state("history-since").await;
+    seed_stats(&state, 1, "o/r", &[(100, 1, 0), (50, 10, 0), (20, 20, 0), (5, 30, 0), (0, 40, 0)])
+      .await;
+
+    let since = |days_ago: i64| Utc::now().date_naive() - Duration::days(days_ago);
+    let cases = [
+      (format!("since={}", since(50)), 4),
+      (format!("since={}", since(20)), 3),
+      (format!("since={}&period=7d", since(50)), 4),
+      (format!("since={}&period=tracked", since(20)), 3),
+    ];
+
+    for (query, want) in cases {
+      for body in [svg(&state, "history.svg", &query).await, repo_svg(&state, "o/r", &query).await]
+      {
+        assert_eq!(line_points(&body, 0).len(), want, "{query}");
+        assert!(body.contains(">40 stars<"), "{query}");
+      }
+    }
+
+    let body = svg(&state, "history.svg", &format!("since={}", since(1))).await;
+    assert!(body.contains(">No data<"), "one point left");
+  }
+
+  #[tokio::test]
   async fn history_leaves_out_private_and_show_hidden_repos() {
     let db = DbClient::new(&db_path("history-privacy")).await.unwrap();
     let mut state = AppState::for_test(db, "!o/filtered");
@@ -1489,7 +1535,7 @@ mod tests {
 
     let body = svg(&state, "history.svg", "").await;
     assert_eq!(texts(&body).join(" "), "ghstats All repositories 0 stars No data");
-    assert!(body.contains(r#"width="800" height="116""#));
+    assert!(body.contains(r#"width="800" height="128""#));
 
     seed_stats(&state, 1, "o/one", &[(0, 1, 0)]).await;
     seed_stats(&state, 2, "o/old", &[(20, 4, 0), (10, 5, 0)]).await;
@@ -1521,14 +1567,14 @@ mod tests {
     assert!(body.contains(r#">two <tspan class="muted">7</tspan>"#));
     assert!(body.contains("<title>Star history: o/one 50 stars, o/two 7 stars</title>"));
 
-    assert_eq!(line_points(&body, 0)[0], "84.0 351.2", "the first date of all");
-    assert_eq!(line_points(&body, 1)[0], "428.0 385.6", "its own first date, on the same scale");
-    assert_eq!(line_points(&body, 1)[1], "772.0 371.8");
+    assert_eq!(line_points(&body, 0)[0], "88.0 349.6", "the first date of all");
+    assert_eq!(line_points(&body, 1)[0], "430.0 382.8", "its own first date, on the same scale");
+    assert_eq!(line_points(&body, 1)[1], "772.0 369.5");
 
     let body = svg(&state, "history.svg", "repos=x/three,o/two").await;
     assert!(body.contains(r#">x/three <tspan"#), "two owners stay");
     assert_eq!(line_points(&body, 0).len(), 2, "colors follow the position in repos");
-    assert!(line_points(&body, 0)[0].starts_with("668.8 "));
+    assert!(line_points(&body, 0)[0].starts_with("669.4 "));
 
     // a repo without points in the period keeps its row, its color and no line
     let body = svg(&state, "history.svg", "repos=x/old,x/three&period=7d").await;
@@ -1536,7 +1582,7 @@ mod tests {
     assert!(body.contains(r#">old <tspan class="muted">5</tspan>"#));
 
     let body = svg(&state, "history.svg", "repos=x/old,o/two&period=7d&align=1").await;
-    assert!(body.contains(">No data<") && body.contains(r#"height="116""#));
+    assert!(body.contains(">No data<") && body.contains(r#"height="128""#));
   }
 
   #[tokio::test]
@@ -1602,8 +1648,8 @@ mod tests {
     let body = repo_svg(&state, "o/r", "log=1").await;
     assert_eq!(texts(&body)[3..8].join(" "), "1 10 100 1,000 10k");
     assert_eq!(body.matches(r#"class="grid""#).count(), 5);
-    assert_eq!(line_points(&body, 0)[0], "84.0 420.0", "1 is the bottom");
-    assert_eq!(line_points(&body, 0)[1], "428.0 334.0", "10 is one of four decades up");
+    assert_eq!(line_points(&body, 0)[0], "88.0 416.0", "1 is the bottom");
+    assert_eq!(line_points(&body, 0)[1], "430.0 333.0", "10 is one of four decades up");
     assert!(!body.contains(r#"class="bar""#));
     assert!(!svg(&state, "history.svg", "log=1").await.contains(r#"class="bar""#));
 
@@ -1622,14 +1668,14 @@ mod tests {
     seed_stats(&state, 2, "o/two", &[(20, 1, 0), (0, 3, 0)]).await;
 
     let body = svg(&state, "history.svg", "repos=o/one,o/two&align=1").await;
-    assert!(line_points(&body, 0)[0].starts_with("84.0 "));
-    assert!(line_points(&body, 1)[0].starts_with("84.0 "));
+    assert!(line_points(&body, 0)[0].starts_with("88.0 "));
+    assert!(line_points(&body, 1)[0].starts_with("88.0 "));
     assert!(line_points(&body, 0)[1].starts_with("772.0 "), "the longest life fills the axis");
-    assert!(line_points(&body, 1)[1].starts_with("428.0 "), "20 of 40 days");
+    assert!(line_points(&body, 1)[1].starts_with("430.0 "), "20 of 40 days");
     assert!(body.contains(">Day 10<") && body.contains(">Day 30<"));
 
     let body = svg(&state, "history.svg", "repos=o/one,o/two&align=0").await;
-    assert!(line_points(&body, 1)[0].starts_with("428.0 "));
+    assert!(line_points(&body, 1)[0].starts_with("430.0 "));
     assert!(!body.contains(">Day "));
   }
 
@@ -1716,7 +1762,7 @@ mod tests {
     let state = test_state("history-invalid").await;
     seed_stats(&state, 1, "o/r", &[(1, 1, 0), (0, 2, 0)]).await;
 
-    for query in ["period=year", "period=", "theme=blue", "brand=2"] {
+    for query in ["period=year", "period=", "theme=blue", "brand=2", "since=2023-02-30"] {
       assert_eq!(status(&state, "history.svg", query).await, StatusCode::BAD_REQUEST, "{query}");
       assert_eq!(repo_status(&state, "o/r", query).await, StatusCode::BAD_REQUEST, "{query}");
     }

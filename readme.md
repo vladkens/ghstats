@@ -302,7 +302,7 @@ Badge URLs cannot send `GHS_API_TOKEN`. If the instance contains private reposit
 
 Examples, rendered by a real instance and saved in [examples](examples):
 
-![Top stars](examples/stars.svg) ![Top forks](examples/forks.svg) ![Top clones](examples/clones.svg) ![Top views](examples/views.svg) ![Totals](examples/totals.svg) ![Star history](examples/history.svg) ![twscrape star history](examples/history-twscrape.svg) ![Star history of twscrape and macmon](examples/history-compare.svg)
+![Top stars](examples/stars.svg) ![Top forks](examples/forks.svg) ![Top clones](examples/clones.svg) ![Top views](examples/views.svg) ![Totals](examples/totals.svg) ![Star history](examples/history.svg) ![twscrape star history](examples/history-twscrape.svg) ![Star history of twscrape and macmon](examples/history-compare.svg) ![Star history on a log scale](examples/history-log.svg) ![Star history since 2023](examples/history-since.svg)
 
 Query parameters:
 
@@ -312,8 +312,11 @@ Query parameters:
 - `log`: on the star history cards, `log=1` draws a log scale with gridlines at powers of ten and no area under a single line, `log=0` (default) keeps the linear one
 - `repos`: on `/card/history.svg`, up to 4 comma-separated `owner/name` repositories, each as its own line with a legend. More than 4 is a 400 error, a repository the cards can't show is a 404
 - `align`: with `repos`, `align=1` starts every line at its own first date and counts days or years on the x axis, to compare how fast projects grew from their start; `align=0` (default) keeps the dates
+- `since`: on the star history cards, `since=2023-01-01` (`YYYY-MM-DD`) starts the chart at that date and replaces `period`, for a total that stays flat for years before growth starts
 
-Any other value of `period`, `theme`, `brand`, `log` and `align` is a 400 error.
+Any other value of `period`, `theme`, `brand`, `log`, `align` and `since` is a 400 error.
+
+A card scales with the image width, set it in the embed: `<img src="https://ghstats.example.com/card/history.svg" width="420">`.
 
 Charts only know repositories `ghstats` tracks, so `repos` can't compare an arbitrary GitHub repository.
 
