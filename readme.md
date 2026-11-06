@@ -302,7 +302,22 @@ Badge URLs cannot send `GHS_API_TOKEN`. If the instance contains private reposit
 
 Examples, rendered by a real instance and saved in [examples](examples):
 
-<img src="examples/stars.svg" width="400" alt="Top stars"> <img src="examples/forks.svg" width="400" alt="Top forks"> <img src="examples/clones.svg" width="400" alt="Top clones"> <img src="examples/views.svg" width="400" alt="Top views"> <img src="examples/totals.svg" width="400" alt="Totals"> <img src="examples/history.svg" width="400" alt="Star history"> <img src="examples/history-twscrape.svg" width="400" alt="twscrape star history"> <img src="examples/history-compare.svg" width="400" alt="Star history of twscrape and macmon"> <img src="examples/history-log.svg" width="400" alt="Star history on a log scale"> <img src="examples/history-since.svg" width="400" alt="Star history since 2023">
+<details>
+<summary>Examples</summary>
+
+<img src="examples/stars.svg" width="400" alt="Top stars"> <img src="examples/forks.svg" width="400" alt="Top forks">
+
+<img src="examples/clones.svg" width="400" alt="Top clones"> <img src="examples/views.svg" width="400" alt="Top views">
+
+<img src="examples/history.svg" width="400" alt="Star history"> <img src="examples/history-twscrape.svg" width="400" alt="twscrape star history">
+
+<img src="examples/history-compare.svg" width="400" alt="Star history of twscrape and macmon"> <img src="examples/history-log.svg" width="400" alt="Star history on a log scale">
+
+<img src="examples/history-since.svg" width="400" alt="Star history since 2023">
+
+<img src="examples/totals.svg" width="400" alt="Totals">
+
+</details>
 
 Query parameters:
 
