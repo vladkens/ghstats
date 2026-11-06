@@ -16,6 +16,7 @@ use crate::db_client::{
   RepoSort, RepoTotals, Windows,
 };
 use crate::routes::assets::vendor_url;
+use crate::routes::card::public_repos;
 use crate::state::SyncStatus;
 use crate::types::{AppError, HtmlRes, Res};
 use crate::utils::is_newer_release;
@@ -199,14 +200,33 @@ fn version_url(version: &str) -> String {
 }
 
 fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Markup) -> Markup {
+  let crumbs = html!(
+    nav class="crumbs" aria-label="Breadcrumb" {
+      a href="/" { "Repos" }
+
+      @for (name, url) in &navs {
+        span class="sep" { "›" }
+        @match url {
+          Some(url) => a href=(url) { (name) },
+          None => span { (name) },
+        }
+      }
+    }
+  );
+
+  layout(state, navs.last().map(|x| x.0.as_str()), crumbs, inner)
+}
+
+/// The page around `inner`, with `left` on the left side of the header
+fn layout(state: &Arc<AppState>, title: Option<&str>, left: Markup, inner: Markup) -> Markup {
   let (app_name, app_version) = (env!("CARGO_PKG_NAME"), env!("CARGO_PKG_VERSION"));
 
   let last_release = state.last_release.lock().unwrap().clone();
   let is_new_release = is_newer_release(&last_release, app_version);
 
-  let title = match navs.len() {
-    0 => app_name,
-    _ => &format!("{} · {}", navs.last().unwrap().0, app_name),
+  let title = match title {
+    Some(title) => &format!("{title} · {app_name}"),
+    None => app_name,
   };
 
   let favicon = include_str!("../../assets/favicon.svg")
@@ -236,17 +256,7 @@ fn base(state: &Arc<AppState>, navs: Vec<(String, Option<String>)>, inner: Marku
       body {
         div class="wrap" {
           header class="topbar" {
-            nav class="crumbs" aria-label="Breadcrumb" {
-              a href="/" { "Repos" }
-
-              @for (name, url) in &navs {
-                span class="sep" { "›" }
-                @match url {
-                  Some(url) => a href=(url) { (name) },
-                  None => span { (name) },
-                }
-              }
-            }
+            (left)
 
             div class="meta" {
               @for (name, url) in &get_custom_links() {
@@ -1682,6 +1692,145 @@ pub async fn index(
   Ok(base(&state, vec![], html))
 }
 
+// MARK: Card builder
+
+const CARDS: [(&str, &str); 6] = [
+  ("stars", "Top stars"),
+  ("forks", "Top forks"),
+  ("clones", "Top clones"),
+  ("views", "Top views"),
+  ("totals", "Totals"),
+  ("history", "Star history"),
+];
+
+const SCOPES: [(&str, &str); 3] =
+  [("all", "All repositories"), ("one", "One repository"), ("compare", "Compare")];
+
+const PERIODS: [(&str, &str); 5] =
+  [("7d", "7d"), ("30d", "30d"), ("90d", "90d"), ("1y", "1y"), ("tracked", "All")];
+
+const THEMES: [(&str, &str); 3] = [("auto", "auto"), ("light", "light"), ("dark", "dark")];
+
+const WIDTHS: [u32; 3] = [400, 600, 800];
+
+fn radios(title: &str, name: &str, values: &[(&str, &str)], cur: &str) -> Markup {
+  html!(
+    div class="field" data-field=(name) {
+      span { (title) }
+      div class="seg" role="radiogroup" aria-label=(title) {
+        @for (value, label) in values {
+          label { input type="radio" name=(name) value=(value) checked[*value == cur]; (label) }
+        }
+      }
+    }
+  )
+}
+
+fn embed_card(title: &str, id: &str, note: Markup) -> Markup {
+  html!(
+    section class="card" {
+      div class="card-t" {
+        h2 { (title) }
+        button type="button" class="copy" data-copy { "Copy" }
+      }
+      pre id=(id) {}
+      (note)
+    }
+  )
+}
+
+/// The × of the search box, app.js handles `data-clear`; it shows while the placeholder doesn't
+fn clearable(input: Markup) -> Markup {
+  html!(div class="search" { (input) button type="button" aria-label="Clear" data-clear { "×" } })
+}
+
+fn repo_input(label: Option<String>, value: Option<&str>) -> Markup {
+  clearable(html!(
+    input name="repo" role="combobox" aria-autocomplete="list" aria-expanded="false"
+      aria-controls="repo_list" placeholder="owner/repo" autocomplete="off"
+      aria-label=[label] value=[value];
+  ))
+}
+
+/// The page only lists the repos, app.js builds the card URLs from the form
+pub async fn cards_page(State(state): State<Arc<AppState>>) -> HtmlRes {
+  let repos = public_repos(&state).await?;
+  let mut names: Vec<&str> = repos.iter().map(|x| x.name.as_str()).collect();
+  names.sort();
+
+  let html = html!(
+    div class="builder" {
+      form id="card_form" class="card stack" data-repos=(names.join(" ")) {
+        (radios("Card", "card", &CARDS, "stars"))
+        (radios("Show", "scope", &SCOPES, "all"))
+
+        ul id="repo_list" class="combo" role="listbox" hidden {}
+
+        label class="field" data-field="repo" {
+          span { "Repository" }
+          (repo_input(None, names.first().copied()))
+        }
+
+        div class="field" data-field="compare" {
+          span { "Compare with" }
+          @for i in 2..=4 {
+            (repo_input(Some(format!("Repository {i}")), None))
+          }
+        }
+
+        label class="field" data-field="since" {
+          span { "Since" }
+          (clearable(html!(input name="since" placeholder="YYYY-MM-DD" autocomplete="off";)))
+        }
+
+        (radios("Period", "period", &PERIODS, "30d"))
+        (radios("Theme", "theme", &THEMES, "auto"))
+
+        div class="checks" data-field="log" {
+          label { input type="checkbox" name="log"; "Log scale" }
+          label data-field="align" { input type="checkbox" name="align"; "Align starts" }
+        }
+
+        div class="field" {
+          span { "Width" }
+          div class="width" {
+            input type="number" name="width" min="1" value="800" aria-label="Width";
+            div class="seg" {
+              @for width in WIDTHS {
+                button type="button" data-width=(width) { (width) }
+              }
+            }
+          }
+        }
+      }
+
+      div class="stack" {
+        section class="card" {
+          h2 { "Preview" }
+          img id="card_preview";
+        }
+
+        (embed_card("Markdown", "embed_md", html!(
+          p id="embed_note" class="muted" hidden {
+            "Markdown can't set a width: this is the HTML form, a README takes it too."
+          }
+        )))
+        (embed_card("HTML", "embed_html", html!()))
+
+        p class="muted" {
+          "GitHub loads images through its own proxy: this server must be reachable from the "
+          "internet for the card to show up in a README."
+        }
+      }
+    }
+
+    script { "cardBuilder();" }
+  );
+
+  let back = html!(a class="back" href="/" { "← Back" });
+  Ok(layout(&state, Some("Card builder"), back, html))
+}
+
 #[cfg(test)]
 mod tests {
   use std::time::{SystemTime, UNIX_EPOCH};
@@ -1740,6 +1889,7 @@ mod tests {
     let uri = OriginalUri(uri.parse().unwrap());
     match uri.path() {
       "/" => index(State(state.clone()), uri, headers).await,
+      "/cards" => cards_page(State(state.clone())).await,
       x => {
         let (owner, repo) = x.trim_start_matches('/').split_once('/').unwrap();
         let path = Path((owner.to_string(), repo.to_string()));
@@ -2229,6 +2379,50 @@ mod tests {
 
     let frag = get(&state, "/?q=o/r", Some("repos_table")).await.unwrap().into_string();
     assert!(!frag.contains("data-clear"), "a table swap leaves the toolbar alone");
+  }
+
+  #[tokio::test]
+  async fn cards_page_lists_only_what_cards_may_show() {
+    let db = DbClient::new(&db_path("cards")).await.unwrap();
+    let repos = [
+      Repo { id: 2, full_name: "o/visible".into(), ..test_repo(5) },
+      Repo { id: 3, full_name: "o/hidden".into(), ..test_repo(5) },
+      Repo { id: 4, full_name: "o/secret".into(), private: true, ..test_repo(5) },
+    ];
+
+    for repo in &repos {
+      db.insert_repo(repo).await.unwrap();
+      db.insert_stats(repo, &format!("{}T00:00:00Z", ago(0)), &[]).await.unwrap();
+    }
+
+    let mut state = AppState::for_test(db, "");
+    state.show = Filter::parse("!o/hidden", true).unwrap();
+    state.include_private = true;
+    let state = Arc::new(state);
+
+    let page = get(&state, "/", None).await.unwrap().into_string();
+    assert!(!page.contains("href=\"/cards\""), "reached by URL, not from the header");
+    assert!(page.contains("href=\"/o/secret\""), "the home page does show it");
+
+    let page = get(&state, "/cards", None).await.unwrap().into_string();
+    assert!(page.starts_with("<!DOCTYPE html>"));
+    assert!(page.contains("<title>Card builder · ghstats</title>"));
+    assert!(page.contains("<a class=\"back\" href=\"/\">← Back</a>"));
+    assert!(!page.contains("class=\"crumbs\"") && page.contains("id=\"card_form\""));
+    assert!(page.contains("id=\"card_preview\"") && page.contains("cardBuilder();"));
+    assert!(page.contains("data-repos=\"o/visible\""), "the whole list for the dropdown");
+    assert_eq!(page.matches("role=\"combobox\"").count(), 4);
+    assert!(page.contains("autocomplete=\"off\" value=\"o/visible\""));
+    assert_eq!(page.matches("data-clear>×").count(), 5);
+    assert!(!page.contains("<datalist") && !page.contains("list=\"repos\""));
+    assert!(page.contains("name=\"since\" placeholder=\"YYYY-MM-DD\""));
+    assert!(page.contains("name=\"card\" value=\"stars\" checked"));
+    assert!(page.contains("name=\"scope\" value=\"all\" checked"));
+    assert!(page.contains("type=\"number\" name=\"width\" min=\"1\" value=\"800\""));
+    assert!(page.contains("<button type=\"button\" data-width=\"400\">400</button>"));
+    assert!(!page.contains("custom_width") && !page.contains("Custom"));
+    assert!(!page.contains("name=\"brand\""), "the builder doesn't offer the wordmark");
+    assert!(!page.contains("o/hidden") && !page.contains("o/secret"));
   }
 
   #[tokio::test]

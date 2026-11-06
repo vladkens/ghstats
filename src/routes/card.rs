@@ -331,7 +331,7 @@ fn svg_response(svg: Markup) -> Response {
 
 /// Cards put repo names on public pages: only what GHS_FILTER and GHS_SHOW allow, never a private
 /// repo, whatever GHS_INCLUDE_PRIVATE says
-async fn public_repos(state: &Arc<AppState>) -> Res<Vec<RepoTotals>> {
+pub(super) async fn public_repos(state: &Arc<AppState>) -> Res<Vec<RepoTotals>> {
   let mut repos = state.get_repos_shown(&RepoFilter::default()).await?;
   repos.retain(|x| !x.private);
   Ok(repos)

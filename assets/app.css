@@ -82,6 +82,8 @@ h1, h2 { margin: 0; color: var(--head); text-wrap: balance; }
 .crumbs { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-width: 0; }
 .crumbs .sep { color: var(--muted); }
 .crumbs > :last-child { overflow-wrap: anywhere; }
+.back { padding: 0.15em 0.6em; font-size: 0.85em; color: var(--muted); border: 1px solid var(--line-strong); border-radius: var(--r); }
+.back:hover { color: var(--head); text-decoration: none; }
 .topbar .meta { margin-left: auto; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 16px; }
 .ver { font-family: var(--font-mono); font-size: 0.9em; color: var(--muted); }
 .sync { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85em; color: var(--muted); white-space: nowrap; cursor: default; }
@@ -100,9 +102,9 @@ body { overflow-anchor: none; }
 #popular_tables { align-items: start; }
 
 .seg { display: inline-flex; gap: 2px; }
-.seg a { padding: 0.15em 0.6em; border-radius: var(--r); font: 0.85em/1.5 var(--font-mono); color: var(--muted); text-decoration: none; }
-.seg a:hover { color: var(--head); background: var(--line); }
-.seg a[aria-current="page"] { background: var(--accent); color: var(--accent-ink); }
+.seg a, .seg label, .seg button { padding: 0.15em 0.6em; border-radius: var(--r); font: 0.85em/1.5 var(--font-mono); color: var(--muted); text-decoration: none; }
+.seg a:hover, .seg label:hover, .seg button:hover { color: var(--head); background: var(--line); }
+.seg a[aria-current="page"], .seg label:has(:checked), .seg button[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
 
 .periodbar {
   position: sticky;
@@ -205,12 +207,13 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; }
   position: sticky; top: calc(env(safe-area-inset-top, 0px) + 3.25em); z-index: 5;
   background: var(--bg); border-bottom: 0; box-shadow: inset 0 -2px 0 var(--line);
 }
-.toolbar select, .toolbar input { font: inherit; font-size: 0.9em; color: var(--ink); background: var(--card); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 0.3em 0.6em; }
+.toolbar select, .search input, .width input { font: inherit; font-size: 0.9em; color: var(--ink); background: var(--card); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 0.3em 0.6em; }
 .search { position: relative; display: flex; flex: 1 1 220px; min-width: 0; }
 .search input { flex: 1; min-width: 0; padding-right: 2em; }
 /* Chromium's own X shows only while focused and Firefox has none: one button for all */
 .search input::-webkit-search-cancel-button { display: none; }
-.search button { position: absolute; inset: 0 0 0 auto; width: 2em; padding: 0; border: 0; background: none; font: inherit; color: var(--muted); cursor: pointer; }
+/* the bottom padding lifts the ×, which sits below the middle of its line */
+.search button { position: absolute; inset: 0 0 0 auto; width: 2em; padding: 0 0 0.18em; border: 0; background: none; font: inherit; color: var(--muted); cursor: pointer; }
 .search button:hover { color: var(--head); }
 .search input:placeholder-shown + button { display: none; }
 .toolbar select {
@@ -249,6 +252,40 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .data col.n3 { width: 9.5em; }
 .mono { font-family: var(--font-mono); font-size: 0.9em; }
 
+/* card builder: the controls beside the preview and the embed code */
+.builder { display: grid; grid-template-columns: 20em minmax(0, 1fr); gap: 1em; align-items: start; }
+.builder img { display: block; max-width: 100%; height: auto; }
+.builder pre { margin: 0.5em 0 0; font: 0.85em/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+.builder p { margin: 0; font-size: 0.9em; }
+.builder .card p { margin-top: 0.5em; }
+.field { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.25em; min-width: 0; }
+.field > span { font-size: 0.9em; color: var(--muted); }
+.search input[aria-invalid="true"] { border-color: var(--bad-ink); }
+.combo {
+  position: absolute; top: calc(100% + 5px); left: 0; right: 0; z-index: 7;
+  max-height: 15em; margin: 0; padding: 0.25em 0; overflow-y: auto; list-style: none; font-size: 0.9em;
+  background: var(--card); border: 1px solid var(--line-strong); border-radius: var(--r);
+}
+.combo li { padding: 0.2em 0.6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.combo li:hover { background: var(--line); color: var(--head); }
+.combo li[aria-selected="true"] { background: var(--topic-bg); color: var(--accent); }
+.width { display: flex; gap: 0.5em; }
+.width input { flex: 1 1 5em; min-width: 0; }
+.field .seg { justify-self: start; flex-wrap: wrap; }
+.width .seg { flex: none; flex-wrap: nowrap; }
+.seg label { position: relative; cursor: pointer; }
+.seg label:has(:focus-visible), .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.seg input { position: absolute; opacity: 0; }
+.seg button { background: none; cursor: pointer; }
+.builder .seg { gap: 4px; }
+.builder .seg label, .builder .seg button { border: 1px solid var(--line-strong); }
+.builder .seg label:has(:checked), .builder .seg button[aria-pressed="true"] { border-color: var(--accent); }
+.checks { display: flex; flex-wrap: wrap; gap: 0.25em 1em; }
+.checks label { display: inline-flex; align-items: center; gap: 0.4em; cursor: pointer; }
+.checks input { margin: 0; accent-color: var(--accent); }
+.copy { margin-left: auto; padding: 0 0.6em; font: inherit; font-size: 0.85em; color: var(--muted); background: none; border: 1px solid var(--line-strong); border-radius: var(--r); cursor: pointer; }
+.copy:hover { color: var(--head); }
+
 @media (max-width: 900px) {
   .opt { display: none; }
   .kpis.c4 { --cols: 2; }
@@ -264,6 +301,7 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; }
   .grid2 { grid-template-columns: minmax(0, 1fr); }
   .chart { height: 200px; }
   .row1 { grid-template-columns: minmax(0, 1fr); }
+  .builder { grid-template-columns: minmax(0, 1fr); }
   .stars-card .chart { flex: none; height: 220px; min-height: 0; }
 }
 @media (max-width: 640px) {
