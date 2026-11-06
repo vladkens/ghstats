@@ -312,7 +312,7 @@ Query parameters:
 - `log`: on the star history cards, `log=1` draws a log scale with gridlines at powers of ten and no area under a single line, `log=0` (default) keeps the linear one
 - `repos`: on `/card/history.svg`, up to 4 comma-separated `owner/name` repositories, each as its own line with a legend. More than 4 is a 400 error, a repository the cards can't show is a 404
 - `align`: with `repos`, `align=1` starts every line at its own first date and counts days or years on the x axis, to compare how fast projects grew from their start; `align=0` (default) keeps the dates
-- `since`: on the star history cards, `since=2023-01-01` (`YYYY-MM-DD`) starts the chart at that date and replaces `period`, for a total that stays flat for years before growth starts
+- `since`: on the star history cards, `since=2023-01-01` (`YYYY-MM-DD`) starts the chart at the first recorded date on or after it and replaces `period`, for a total that stays flat for years before growth starts
 
 Any other value of `period`, `theme`, `brand`, `log`, `align` and `since` is a 400 error.
 
