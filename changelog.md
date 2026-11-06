@@ -1,3 +1,25 @@
+## v0.12.0 – 2026-11-06
+
+### Features
+
+- Added embeddable SVG cards for a profile README or a personal site: top 5 repositories by stars, forks, clones and views, and account totals (#44)
+- Added star history cards for all repositories or a single one, with up to 4 repositories on one chart, a log scale, aligned starts and a custom start date (#44)
+- Added a card builder at `/cards`: pick a card and its options, see a live preview and copy the Markdown or HTML (#47)
+- Added repo kind badges (Private, Template, Archived, Fork) with language and description on the home page, and the same badges with the last push date on the repo page (#40, by @umutyesildal)
+- Added a totals strip above the home page table that follows the search (#40, by @umutyesildal)
+- Added `GHS_SORT` to set the default order of the home page, e.g. `GHS_SORT=stars` (#40, by @umutyesildal)
+- Added sync status to `/health`: `sync_healthy`, `sync_last_success`, `sync_last_error` and `sync_running`; `sync_healthy` turns false after 8 hours without a successful sync (#48)
+
+### Improvements
+
+- Added the `1y` period to badges (#47)
+- Added a clear button to the home page search (#40, by @umutyesildal)
+- `/api/repos` now returns `private`, `is_template` and `language` for each repo (#40, by @umutyesildal)
+
+**Full Changelog**: https://github.com/vladkens/ghstats/compare/v0.11.0...v0.12.0
+
+---
+
 ## v0.11.0 – 2026-11-04
 
 ### Features
