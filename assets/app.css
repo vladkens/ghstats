@@ -207,12 +207,13 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; }
   position: sticky; top: calc(env(safe-area-inset-top, 0px) + 3.25em); z-index: 5;
   background: var(--bg); border-bottom: 0; box-shadow: inset 0 -2px 0 var(--line);
 }
-.toolbar select, .toolbar input, .field > input, .width input { font: inherit; font-size: 0.9em; color: var(--ink); background: var(--card); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 0.3em 0.6em; }
+.toolbar select, .search input, .width input { font: inherit; font-size: 0.9em; color: var(--ink); background: var(--card); border: 1px solid var(--line-strong); border-radius: var(--r); padding: 0.3em 0.6em; }
 .search { position: relative; display: flex; flex: 1 1 220px; min-width: 0; }
 .search input { flex: 1; min-width: 0; padding-right: 2em; }
 /* Chromium's own X shows only while focused and Firefox has none: one button for all */
 .search input::-webkit-search-cancel-button { display: none; }
-.search button { position: absolute; inset: 0 0 0 auto; width: 2em; padding: 0; border: 0; background: none; font: inherit; color: var(--muted); cursor: pointer; }
+/* the bottom padding lifts the ×, which sits below the middle of its line */
+.search button { position: absolute; inset: 0 0 0 auto; width: 2em; padding: 0 0 0.18em; border: 0; background: none; font: inherit; color: var(--muted); cursor: pointer; }
 .search button:hover { color: var(--head); }
 .search input:placeholder-shown + button { display: none; }
 .toolbar select {
@@ -257,13 +258,21 @@ table.data { width: 100%; border-collapse: collapse; table-layout: fixed; }
 .builder pre { margin: 0.5em 0 0; font: 0.85em/1.5 var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 .builder p { margin: 0; font-size: 0.9em; }
 .builder .card p { margin-top: 0.5em; }
-.field { display: grid; gap: 0.25em; min-width: 0; }
+.field { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.25em; min-width: 0; }
 .field > span { font-size: 0.9em; color: var(--muted); }
-.field > input { width: 100%; }
-.field > input[aria-invalid="true"] { border-color: var(--bad-ink); }
-.width { display: flex; flex-wrap: wrap; align-items: center; gap: 0.25em 0.5em; }
+.search input[aria-invalid="true"] { border-color: var(--bad-ink); }
+.combo {
+  position: absolute; top: calc(100% + 5px); left: 0; right: 0; z-index: 7;
+  max-height: 15em; margin: 0; padding: 0.25em 0; overflow-y: auto; list-style: none; font-size: 0.9em;
+  background: var(--card); border: 1px solid var(--line-strong); border-radius: var(--r);
+}
+.combo li { padding: 0.2em 0.6em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.combo li:hover { background: var(--line); color: var(--head); }
+.combo li[aria-selected="true"] { background: var(--topic-bg); color: var(--accent); }
+.width { display: flex; gap: 0.5em; }
 .width input { flex: 1 1 5em; min-width: 0; }
 .field .seg { justify-self: start; flex-wrap: wrap; }
+.width .seg { flex: none; flex-wrap: nowrap; }
 .seg label { position: relative; cursor: pointer; }
 .seg label:has(:focus-visible), .seg button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .seg input { position: absolute; opacity: 0; }

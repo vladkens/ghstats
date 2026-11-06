@@ -468,6 +468,7 @@
     input.value = '';
     input.focus();
     input.dispatchEvent(new Event('keyup'));
+    input.dispatchEvent(new Event('input', { bubbles: true }));
   });
 
   // MARK: Tables
@@ -512,8 +513,8 @@
     const defaultPeriod = () => (history() ? 'tracked' : '30d');
     let periodTouched = false;
 
-    const names = new Set([...document.getElementById('repos').options].map(x => x.value));
-    const isRepo = x => names.has(x);
+    const names = form.dataset.repos.split(' ').filter(Boolean);
+    const isRepo = x => names.includes(x);
 
     // through toISOString, as Date alone rolls 2023-02-30 over to March
     const isDate = x => {
@@ -578,6 +579,84 @@
         x.setAttribute('aria-pressed', x.dataset.width === f.width.value);
       });
     };
+
+    // the repo inputs share one dropdown: it moves under the input in use
+    const list = document.getElementById('repo_list');
+    let cur;
+    let active = -1;
+
+    const mark = i => {
+      list.children[active]?.removeAttribute('aria-selected');
+      const row = list.children[i];
+      row?.setAttribute('aria-selected', true);
+      row?.scrollIntoView({ block: 'nearest' });
+      cur.setAttribute('aria-activedescendant', row?.id ?? '');
+      active = i;
+    };
+
+    const option = (name, i) => {
+      const x = document.createElement('li');
+      x.id = `repo_row_${i}`;
+      x.setAttribute('role', 'option');
+      x.textContent = name;
+      return x;
+    };
+
+    const show = (input, query) => {
+      cur = input;
+      mark(-1);
+
+      const q = query.toLowerCase();
+      list.replaceChildren(...names.filter(x => x.toLowerCase().includes(q)).map(option));
+      input.parentNode.append(list);
+      list.hidden = !list.children.length;
+      input.setAttribute('aria-expanded', !list.hidden);
+    };
+
+    const close = () => {
+      mark(-1);
+      list.hidden = true;
+      cur.setAttribute('aria-expanded', false);
+    };
+
+    const pick = x => {
+      cur.value = x.textContent;
+      close();
+      update();
+    };
+
+    for (const input of f.repo) {
+      // a finished pick is no filter: the list offers the other repos too
+      const open = () => show(input, isRepo(input.value) ? '' : input.value);
+
+      input.addEventListener('focus', open);
+      input.addEventListener('click', open);
+      input.addEventListener('input', () => show(input, input.value));
+      input.addEventListener('blur', close);
+
+      input.addEventListener('keydown', e => {
+        if (e.key === 'Escape') close();
+        if (e.key === 'Enter' && active >= 0) pick(list.children[active]);
+        if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+
+        e.preventDefault();
+        if (list.hidden) return open();
+
+        const n = list.children.length;
+        const next = e.key === 'ArrowDown' ? active + 1 : (active < 0 ? n : active) - 1;
+        mark((next + n) % n);
+      });
+    }
+
+    // the input keeps the focus, so only a click elsewhere blurs it and closes the list
+    list.addEventListener('mousedown', e => e.preventDefault());
+
+    // prevented as the list sits in a label, which would pass the click on to the input
+    list.addEventListener('click', e => {
+      e.preventDefault();
+      const x = e.target.closest('li');
+      if (x) pick(x);
+    });
 
     // click, not input: picking the period that is already on is a choice too, widths are buttons
     form.addEventListener('click', e => {

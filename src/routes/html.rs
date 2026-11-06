@@ -1739,6 +1739,19 @@ fn embed_card(title: &str, id: &str, note: Markup) -> Markup {
   )
 }
 
+/// The × of the search box, app.js handles `data-clear`; it shows while the placeholder doesn't
+fn clearable(input: Markup) -> Markup {
+  html!(div class="search" { (input) button type="button" aria-label="Clear" data-clear { "×" } })
+}
+
+fn repo_input(label: Option<String>, value: Option<&str>) -> Markup {
+  clearable(html!(
+    input name="repo" role="combobox" aria-autocomplete="list" aria-expanded="false"
+      aria-controls="repo_list" placeholder="owner/repo" autocomplete="off"
+      aria-label=[label] value=[value];
+  ))
+}
+
 /// The page only lists the repos, app.js builds the card URLs from the form
 pub async fn cards_page(State(state): State<Arc<AppState>>) -> HtmlRes {
   let repos = public_repos(&state).await?;
@@ -1747,28 +1760,27 @@ pub async fn cards_page(State(state): State<Arc<AppState>>) -> HtmlRes {
 
   let html = html!(
     div class="builder" {
-      form id="card_form" class="card stack" {
+      form id="card_form" class="card stack" data-repos=(names.join(" ")) {
         (radios("Card", "card", &CARDS, "stars"))
         (radios("Show", "scope", &SCOPES, "all"))
 
-        datalist id="repos" { @for name in &names { option { (name) } } }
+        ul id="repo_list" class="combo" role="listbox" hidden {}
 
         label class="field" data-field="repo" {
           span { "Repository" }
-          input name="repo" list="repos" autocomplete="off" value=[names.first()];
+          (repo_input(None, names.first().copied()))
         }
 
         div class="field" data-field="compare" {
           span { "Compare with" }
           @for i in 2..=4 {
-            input name="repo" list="repos" autocomplete="off"
-              aria-label=(format!("Repository {i}"));
+            (repo_input(Some(format!("Repository {i}")), None))
           }
         }
 
         label class="field" data-field="since" {
           span { "Since" }
-          input name="since" placeholder="YYYY-MM-DD" autocomplete="off";
+          (clearable(html!(input name="since" placeholder="YYYY-MM-DD" autocomplete="off";)))
         }
 
         (radios("Period", "period", &PERIODS, "30d"))
@@ -2398,9 +2410,11 @@ mod tests {
     assert!(page.contains("<a class=\"back\" href=\"/\">← Back</a>"));
     assert!(!page.contains("class=\"crumbs\"") && page.contains("id=\"card_form\""));
     assert!(page.contains("id=\"card_preview\"") && page.contains("cardBuilder();"));
-    assert_eq!(page.matches("<option>o/visible</option>").count(), 1);
-    assert_eq!(page.matches("list=\"repos\"").count(), 4);
-    assert!(page.contains("list=\"repos\" autocomplete=\"off\" value=\"o/visible\""));
+    assert!(page.contains("data-repos=\"o/visible\""), "the whole list for the dropdown");
+    assert_eq!(page.matches("role=\"combobox\"").count(), 4);
+    assert!(page.contains("autocomplete=\"off\" value=\"o/visible\""));
+    assert_eq!(page.matches("data-clear>×").count(), 5);
+    assert!(!page.contains("<datalist") && !page.contains("list=\"repos\""));
     assert!(page.contains("name=\"since\" placeholder=\"YYYY-MM-DD\""));
     assert!(page.contains("name=\"card\" value=\"stars\" checked"));
     assert!(page.contains("name=\"scope\" value=\"all\" checked"));
