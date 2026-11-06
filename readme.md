@@ -305,17 +305,17 @@ Examples, rendered by a real instance and saved in [examples](examples):
 <details>
 <summary>Examples</summary>
 
-<img src="examples/stars.svg" width="400" alt="Top stars"> <img src="examples/forks.svg" width="400" alt="Top forks">
+<img src="examples/stars.svg" width="380" alt="Top stars"> <img src="examples/forks.svg" width="380" alt="Top forks">
 
-<img src="examples/clones.svg" width="400" alt="Top clones"> <img src="examples/views.svg" width="400" alt="Top views">
+<img src="examples/clones.svg" width="380" alt="Top clones"> <img src="examples/views.svg" width="380" alt="Top views">
 
-<img src="examples/history.svg" width="400" alt="Star history"> <img src="examples/history-twscrape.svg" width="400" alt="twscrape star history">
+<img src="examples/history.svg" width="380" alt="Star history"> <img src="examples/history-twscrape.svg" width="380" alt="twscrape star history">
 
-<img src="examples/history-compare.svg" width="400" alt="Star history of twscrape and macmon"> <img src="examples/history-log.svg" width="400" alt="Star history on a log scale">
+<img src="examples/history-compare.svg" width="380" alt="Star history of twscrape and macmon"> <img src="examples/history-log.svg" width="380" alt="Star history on a log scale">
 
-<img src="examples/history-since.svg" width="400" alt="Star history since 2023">
+<img src="examples/history-since.svg" width="380" alt="Star history since 2023">
 
-<img src="examples/totals.svg" width="400" alt="Totals">
+<img src="examples/totals.svg" width="380" alt="Totals">
 
 </details>
 
@@ -331,7 +331,7 @@ Query parameters:
 
 Any other value of `period`, `theme`, `brand`, `log`, `align` and `since` is a 400 error.
 
-All cards are 800 wide by default. A smaller width in the embed makes them smaller, for example two in a row: `<img src="https://ghstats.example.com/card/history.svg" width="400">`.
+All cards are 800 wide by default. A smaller width in the embed makes them smaller, for example two in a row: `<img src="https://ghstats.example.com/card/history.svg" width="380">`.
 
 Charts only know repositories `ghstats` tracks, so `repos` can't compare an arbitrary GitHub repository.
 
