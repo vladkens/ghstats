@@ -261,7 +261,7 @@ Omit the owner and repository to aggregate a metric across all repositories allo
 /badge/repos.svg
 ```
 
-Views and clones accept `period=7d`, `period=30d`, `period=90d`, or `period=tracked`. Star growth, star velocity, and traffic peak accept the same values and default to `30d`.
+Views and clones accept `period=7d`, `period=30d`, `period=90d`, `period=1y`, or `period=tracked`. Star growth, star velocity, and traffic peak accept the same values and default to `30d`.
 
 ```text
 /badge/vladkens/ghstats/views.svg?period=30d
@@ -321,7 +321,7 @@ Examples, rendered by a real instance and saved in [examples](examples):
 
 Query parameters:
 
-- `period`: `7d`, `30d` (default), `90d` or `tracked`, as for badges. With `tracked` the top lists use all collected history and no change is shown. The star history cards default to `tracked`, the whole history
+- `period`: `7d`, `30d` (default), `90d`, `1y` or `tracked`, as for badges. With `tracked` the top lists use all collected history and no change is shown. The star history cards default to `tracked`, the whole history
 - `theme`: `auto` (default) follows the viewer's light or dark mode, `light` and `dark` fix the colors
 - `brand`: `brand=1` (default) keeps the `ghstats` wordmark in the background, `brand=0` removes it
 - `log`: on the star history cards, `log=1` draws a log scale with gridlines at powers of ten and no area under a single line, `log=0` (default) keeps the linear one

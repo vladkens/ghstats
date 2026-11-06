@@ -502,4 +502,112 @@
       if (card.id && expanded.has(card.id)) showAll(card);
     }
   });
+
+  // MARK: Card builder
+
+  window.cardBuilder = () => {
+    const form = document.getElementById('card_form');
+    const f = form.elements;
+    const history = () => f.card.value === 'history';
+    const defaultPeriod = () => (history() ? 'tracked' : '30d');
+    let periodTouched = false;
+
+    const names = new Set([...document.getElementById('repos').options].map(x => x.value));
+    const isRepo = x => names.has(x);
+
+    // through toISOString, as Date alone rolls 2023-02-30 over to March
+    const isDate = x => {
+      const date = new Date(x);
+      return !isNaN(date) && date.toISOString().slice(0, 10) === x;
+    };
+
+    // the input's value for the URL: a wrong one is left out and marked
+    const valid = (input, ok) => {
+      const good = ok(input.value);
+      input.setAttribute('aria-invalid', !good && input.value !== '');
+      return good ? input.value : '';
+    };
+
+    const update = () => {
+      const scope = history() ? f.scope.value : 'all';
+      const compare = scope === 'compare';
+      const since = history() ? valid(f.since, isDate) : '';
+
+      const shown = {
+        scope: history(),
+        repo: scope !== 'all',
+        compare,
+        since: history(),
+        period: !since,
+        log: history(),
+        align: compare,
+      };
+
+      form.querySelectorAll('[data-field]').forEach(x => {
+        if (x.dataset.field in shown) x.hidden = !shown[x.dataset.field];
+      });
+
+      // only what differs from the card's defaults, so the embed stays short
+      const query = [];
+      const picks = [...f.repo].map(x => valid(x, isRepo));
+      const repos = [...new Set(picks)].filter(Boolean);
+      if (compare && repos.length) query.push(`repos=${repos.join(',')}`);
+      if (since) query.push(`since=${since}`);
+      else if (f.period.value !== defaultPeriod()) query.push(`period=${f.period.value}`);
+      if (f.theme.value !== 'auto') query.push(`theme=${f.theme.value}`);
+      if (history() && f.log.checked) query.push('log=1');
+      if (compare && f.align.checked) query.push('align=1');
+
+      const path = scope === 'one' && picks[0] ? `${picks[0]}/history` : f.card.value;
+      const url = `${location.origin}/card/${path}.svg${query.length ? '?' : ''}${query.join('&')}`;
+      const alt = form.querySelector('[name=card]:checked').labels[0].textContent;
+      // 800 is the cards' own width, the embed needs none
+      const width = f.width.value === '800' ? '' : f.width.value;
+      const tag = `<img src="${url}"${width && ` width="${width}"`} alt="${alt}">`;
+
+      const img = document.getElementById('card_preview');
+      img.src = url;
+      img.alt = alt;
+      img.style.width = width && `${width}px`;
+
+      document.getElementById('embed_md').textContent = width ? tag : `![${alt}](${url})`;
+      document.getElementById('embed_note').hidden = !width;
+      document.getElementById('embed_html').textContent = tag;
+
+      form.querySelectorAll('[data-width]').forEach(x => {
+        x.setAttribute('aria-pressed', x.dataset.width === f.width.value);
+      });
+    };
+
+    // click, not input: picking the period that is already on is a choice too, widths are buttons
+    form.addEventListener('click', e => {
+      if (e.target.name === 'period') periodTouched = true;
+
+      if (e.target.dataset.width) {
+        f.width.value = e.target.dataset.width;
+        update();
+      }
+    });
+
+    form.addEventListener('input', e => {
+      if (e.target.name === 'card' && !periodTouched) f.period.value = defaultPeriod();
+      update();
+    });
+
+    form.addEventListener('submit', e => e.preventDefault());
+    update();
+  };
+
+  // execCommand and not navigator.clipboard: that one is https only, ghstats often runs on http
+  document.addEventListener('click', e => {
+    const btn = e.target.closest('[data-copy]');
+    if (!btn) return;
+
+    getSelection().selectAllChildren(btn.closest('.card').querySelector('pre'));
+    document.execCommand('copy');
+    btn.textContent = 'Copied';
+    setTimeout(() => {
+      btn.textContent = 'Copy';
+    }, 1500);
+  });
 })();

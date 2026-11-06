@@ -83,6 +83,7 @@ impl Period {
       "7d" => Ok(Self::Days(7)),
       "30d" => Ok(Self::Days(30)),
       "90d" => Ok(Self::Days(90)),
+      "1y" => Ok(Self::Days(365)),
       "tracked" => Ok(Self::Tracked),
       _ => Err(AppError::status(StatusCode::BAD_REQUEST)),
     }
@@ -647,6 +648,8 @@ mod tests {
     state.record_sync_error(&anyhow::anyhow!("sync failed"));
     let response = total_response(state.clone(), "health", None).await.unwrap();
     assert!(svg_text(response).await.contains(">degraded<"));
+
+    assert!(matches!(Period::parse("1y"), Ok(Period::Days(365))));
 
     let error = total_response(state.clone(), "views", Some("year")).await.unwrap_err();
     assert_eq!(error.into_response().status(), StatusCode::BAD_REQUEST);

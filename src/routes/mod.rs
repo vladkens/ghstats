@@ -60,5 +60,6 @@ pub fn html_routes() -> Router<Arc<AppState>> {
   Router::new()
     .route("/", get(html::index))
     .route("/sync-status", get(html::sync_status))
+    .route("/cards", get(html::cards_page))
     .route("/{owner}/{repo}", get(html::repo_page))
 }
