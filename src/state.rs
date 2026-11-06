@@ -1,7 +1,7 @@
 use std::sync::Mutex;
 use std::time::Instant;
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, Utc};
 use serde::Deserialize;
 
 use crate::db_client::{DbClient, RepoFilter, RepoSort, RepoTotals};
@@ -10,6 +10,7 @@ use crate::gh_client::GhClient;
 use crate::types::Res;
 
 pub const DB_HEALTH_INTERVAL_SECS: u64 = 60 * 60;
+pub const SYNC_MAX_AGE_HOURS: i64 = 8; // sync runs hourly, so this is 8 missed runs
 pub const DB_NOT_WRITABLE_MESSAGE: &str = "SQLite database is not writable. ghstats Docker images run as a non-root user, so existing bind-mounted data directories may need an ownership fix. For docker run: docker run --rm -u root -v ./data:/app/data ghcr.io/vladkens/ghstats:latest chown -R appuser:appgroup /app/data. For Docker Compose: docker compose run --rm --user root ghstats chown -R appuser:appgroup /app/data";
 
 // old comma rules like `*,!fork,owner/*`; a comma value that looks like a query goes to the parser
@@ -165,6 +166,15 @@ impl SyncStatus {
   }
 }
 
+// with no success since start (it's kept in memory only) the age counts from the process start
+pub fn is_sync_healthy(
+  last_success: Option<DateTime<Utc>>,
+  started_at: DateTime<Utc>,
+  now: DateTime<Utc>,
+) -> bool {
+  now - last_success.unwrap_or(started_at) < Duration::hours(SYNC_MAX_AGE_HOURS)
+}
+
 impl DbHealth {
   fn new(result: Result<(), String>) -> Self {
     Self { checked_at: Instant::now(), result }
@@ -180,6 +190,7 @@ pub struct AppState {
   pub version_check: bool,
   pub default_sort: RepoSort,
   pub last_release: Mutex<String>,
+  pub started_at: DateTime<Utc>,
   db_health: Mutex<DbHealth>,
   sync_status: Mutex<SyncStatus>,
 }
@@ -229,6 +240,7 @@ impl AppState {
       version_check,
       default_sort,
       last_release,
+      started_at: Utc::now(),
       db_health,
       sync_status,
     })
@@ -353,15 +365,39 @@ impl AppState {
       version_check: false,
       default_sort: RepoSort::default(),
       last_release: Mutex::new(env!("CARGO_PKG_VERSION").to_string()),
+      started_at: Utc::now(),
       db_health: Mutex::new(DbHealth::new(Ok(()))),
       sync_status: Mutex::new(SyncStatus::default()),
     }
+  }
+
+  #[cfg(test)]
+  pub(crate) fn set_db_health(&self, result: Result<(), String>) {
+    *self.db_health.lock().unwrap() = DbHealth::new(result);
   }
 }
 
 #[cfg(test)]
 mod tests {
   use super::*;
+
+  #[test]
+  fn sync_health_by_age() {
+    let now = Utc::now();
+    let ago = |hours| now - Duration::hours(hours);
+    let cases = [
+      ("recent", Some(ago(1)), ago(100), true),
+      ("stale", Some(ago(9)), ago(100), false),
+      ("exactly 8 hours", Some(ago(8)), ago(100), false),
+      ("a stale success with a young process", Some(ago(9)), ago(1), false),
+      ("none within uptime", None, ago(7), true),
+      ("none after uptime", None, ago(9), false),
+    ];
+
+    for (name, last_success, started_at, want) in cases {
+      assert_eq!(is_sync_healthy(last_success, started_at, now), want, "{name}");
+    }
+  }
 
   #[test]
   fn ghs_sort_reads_url_keys() {
